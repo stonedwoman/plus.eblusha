@@ -1431,6 +1431,8 @@ router.post(
         senderName,
         preview,
         secret: Boolean(convForNotify?.isSecret),
+        // read-sync: момент сообщения по часам сервера — Android сравнит его с readAt (push/types.ts).
+        sentAt: new Date(message.createdAt).getTime(),
       },
       `msg:${message.id}`,
     );

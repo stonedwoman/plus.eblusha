@@ -37,6 +37,18 @@ import type { PushPayload } from "./types";
  *
  * Пуш не ставим вовсе, если у человека нет живых push-токенов (кроме устройства, которое само
  * прочитало: оно снимает уведомления у себя). Сокет-событие уходит всегда.
+ *
+ * Кого исключать из пуша, решает ВОРКЕР в момент отправки (resolveReadExclusion): устройство
+ * ПОСЛЕДНЕГО прочтения — того, чей readAt едет в пуше. Хвост сворачивает прочтения разных устройств
+ * (айфон, через секунду ПК), и исключать в нём устройство, которое прочитало раньше, нельзя: его
+ * уведомления, пришедшие между двумя прочтениями, иначе так и висели бы.
+ *
+ * Догон при подключении (replayRecentReads): событие сокета не доходит до тех, кто в этот момент без
+ * связи (ПК спал, телефон сменил сеть), а пуша ПК не получает вовсе. Поэтому каждое прочтение ещё и
+ * запоминается (readsync:recent:<user>, сутки), и при КАЖДОМ подключении сокета сервер досылает ему
+ * эти события с пометкой replay: true. Клиент применяет их тем же правилом readAt — это единственный
+ * догон для секреток, у которых нет серверного счётчика непрочитанных.
+ *
  * Функции НИКОГДА не бросают: «прочитано» не должно ломаться из-за Redis, сокета или очереди.
  */
 
@@ -52,28 +64,77 @@ export type ReadSelfEvent = {
   readAt: number;
   /** Устройство, на котором прочитали; нет поля — сервер не смог его определить. */
   byDeviceId?: string;
+  /**
+   * Догон при подключении сокета (replayRecentReads): прочтение было раньше, событие досылается. readAt —
+   * настоящий момент прочтения (может быть часы назад), поэтому время ПРИХОДА такого события ничего не
+   * говорит о расхождении часов клиента и сервера. byDeviceId в догоне нет.
+   */
+  replay?: true;
 };
 
 const lastKey = (userId: string, conversationId: string) => `readsync:last:${userId}:${conversationId}`;
 const trailKey = (userId: string, conversationId: string) => `readsync:trail:${userId}:${conversationId}`;
 const atKey = (userId: string, conversationId: string) => `readsync:at:${userId}:${conversationId}`;
+/** Устройство, чей readAt сейчас лежит в atKey ('' — не определено или два устройства в одну мс). */
+const atByKey = (userId: string, conversationId: string) => `readsync:atby:${userId}:${conversationId}`;
+/** Недавние прочтения человека для догона при подключении сокета: zset conversationId → readAt. */
+const recentKey = (userId: string) => `readsync:recent:${userId}`;
 /** Как apns-expiration / FCM ttl у read-пуша: дольше пуш всё равно не живёт. */
 const READ_AT_TTL_MS = 3_600_000;
+/**
+ * Сколько помнить прочтения для догона. Сутки: ПК, уснувший на ночь, утром должен погасить плашки и
+ * всплывашки секреток, прочитанных ночью на телефоне (обычные беседы он догонит и по счётчикам).
+ */
+export const READ_REPLAY_WINDOW_MS = 24 * 3_600_000;
+/** Не больше стольких бесед в догоне (самые свежие). */
+export const READ_REPLAY_MAX = 100;
 
 /**
  * readAt в Redis только растёт: два «прочитано» с разных устройств в одну миллисекунду обгоняют
  * друг друга в асинхронщине, и более раннее не должно затереть более позднее (иначе хвостовой пуш
- * оставил бы уведомление, пришедшее между ними).
+ * оставил бы уведомление, пришедшее между ними). Рядом — устройство этого (последнего) прочтения:
+ * его воркер исключит из пуша. Ничья в одну миллисекунду разными устройствами — '' (исключать некого).
+ * KEYS: at, atby. ARGV: readAt, ttl, устройство-читатель ('' — не определено).
  */
 const SET_READ_AT_MAX_LUA = `
 local cur = tonumber(redis.call('GET', KEYS[1]) or '0') or 0
 local nxt = tonumber(ARGV[1])
 if nxt > cur then
   redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
+  redis.call('SET', KEYS[2], ARGV[3], 'PX', ARGV[2])
 else
+  if nxt == cur and redis.call('GET', KEYS[2]) ~= ARGV[3] then
+    redis.call('SET', KEYS[2], '', 'PX', ARGV[2])
+  end
   redis.call('PEXPIRE', KEYS[1], ARGV[2])
+  redis.call('PEXPIRE', KEYS[2], ARGV[2])
 end
 return 1
+`;
+
+/**
+ * Запомнить прочтение для догона: момент только растёт; старше окна — долой; бесед не больше
+ * READ_REPLAY_MAX (лишние — самые старые). KEYS: recent. ARGV: readAt, conversationId, нижняя граница
+ * окна, ttl, предел.
+ */
+const NOTE_RECENT_LUA = `
+local cur = redis.call('ZSCORE', KEYS[1], ARGV[2])
+if (not cur) or tonumber(ARGV[1]) > tonumber(cur) then
+  redis.call('ZADD', KEYS[1], ARGV[1], ARGV[2])
+end
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', '(' .. ARGV[3])
+local n = redis.call('ZCARD', KEYS[1])
+local max = tonumber(ARGV[5])
+if n > max then
+  redis.call('ZREMRANGEBYRANK', KEYS[1], 0, n - max - 1)
+end
+redis.call('PEXPIRE', KEYS[1], ARGV[4])
+return 1
+`;
+
+/** Догон: беседы и readAt за окно, самые свежие первыми. KEYS: recent. ARGV: нижняя граница, предел. */
+const LIST_RECENT_LUA = `
+return redis.call('ZREVRANGEBYSCORE', KEYS[1], '+inf', ARGV[1], 'WITHSCORES', 'LIMIT', 0, tonumber(ARGV[2]))
 `;
 
 export type ReadSyncOutcome = "sent" | "deferred" | "throttled" | "no-push" | "error";
@@ -111,8 +172,8 @@ export async function notifyConversationRead(opts: {
     // уходит до 5 с спустя, и за это время в беседе могло прийти непрочитанное сообщение, уведомление
     // которого снимать нельзя. Пишем при КАЖДОМ событии, в том числе свёрнутом в хвост.
     await redis.eval(SET_READ_AT_MAX_LUA, {
-      keys: [atKey(userId, conversationId)],
-      arguments: [String(readAt), String(READ_AT_TTL_MS)],
+      keys: [atKey(userId, conversationId), atByKey(userId, conversationId)],
+      arguments: [String(readAt), String(READ_AT_TTL_MS), readerDeviceId ?? ""],
     });
 
     // Передний пуш: окно свободно — занимаем его и шлём сразу.
@@ -163,10 +224,60 @@ export async function emitReadSelf(userId: string, event: ReadSelfEvent): Promis
   }
 }
 
+/** Запомнить прочтение для догона при подключении сокета (replayRecentReads). Не бросает. */
+export async function noteRecentRead(userId: string, conversationId: string, readAt: number): Promise<void> {
+  try {
+    const redis = await getRedisClient();
+    await redis.eval(NOTE_RECENT_LUA, {
+      keys: [recentKey(userId)],
+      arguments: [
+        String(readAt),
+        conversationId,
+        String(Date.now() - READ_REPLAY_WINDOW_MS),
+        String(READ_REPLAY_WINDOW_MS),
+        String(READ_REPLAY_MAX),
+      ],
+    });
+  } catch (error) {
+    logger.warn({ error, conversationId }, "read-sync: recent read not stored");
+  }
+}
+
+/**
+ * Догон при подключении сокета: дослать ЭТОМУ сокету (emit — его socket.emit) события read-self обо всех
+ * прочтениях человека за сутки, с пометкой replay: true и без byDeviceId. Событие сокета, ушедшее, пока
+ * устройство было без связи, иначе потеряно навсегда: ПК пушей не получает, секретки по счётчикам не
+ * догнать (их непрочитанных сервер не считает). Клиент снимает по тому же правилу readAt — только
+ * показанное не позже прочтения, — так что повтор безвреден. Возвращает, сколько событий отправлено.
+ * Не бросает.
+ */
+export async function replayRecentReads(userId: string, emit: (event: ReadSelfEvent) => void): Promise<number> {
+  try {
+    const redis = await getRedisClient();
+    const rows = (await redis.eval(LIST_RECENT_LUA, {
+      keys: [recentKey(userId)],
+      arguments: [String(Date.now() - READ_REPLAY_WINDOW_MS), String(READ_REPLAY_MAX)],
+    })) as unknown;
+    if (!Array.isArray(rows)) return 0;
+    let sent = 0;
+    for (let i = 0; i + 1 < rows.length; i += 2) {
+      const conversationId = String(rows[i] ?? "");
+      const readAt = Number(rows[i + 1]);
+      if (!conversationId || !Number.isFinite(readAt) || readAt <= 0) continue;
+      emit({ conversationId, readAt: Math.floor(readAt), replay: true });
+      sent += 1;
+    }
+    return sent;
+  } catch (error) {
+    logger.warn({ error, userId }, "read-sync: replay failed");
+    return 0;
+  }
+}
+
 /**
  * Запуск из HTTP-маршрута: после ответа клиенту, не блокируя его. Устройство-читатель берём из
  * запроса (did токена / X-Device-Id) — тем же резолвером, что /devices и /secret.
- * Момент прочтения фиксируем сразу, при обработке запроса, — он один для сокет-события и пуша.
+ * Момент прочтения фиксируем сразу, при обработке запроса, — он один для сокет-события, догона и пуша.
  */
 export function scheduleReadSync(req: Request, userId: string, conversationIds: Iterable<string>): void {
   const ids = Array.from(new Set(conversationIds)).filter(Boolean);
@@ -181,10 +292,37 @@ export function scheduleReadSync(req: Request, userId: string, conversationIds: 
       // сокет-событии не будет byDeviceId.
     }
     for (const conversationId of ids) {
+      await noteRecentRead(userId, conversationId, readAt);
       await emitReadSelf(userId, { conversationId, readAt, ...(readerDeviceId ? { byDeviceId: readerDeviceId } : {}) });
       await notifyConversationRead({ userId, conversationId, readerDeviceId, readAt });
     }
   })();
+}
+
+/**
+ * Воркер, перед отправкой read-пуша: кого исключить. Устройство ПОСЛЕДНЕГО прочтения (его readAt и
+ * уходит в пуше, attachReadAt): оно само уже прочитало всё до этого момента. Устройство, поставившее
+ * задачу, — не обязательно оно: хвост дребезга сворачивает прочтения разных устройств, и айфон,
+ * прочитавший первым, должен получить пуш о том, что следом прочитали на ПК, — иначе уведомление,
+ * пришедшее ему между двумя прочтениями, повисло бы. Записи нет (Redis недоступен, задача старого
+ * формата) — как решил маршрут (jobExclude). Не бросает.
+ */
+export async function resolveReadExclusion(
+  userIds: string[],
+  payload: PushPayload,
+  jobExclude: string[] | undefined,
+): Promise<string[] | undefined> {
+  if (payload.kind !== "read") return jobExclude;
+  try {
+    const userId = userIds[0];
+    if (!userId) return jobExclude;
+    const raw = await (await getRedisClient()).get(atByKey(userId, payload.conversationId));
+    if (raw === null || raw === undefined) return jobExclude;
+    return raw ? [raw] : undefined;
+  } catch (error) {
+    logger.warn({ error, conversationId: payload.conversationId }, "read-sync: reader lookup failed");
+    return jobExclude;
+  }
 }
 
 /**

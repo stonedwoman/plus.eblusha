@@ -11,6 +11,7 @@ import { verifyAccessToken } from "../utils/jwt";
 import logger from "../config/logger";
 import { decGauge, incGauge } from "../obs/metrics";
 import { enqueuePush } from "../jobs/queue";
+import { replayRecentReads } from "../push/readSync";
 import { cloudMessageWritesAllowed, isSecretConversation } from "../lib/secretLatch";
 import { acceptSecretThread, announceSecretThreadAccepted, declineSecretThread } from "../lib/secretThreadState";
 import { initCloudRealtime } from "../cloud/realtime";
@@ -37,8 +38,10 @@ type ServerToClientEvents = {
    * read-sync: беседу прочитали на одном из устройств ЭТОГО же пользователя (в т.ч. на текущем —
    * byDeviceId). Уходит в комнату user:<id>, то есть на все его сокеты. Клиент снимает уведомления
    * беседы, показанные не позже readAt (+1 с на часы). Обычные и секретные беседы. См. push/readSync.ts.
+   * replay: true — догон при подключении сокета (прочтения за сутки, без byDeviceId): время прихода
+   * такого события не говорит о расхождении часов.
    */
-  "conversation:read-self": (payload: { conversationId: string; readAt: number; byDeviceId?: string }) => void;
+  "conversation:read-self": (payload: { conversationId: string; readAt: number; byDeviceId?: string; replay?: true }) => void;
   "message:update": (payload: { conversationId: string; messageId: string; reason: string; message?: any }) => void;
   "message:notify": (payload: { conversationId: string; messageId: string; senderId: string; message?: any }) => void;
   "message:reaction": (payload: { conversationId: string; messageId: string; senderId: string }) => void;
@@ -1604,6 +1607,10 @@ export async function initSocket(
     logger.info({ userId }, "Socket connected");
     // Join personal room to receive direct events
     socket.join(userRoom(userId));
+    // read-sync: прочтения, случившиеся, пока этот сокет был без связи, — ему одному (push/readSync.ts).
+    void replayRecentReads(userId, (e) => {
+      socket.emit("conversation:read-self", e);
+    });
     incGauge("sockets_connected", 1);
     // Presence semantics (multi-instance):
     // - online is derived from Redis presence_socks/presence_sock keys (NOT in-memory)

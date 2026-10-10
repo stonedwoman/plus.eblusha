@@ -692,6 +692,9 @@ router.post("/messages/push", rateLimit({ name: "secret_messages_push", windowMs
           senderName,
           preview: "",
           secret: true,
+          // read-sync: момент сообщения по часам СЕРВЕРА — Android сравнит его с readAt (push/types.ts).
+          // createdAt выше пришёл от отправителя (его часы), поэтому — момент приёма здесь.
+          sentAt: Date.now(),
         },
         `secret-${parsed.data.msgId}`,
       );

@@ -22,6 +22,10 @@
  *      собеседнику и постороннему; без дребезга; при «нечего читать» / DELIVERED / постороннем в секретке —
  *      нет; без push-токенов — есть. И сквозной путь задача → воркер (attachReadAt) → sendPushToUsers:
  *      readAt в пуше РОВНО тот же, что в сокет-событии; FCM уходит на Android, APNs на iPhone, кроме читателя.
+ *   E. Ревью матрицы (читатель × устройство): исключение из пуша решает воркер — устройство ПОСЛЕДНЕГО
+ *      прочтения (хвост, свернувший айфон и Android, доходит до айфона); ничья в одну мс / неизвестный
+ *      читатель — никого не исключать; догон при подключении сокета (replay: true, без byDeviceId, только
+ *      свои беседы, обычные и секретные, readAt не откатывается); пуш о сообщении несёт sentAt = createdAt.
  *
  * Запускать ТОЛЬКО в изолированной среде (guard.ts не пустит к боевым БД/Redis):
  *   test/secret-env/secret-test.sh run test/read-sync.integration.test.ts
@@ -40,7 +44,12 @@ import { getPushQueue } from "../src/jobs/queue";
 import { buildRequest, type ApnsConfig } from "../src/push/apns";
 import { buildFcmMessage } from "../src/push/fcm";
 import { sendPushToUsers } from "../src/push";
-import { READ_SYNC_WINDOW_MS, attachReadAt, notifyConversationRead } from "../src/push/readSync";
+import {
+  READ_SYNC_WINDOW_MS,
+  attachReadAt,
+  notifyConversationRead,
+  resolveReadExclusion,
+} from "../src/push/readSync";
 import { io as ioClient } from "socket.io-client";
 
 // Подмена экспортов: index.ts зовёт apns_1.sendApns(...)/fcm_1.sendFcm(...) в момент вызова. `import * as` в CJS
@@ -163,12 +172,13 @@ const openSockets: Sock[] = [];
 async function connectSock(u: U, label: string, deviceId?: string): Promise<Sock> {
   const token = signAccessToken({ sub: u.id, tokenId: crypto.randomUUID(), ...(deviceId ? { did: deviceId } : {}) });
   const s = ioClient(baseUrl, { auth: { token }, transports: ["websocket"], forceNew: true, reconnection: false });
+  // Слушатель — ДО подключения: догон (replay) сервер шлёт сразу после connect.
+  const sock: Sock = { s, events: [], label };
+  s.on("conversation:read-self", (e: any) => sock.events.push(e));
   await new Promise<void>((resolve, reject) => {
     s.once("connect", () => resolve());
     s.once("connect_error", reject);
   });
-  const sock: Sock = { s, events: [], label };
-  s.on("conversation:read-self", (e: any) => sock.events.push(e));
   openSockets.push(sock);
   return sock;
 }
@@ -188,12 +198,20 @@ async function expectNoEvents(socks: Sock[], conversationId: string, waitMs = 70
 }
 
 // ---------------------------------------------------------------- «воркер» с подменёнными провайдерами
-type Delivered = { apns: string[]; fcm: string[]; apnsPayload: any; fcmPayload: any; fcmTargets: any[]; apnsProviders: string[] };
-/** Ровно то, что делает push.worker.ts с задачей (attachReadAt → sendPushToUsers), но без сети. */
+type Delivered = {
+  apns: string[];
+  fcm: string[];
+  apnsPayload: any;
+  fcmPayload: any;
+  fcmTargets: any[];
+  apnsProviders: string[];
+  exclude: string[] | undefined;
+};
+/** Ровно то, что делает push.worker.ts с задачей (attachReadAt → resolveReadExclusion → sendPushToUsers), но без сети. */
 async function deliver(job: any): Promise<Delivered> {
   const origApns = apnsExports.sendApns;
   const origFcm = fcmExports.sendFcm;
-  const out: Delivered = { apns: [], fcm: [], apnsPayload: null, fcmPayload: null, fcmTargets: [], apnsProviders: [] };
+  const out: Delivered = { apns: [], fcm: [], apnsPayload: null, fcmPayload: null, fcmTargets: [], apnsProviders: [], exclude: undefined };
   apnsExports.sendApns = async (targets: any[], payload: any) => {
     out.apns = targets.map((t) => t.deviceId).sort();
     out.apnsProviders = targets.map((t) => t.provider);
@@ -208,7 +226,8 @@ async function deliver(job: any): Promise<Delivered> {
   };
   try {
     const payload = await attachReadAt(job.data.userIds, job.data.payload, job.timestamp ?? Date.now());
-    await sendPushToUsers(job.data.userIds, payload, { excludeDeviceIds: job.data.excludeDeviceIds });
+    out.exclude = await resolveReadExclusion(job.data.userIds, payload, job.data.excludeDeviceIds);
+    await sendPushToUsers(job.data.userIds, payload, { excludeDeviceIds: out.exclude });
   } finally {
     apnsExports.sendApns = origApns;
     fcmExports.sendFcm = origFcm;
@@ -339,6 +358,18 @@ async function main() {
       assert.equal(c.data.video, "true");
       const cc = buildFcmMessage(fcmTgt, { kind: "call-cancel", conversationId: "c" });
       assert.deepEqual(cc.android, { priority: "HIGH", ttl: "60s" });
+    });
+    await step("message с sentAt (часы сервера) → в FCM data строкой, в APNs числом рядом с aps; alert тот же", async () => {
+      const p = { kind: "message", conversationId: "c", messageId: "m", senderId: "s", senderName: "n", sentAt: 1_700_000_000_456 } as const;
+      const m = buildFcmMessage(fcmTgt, p);
+      assert.equal(m.data.sentAt, "1700000000456");
+      assert.deepEqual(m.android, { priority: "NORMAL", ttl: "86400s" });
+      const req = buildRequest(cfg, tgt("apns"), p);
+      assert.ok(req);
+      const body = JSON.parse(req.body);
+      assert.equal(body.sentAt, 1_700_000_000_456);
+      assert.equal(body.aps.alert.title, "n");
+      assert.equal(req.headers["apns-push-type"], "alert");
     });
 
     // ================================================================ B. выбор получателей
@@ -710,6 +741,102 @@ async function main() {
       assert.equal(await readAtNow(), T + 7);
       const ttl = await (await getRedisClient()).pTTL(`readsync:at:${U.id}:${C}`);
       assert.ok(ttl > 3_500_000 && ttl <= 3_600_000, `TTL readAt ${ttl} мс — час`);
+    });
+
+    // ================================================================ E. ревью матрицы
+    console.log("E — исключение по последнему читателю, догон при подключении, sentAt");
+    await step("хвост свернул прочтения айфона и Android → пуш получает айфон, исключён только последний (Android)", async () => {
+      const C = await mkConv(U, V);
+      await mkMsg(C, V.id);
+      await markRead(U, iA, C); // передний пуш
+      await expectJobs(C, 1);
+      await mkMsg(C, V.id);
+      await markRead(U, iB, C); // хвост поставил iB
+      const jobs = await expectJobs(C, 2);
+      assert.deepEqual(jobs[1]!.data.excludeDeviceIds, [iB], "маршрут исключил того, кто поставил хвост");
+      await mkMsg(C, V.id); // сообщение, пришедшее айфону iB между его прочтением и прочтением на Android
+      await markRead(U, aC, C); // свёрнуто в тот же хвост
+      const evs = await waitEvents(sUpc, C, 3);
+      const d = await deliver(jobs[1]);
+      assert.deepEqual(d.exclude, [aC], "воркер исключает устройство ПОСЛЕДНЕГО прочтения");
+      assert.deepEqual(d.apns, [iA, iB].sort(), "iB получает хвост: после него прочитали на Android");
+      assert.deepEqual(d.fcm, [], "Android прочитал последним — ему пуш не нужен");
+      assert.equal(d.apnsPayload.readAt, evs[2].readAt, "readAt хвоста — последнего прочтения");
+    });
+    await step("исключение: ничья в одну мс разными устройствами / читатель неизвестен → никого; раннее не перебивает", async () => {
+      const C = await mkConv(U, V);
+      const rd = { kind: "read", conversationId: C } as const;
+      const T = Date.now();
+      await notifyConversationRead({ userId: U.id, conversationId: C, readerDeviceId: iA, readAt: T });
+      assert.deepEqual(await resolveReadExclusion([U.id], rd, ["job"]), [iA]);
+      await notifyConversationRead({ userId: U.id, conversationId: C, readerDeviceId: iA, readAt: T });
+      assert.deepEqual(await resolveReadExclusion([U.id], rd, ["job"]), [iA], "повтор того же устройства — по-прежнему оно");
+      await notifyConversationRead({ userId: U.id, conversationId: C, readerDeviceId: aC, readAt: T });
+      assert.equal(await resolveReadExclusion([U.id], rd, ["job"]), undefined, "ничья — исключать некого");
+      await notifyConversationRead({ userId: U.id, conversationId: C, readerDeviceId: aC, readAt: T + 5 });
+      assert.deepEqual(await resolveReadExclusion([U.id], rd, ["job"]), [aC]);
+      await notifyConversationRead({ userId: U.id, conversationId: C, readerDeviceId: iB, readAt: T + 1 });
+      assert.deepEqual(await resolveReadExclusion([U.id], rd, ["job"]), [aC], "более раннее прочтение читателя не меняет");
+      await notifyConversationRead({ userId: U.id, conversationId: C, readerDeviceId: null, readAt: T + 9 });
+      assert.equal(await resolveReadExclusion([U.id], rd, ["job"]), undefined, "неизвестный читатель — никого");
+      assert.deepEqual(
+        await resolveReadExclusion([U.id], { kind: "read", conversationId: "cm0nosuchconversation00000" }, ["job"]),
+        ["job"],
+        "записи нет — как решил маршрут",
+      );
+      const msg = { kind: "message", conversationId: C, messageId: "m", senderId: "s", senderName: "n" } as const;
+      assert.deepEqual(await resolveReadExclusion([U.id], msg, ["job"]), ["job"], "не read — не трогаем");
+    });
+    await step("догон: новый сокет получает прочтения (обычное и секретку) с replay:true без byDeviceId; живые — нет; чужой — ничего", async () => {
+      const C = await mkConv(U, V);
+      await mkMsg(C, V.id);
+      await markRead(U, iA, C);
+      const [live] = await waitEvents(sUa, C, 1);
+      const S = await mkConv(U, V, { secret: true });
+      await markRead(U, eE, S);
+      const [liveS] = await waitEvents(sUa, S, 1);
+      const fresh = await connectSock(U, "U/ПК после сна", eE);
+      const [r] = await waitEvents(fresh, C, 1);
+      assert.deepEqual(r, { conversationId: C, readAt: live.readAt, replay: true });
+      const [rs] = await waitEvents(fresh, S, 1);
+      assert.deepEqual(rs, { conversationId: S, readAt: liveS.readAt, replay: true });
+      await sleep(150);
+      assert.equal(evFor(sUa, C).length, 1, "уже подключённым догон не шлётся");
+      const freshV = await connectSock(V, "V после сна");
+      await expectNoEvents([freshV], C, 400);
+      await expectNoEvents([freshV], S, 0);
+    });
+    await step("догон: readAt беседы — самого позднего прочтения (не откатывается), старше суток — нет", async () => {
+      const C = await mkConv(U, V);
+      await mkMsg(C, V.id);
+      await markRead(U, iA, C);
+      await sleep(20);
+      await mkMsg(C, V.id);
+      await markRead(U, aC, C);
+      const live = await waitEvents(sUa, C, 2);
+      // Старое (25 ч назад) прочтение другой беседы — в догон не попадает.
+      const Old = await mkConv(U, V);
+      await (await getRedisClient()).zAdd(`readsync:recent:${U.id}`, { score: Date.now() - 25 * 3_600_000, value: Old });
+      const fresh = await connectSock(U, "U/телефон после смены сети", aC);
+      const [r] = await waitEvents(fresh, C, 1);
+      assert.equal(r.readAt, Math.max(live[0].readAt, live[1].readAt));
+      await expectNoEvents([fresh], Old, 300);
+    });
+    await step("пуш о сообщении несёт sentAt = createdAt сообщения (часы сервера)", async () => {
+      const C = await mkConv(U, V);
+      const r = await call("POST", "/api/conversations/send", { token: V.token, body: { conversationId: C, type: "TEXT", content: "hi" } });
+      assert.equal(r.status, 201, JSON.stringify(r.body));
+      const msg = r.body.message;
+      let job: any = null;
+      const t0 = Date.now();
+      while (!job && Date.now() - t0 < 2500) {
+        job = await getPushQueue().getJob(`msg-${msg.id}`);
+        if (!job) await sleep(60);
+      }
+      assert.ok(job, "задача пуша о сообщении в очереди");
+      assert.equal(job.data.payload.kind, "message");
+      assert.equal(job.data.payload.sentAt, new Date(msg.createdAt).getTime());
+      assert.deepEqual(job.data.userIds, [U.id]);
     });
   } finally {
     for (const s of openSockets) s.s.close();
