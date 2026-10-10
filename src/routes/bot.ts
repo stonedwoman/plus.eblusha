@@ -7,13 +7,18 @@ import { rateLimit } from "../middlewares/rateLimit";
 import { getIO } from "../realtime/socket";
 import { isSecretConversation } from "../lib/secretLatch";
 import {
+  BOT_FOLLOWUP_MAX_MESSAGES,
+  BOT_FOLLOWUP_TTL_SECONDS,
+  BOT_FOLLOWUPS_PER_GRANT,
   BOT_GRANT_MAX_MESSAGES,
   BOT_GRANT_MAX_REACTIONS,
+  BOT_GRANT_TTL_SECONDS,
   BOT_MESSAGE_KINDS,
   BOT_NOTICES_PER_HOUR,
   BOT_SECRET_REFUSAL,
   BotNotConfiguredError,
   botRateOk,
+  createBotFollowupGrant,
   createBotMessage,
   findActiveBotChat,
   getBotChatState,
@@ -45,6 +50,11 @@ import {
  *   POST /api/bot/typing    { grant, typing: boolean } → 204; в комнату беседы
  *                           conversation:typing_update {conversationId, userId, isTyping, displayName, isBot:true}
  *   POST /api/bot/react     { grant, messageId, emoji } → 200 {reaction}; сообщение — из беседы обращения.
+ *   POST /api/bot/followup  { grant } → 201 {grant, expiresAt}: продолжение для отчёта о долгой задаче
+ *                           (агент Valheim ждёт перезапуска сервера) — та же беседа и обращение,
+ *                           ≤ BOT_FOLLOWUP_MAX_MESSAGES сообщений, BOT_FOLLOWUP_TTL_SECONDS, без реакций;
+ *                           только по живому обычному разрешению (из продолжения — 400 BOT_FOLLOWUP_NESTED),
+ *                           не больше BOT_FOLLOWUPS_PER_GRANT (429 BOT_GRANT_EXHAUSTED).
  *   По grant: обращение удалено автором → 409 BOT_TRIGGER_DELETED (ответа, реакции и «печатает» уже не будет).
  */
 
@@ -184,7 +194,8 @@ router.post("/messages", requireSystemBot, async (req, res) => {
     const g = await grantOr410(res, b.grant);
     if (!g) return;
     if (!(await triggerAliveOr409(res, g))) return;
-    if (!(await spendBotGrant(b.grant, "msg", BOT_GRANT_MAX_MESSAGES))) {
+    const maxMessages = g.followup ? BOT_FOLLOWUP_MAX_MESSAGES : BOT_GRANT_MAX_MESSAGES;
+    if (!(await spendBotGrant(b.grant, "msg", maxMessages, g.followup ? BOT_FOLLOWUP_TTL_SECONDS : BOT_GRANT_TTL_SECONDS))) {
       res.status(429).json({ message: "Too many messages for this request", code: "BOT_GRANT_EXHAUSTED" });
       return;
     }
@@ -304,7 +315,8 @@ router.post("/react", requireSystemBot, async (req, res) => {
     res.status(409).json({ message: "Conversation is not writable for the bot", code: "BOT_CONVERSATION_GONE" });
     return;
   }
-  if (!(await spendBotGrant(parsed.data.grant, "react", BOT_GRANT_MAX_REACTIONS))) {
+  // По продолжению реакций нет: оно — для отчёта о долгой задаче, а не для «спасибо» → 👍.
+  if (!(await spendBotGrant(parsed.data.grant, "react", g.followup ? 0 : BOT_GRANT_MAX_REACTIONS))) {
     res.status(429).json({ message: "Too many reactions for this request", code: "BOT_GRANT_EXHAUSTED" });
     return;
   }
@@ -315,6 +327,34 @@ router.post("/react", requireSystemBot, async (req, res) => {
   });
   getIO()?.to(msg.conversationId).emit("message:reaction", { conversationId: msg.conversationId, messageId: msg.id, senderId: bot.id });
   res.json({ reaction });
+});
+
+const followupSchema = z.object({ grant: z.string().min(1).max(100) });
+
+router.post("/followup", requireSystemBot, async (req, res) => {
+  const parsed = followupSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ message: "Invalid payload" });
+    return;
+  }
+  const g = await grantOr410(res, parsed.data.grant);
+  if (!g) return;
+  if (g.followup) {
+    res.status(400).json({ message: "A follow-up grant cannot be extended", code: "BOT_FOLLOWUP_NESTED" });
+    return;
+  }
+  if (!(await triggerAliveOr409(res, g))) return;
+  if (!(await writableConversation(g.conversationId))) {
+    res.status(409).json({ message: "Conversation is not writable for the bot", code: "BOT_CONVERSATION_GONE" });
+    return;
+  }
+  if (!(await spendBotGrant(parsed.data.grant, "followup", BOT_FOLLOWUPS_PER_GRANT))) {
+    res.status(429).json({ message: "Too many follow-ups for this request", code: "BOT_GRANT_EXHAUSTED" });
+    return;
+  }
+  const f = await createBotFollowupGrant(g);
+  logger.info({ conversationId: g.conversationId, triggerMessageId: g.triggerMessageId }, "bot: follow-up grant");
+  res.status(201).json(f);
 });
 
 export default router;

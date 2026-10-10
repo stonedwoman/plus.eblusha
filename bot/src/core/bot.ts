@@ -8,10 +8,14 @@
  *
  * Порядок разбора задачи:
  *   1. «да»/«нет» владельца в ответ на вопрос-подтверждение;
+ *   1б. модули (BotModule.intercept): «да»/«нет» на план агента Valheim, «верни как было»;
  *   2. «спасибо»/смех → реакция 👍;
- *   3. детерминированные команды (встроенные и модулей) — с проверкой доступа;
+ *   3. детерминированные команды (встроенные и модулей) — с проверкой доступа; команды владельца —
+ *      молчаливые синонимы: не владельцу и вне его «Чата с Еблушей» они не отказывают, а уходят дальше
+ *      (свободной формой к модели);
  *   4. привязка ника свободной фразой;
- *   5. вопрос модели: лимиты → typing → цепочка ответов → Claude → разметка → ответ (+картинки).
+ *   5. вопрос модели: лимиты → typing → цепочка ответов → Claude → разметка → ответ (+картинки),
+ *      потом — то, что инструменты отложили на «после ответа» (план агента).
  * Пишет бот только по разрешению из задачи (в беседу обращения) и в личный «Чат с Еблушей» человека
  * (уведомления владельцу). Журнал — без текста сообщений.
  */
@@ -22,9 +26,20 @@ import { ApiError, type ChatApi } from "../api/eblusha";
 import type { BotConversationKind, BotJob, BotJobMessage, BotPostInput, EbMessage } from "../api/types";
 import type { LlmEngine, ToolRuntime } from "../llm/types";
 import { ATTACH_IMAGE_TOOL } from "../llm/prompt";
-import type { ChatCommand, ChatInfo, CommandReply, CoreServices, OutgoingImage, Requester, ToolContext } from "../modules/api";
+import type {
+  BotMessageKind,
+  ChatCommand,
+  ChatInfo,
+  CommandReply,
+  ConversationHandle,
+  ConversationRef,
+  CoreServices,
+  OutgoingImage,
+  Requester,
+  ToolContext,
+} from "../modules/api";
 import { Budget, budgetRefusalText, type CostBreakdown } from "./budget";
-import { builtinCommands } from "./builtins";
+import { builtinCommands, builtinTools } from "./builtins";
 import { chainToTurns, jobChain, loadMessageImages } from "./context";
 import { downloadImage as realDownloadImage, ImageFetchError, isWikiImageUrl } from "./images";
 import { invocationText, isThanksOrLaugh } from "./invoke";
@@ -114,12 +129,19 @@ export class Bot {
   private readonly fetchImage: NonNullable<BotDeps["downloadImage"]>;
   /** Сколько обработок ещё в работе (для тестов и аккуратной остановки). */
   private inflight = 0;
+  /**
+   * Последнее сообщение бота в каждой беседе (только память процесса; после перезапуска — пусто).
+   * Модулям: «да» без ответа (reply) относится к плану, только если план — последнее, что бот сказал.
+   */
+  private readonly lastBotMsg = new Map<string, string>();
 
   constructor(private readonly d: BotDeps) {
     this.now = d.now ?? Date.now;
     this.llmSlots = new Semaphore(d.cfg.maxConcurrentLlm);
     this.budget = new Budget(d.store, d.cfg, this.now);
     this.commands = [...builtinCommands(this.budget, d.registry), ...d.registry.commands];
+    // Встроенные инструменты модели (расход — владельцу свободной фразой «сколько потратили?»).
+    for (const t of builtinTools(this.budget)) if (!d.registry.tools.has(t.name)) d.registry.tools.set(t.name, t);
     this.fetchImage = d.downloadImage ?? ((u, o) => realDownloadImage(u, o));
   }
 
@@ -153,6 +175,44 @@ export class Bot {
         all: () => this.d.store.allLinks(),
       },
       notify: (userId, text, opts) => this.notifyUser(userId, text, opts?.images ?? []),
+      conversation: (ref) => this.conversationHandle(ref, this.d.log.child({ conv: ref.conversationId })),
+    };
+  }
+
+  /**
+   * Беседа по разрешению — для модулей (план агента после ответа, отчёт о долгой задаче). Пишет только
+   * туда, куда пускает разрешение; отказ сервера — пустой список и запись в журнал, без исключений.
+   */
+  conversationHandle(ref: ConversationRef, log: Logger): ConversationHandle {
+    return {
+      conversationId: ref.conversationId,
+      kind: ref.kind,
+      triggerMessageId: ref.triggerMessageId,
+      expiresAt: ref.expiresAt,
+      ref: { ...ref },
+      post: async (text, opts = {}) => {
+        const clean = sanitizeMarkdown(text).text;
+        if (!clean) return [];
+        try {
+          const sent = await this.postAll({ grant: ref.grant }, opts.replyToId ?? null, clean, [], opts.kind ?? "command");
+          return sent.map((m) => m.id);
+        } catch (e) {
+          log.warn("conversation.post_failed", { code: e instanceof ApiError ? e.code ?? e.status : undefined, err: e as Error });
+          return [];
+        }
+      },
+      typing: (on) => {
+        this.d.api.typing(ref.grant, on).catch((e: unknown) => log.debug("typing.failed", { err: e as Error }));
+      },
+      followup: async () => {
+        if (this.now() > ref.expiresAt - 5_000 || !this.d.api.followup) return null;
+        try {
+          return await this.d.api.followup(ref.grant);
+        } catch (e) {
+          log.info("followup.denied", { code: e instanceof ApiError ? e.code ?? e.status : undefined });
+          return null;
+        }
+      },
     };
   }
 
@@ -239,6 +299,8 @@ export class Bot {
       await this.handleConfirmation(m, conv, requester, text, log);
       return;
     }
+    // 1б. модули: «да»/«нет» на план агента, «верни как было» — раньше «спасибо» и команд («ок» — это «да»)
+    if (await this.interceptByModules(job, conv, requester, text, parent, log)) return;
     // 2. благодарность
     if (text && isThanksOrLaugh(text)) {
       await this.d.api.react(conv.grant, m.id, THUMBS_UP).catch((e: unknown) => log.warn("react.failed", { err: e as Error }));
@@ -250,8 +312,8 @@ export class Bot {
       const reply = voice
         ? "Голосовые я пока не слушаю — напиши текстом 🙂"
         : conv.kind === "bot"
-          ? "Я тут 🙂 Пиши вопрос — здесь можно без обращения. Что умею — `/eb помощь`."
-          : "Я тут 🙂 Спрашивай: «Еблуша, …». Что умею — `/eb помощь`.";
+          ? "Я тут 🙂 Пиши вопрос — здесь можно без обращения. Что умею — спроси «что ты умеешь?»."
+          : "Я тут 🙂 Спрашивай: «Еблуша, …». Что умею — «Еблуша, что ты умеешь?».";
       await this.sendReply(conv, m.id, reply, [], "notice");
       return;
     }
@@ -264,6 +326,10 @@ export class Bot {
         args = null;
       }
       if (args === null || args === undefined) continue;
+      // Команды владельца («/eb рестарт», «мир», «расход») — молчаливые синонимы для него в его «Чате с
+      // Еблушей». Остальным и вне этого чата — не отказ «это команда владельца», а свободная форма:
+      // модель поймёт просьбу сама (сервер Valheim — через агента, с планом и «да»).
+      if (cmd.access === "owner" && !hasAccess("owner", requester, conv.kind === "bot")) continue;
       await this.handleCommand(cmd, args, m, conv, requester, log);
       return;
     }
@@ -277,7 +343,14 @@ export class Bot {
     await this.handleAsk(job, conv, requester, text, log);
   }
 
-  private toolContext(conv: Conv, requester: Requester, images: OutgoingImage[], signal: AbortSignal, log: Logger): ToolContext {
+  private toolContext(
+    conv: Conv,
+    requester: Requester,
+    images: OutgoingImage[],
+    signal: AbortSignal,
+    log: Logger,
+    extra: { triggerId?: string; grantExpiresAt?: number; after?: Array<(replyIds: string[]) => Promise<void>> } = {}
+  ): ToolContext {
     return {
       requester,
       chat: this.chatInfo(conv),
@@ -287,7 +360,65 @@ export class Bot {
       signal,
       log,
       now: new Date(this.now()),
+      ...(extra.triggerId && extra.grantExpiresAt
+        ? {
+            conversation: this.conversationHandle(
+              { grant: conv.grant, expiresAt: extra.grantExpiresAt, conversationId: conv.id, kind: conv.kind, triggerMessageId: extra.triggerId },
+              log
+            ),
+          }
+        : {}),
+      ...(extra.after ? { afterReply: (fn: (replyIds: string[]) => Promise<void>) => void extra.after!.push(fn) } : {}),
     };
+  }
+
+  /** BotModule.intercept по порядку модулей; true — сообщение разобрано модулем. */
+  private async interceptByModules(job: BotJob, conv: Conv, requester: Requester, text: string, parent: BotJobMessage | null, log: Logger): Promise<boolean> {
+    const m = job.message;
+    for (const mod of this.d.registry.modules) {
+      if (!mod.intercept) continue;
+      try {
+        const done = await mod.intercept({
+          message: { id: m.id, senderId: m.senderId, replyToId: m.replyToId },
+          text,
+          parent: parent
+            ? { id: parent.id, senderId: parent.senderId, isBot: parent.isBot || parent.senderId === this.botId, content: parent.content }
+            : null,
+          requester,
+          chat: this.chatInfo(conv),
+          lastBotMessageId: this.lastBotMsg.get(conv.id) ?? null,
+          conversation: this.conversationHandle(
+            { grant: conv.grant, expiresAt: job.grantExpiresAt, conversationId: conv.id, kind: conv.kind, triggerMessageId: m.id },
+            log
+          ),
+          log,
+          now: new Date(this.now()),
+        });
+        if (done) return true;
+      } catch (e) {
+        log.error("intercept.failed", { module: mod.name, err: e as Error });
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Отложенное инструментами «после ответа» — фоном: задача очереди и беседа не ждут.
+   * replyIds — id отправленных частей ответа модели ([] — ответ не ушёл).
+   */
+  private runAfterReply(after: Array<(replyIds: string[]) => Promise<void>>, replyIds: string[], log: Logger): void {
+    if (after.length === 0) return;
+    const fns = after.splice(0);
+    this.inflight++;
+    void (async () => {
+      for (const fn of fns) {
+        try {
+          await fn(replyIds);
+        } catch (e) {
+          log.error("after_reply.failed", { err: e as Error });
+        }
+      }
+    })().finally(() => this.inflight--);
   }
 
   // ---------------------------------------------------------------- команды
@@ -342,7 +473,7 @@ export class Bot {
     }
     const row = this.d.store.takeConfirmation(m.replyToId!, requester.userId, this.now());
     if (!row) {
-      await this.sendReply(conv, m.id, "Срок подтверждения истёк или команда уже выполнена. Повтори команду.", [], "notice");
+      await this.sendReply(conv, m.id, "Срок подтверждения истёк или это уже выполнено. Попроси ещё раз.", [], "notice");
       return;
     }
     if (no) {
@@ -658,6 +789,8 @@ export class Bot {
     typing.unref?.();
     const abort = AbortSignal.timeout(4 * 60_000);
     const images: OutgoingImage[] = [];
+    const after: Array<(replyIds: string[]) => Promise<void>> = [];
+    let replyIds: string[] = [];
     try {
       const chain = jobChain(job, this.d.cfg.contextMaxMessages);
       const turns = await chainToTurns(chain, {
@@ -666,7 +799,7 @@ export class Bot {
       });
       if (turns.length === 0) return;
       const effort = chooseEffort(text);
-      const ctx = this.toolContext(conv, requester, images, abort, log);
+      const ctx = this.toolContext(conv, requester, images, abort, log, { triggerId: m.id, grantExpiresAt: job.grantExpiresAt, after });
       const imageState = { count: 0, moduleData: false };
       const res = await this.d.llm.answer({
         turns,
@@ -709,11 +842,12 @@ export class Bot {
           body = body ? `${body}\n\n*(ответ оборван: вопрос оказался слишком дорогим)*` : "Вопрос оказался слишком дорогим для меня — попробуй сузить его.";
         } else if (res.stop === "max_tokens") {
           body = body ? `${body}\n\n*(ответ обрезан)*` : "Слишком длинный ответ получился — спроси уже, пожалуйста.";
-        } else if (!body && images.length === 0) {
+        } else if (!body && images.length === 0 && after.length === 0) {
+          // (если инструмент отложил сообщение «после ответа» — например, план агента, — пустой ответ модели не нужен)
           body = "Не нашёл, что ответить. Попробуй переформулировать.";
         }
       }
-      await this.sendReply(conv, m.id, body, images, "answer");
+      replyIds = (await this.postAll({ grant: conv.grant }, m.id, body, images, "answer")).map((x) => x.id);
       log.info("answer.sent", {
         ms: this.now() - started,
         effort,
@@ -741,6 +875,8 @@ export class Bot {
       clearInterval(typing);
       this.typing(conv, false, log);
       release();
+      // План агента и т.п. — после ответа (и даже если ответ модели не удался: задача агенту уже ушла).
+      this.runAfterReply(after, replyIds, log);
     }
   }
 
@@ -760,7 +896,7 @@ export class Bot {
     return this.post({ grant: conv.grant }, replyToId, text, images, kind);
   }
 
-  /** Текст (по частям, если длинный) и картинки отдельным сообщением. */
+  /** Текст (по частям, если длинный) и картинки отдельным сообщением. Возвращает первое. */
   private async post(
     target: Target,
     replyToId: string | null,
@@ -768,6 +904,31 @@ export class Bot {
     images: OutgoingImage[],
     kind: NonNullable<BotPostInput["kind"]>
   ): Promise<EbMessage | null> {
+    return (await this.postAll(target, replyToId, text, images, kind))[0] ?? null;
+  }
+
+  /** Запомнить последнее сообщение бота в беседе (lastBotMsg). */
+  private noteSent(sent: EbMessage): void {
+    if (!sent?.conversationId || !sent.id) return;
+    this.lastBotMsg.delete(sent.conversationId);
+    this.lastBotMsg.set(sent.conversationId, sent.id);
+    if (this.lastBotMsg.size > 5000) {
+      for (const [k] of this.lastBotMsg) {
+        this.lastBotMsg.delete(k);
+        if (this.lastBotMsg.size <= 4000) break;
+      }
+    }
+  }
+
+  /** То же, но все отправленные сообщения (части длинного текста, затем картинки). */
+  private async postAll(
+    target: Target,
+    replyToId: string | null,
+    text: string,
+    images: OutgoingImage[],
+    kind: BotMessageKind
+  ): Promise<EbMessage[]> {
+    const all: EbMessage[] = [];
     let first: EbMessage | null = null;
     const parts = text.trim() ? splitMessage(text.trim()) : [];
     for (let i = 0; i < parts.length; i++) {
@@ -778,7 +939,9 @@ export class Bot {
         kind,
         ...(replyToId && i === 0 ? { replyToId } : {}),
       });
+      this.noteSent(sent);
       first ??= sent;
+      all.push(sent);
     }
     if (images.length) {
       const attachments: NonNullable<BotPostInput["attachments"]> = [];
@@ -811,9 +974,11 @@ export class Bot {
           kind,
           ...(replyToId && !first ? { replyToId } : {}),
         });
+        this.noteSent(sent);
         first ??= sent;
+        all.push(sent);
       }
     }
-    return first;
+    return all;
   }
 }

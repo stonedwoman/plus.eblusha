@@ -3,6 +3,10 @@
  * Ядро пускает их только владельцу и только в его личном «Чате с Еблушей»; всё, что меняет сервер,
  * спрашивает «да» ответом на вопрос (один раз, 2 минуты). Выполняет — помощник valheim-ops.
  *
+ * Решение владельца 2026-10-10: от команд уходим к свободной форме — это МОЛЧАЛИВЫЕ СИНОНИМЫ.
+ * Нигде (подсказки, ответы, приветствие) они не упоминаются; всем остальным и вне «Чата с Еблушей»
+ * та же фраза уходит модели: состояние — server_status, изменения — агент (admin.ts) с планом и «да».
+ *
  *   /eb сервер              — статус (без подтверждения)
  *   /eb рестарт             — перезапуск, когда на сервере никого не будет (restart-when-empty)
  *   /eb рестарт сейчас      — перезапуск сейчас; если в игре люди — их выкинет (предупреждаю в вопросе)
@@ -31,7 +35,7 @@ type RestartArgs = { mode: "empty" | "now" | "cancel" };
 type WorldArgs = { key: string | null; val: string | null };
 
 function opsError(e: unknown): CommandReply {
-  if (e instanceof OpsUnavailable) return { text: `Не могу: ${e.message}. Помощника ставят по bot/ops/README.md.` };
+  if (e instanceof OpsUnavailable) return { text: `Не могу: ${e.message}.` };
   return { text: `Не получилось: ${(e as Error).message}` };
 }
 
@@ -71,7 +75,6 @@ export function createCommands(world: VhWorld, ops: OpsClientLike): ChatCommand<
   const status: ChatCommand<true> = {
     name: "valheim_status",
     access: "owner",
-    help: "`/eb сервер` — статус сервера Valheim (только владелец, в «Чате с Еблушей»)",
     match: (t) => (STATUS_RE.test(t.trim()) ? true : null),
     async run() {
       const lines = ["**Сервер Valheim «Koban»**"];
@@ -111,7 +114,6 @@ export function createCommands(world: VhWorld, ops: OpsClientLike): ChatCommand<
     name: "valheim_restart",
     access: "owner",
     confirm: true,
-    help: "`/eb рестарт` — перезапуск, когда все выйдут; `/eb рестарт сейчас`; `/eb рестарт отмена`",
     match(t) {
       const s = t.trim();
       if (CANCEL_RE.test(s)) return { mode: "cancel" };
@@ -146,7 +148,7 @@ export function createCommands(world: VhWorld, ops: OpsClientLike): ChatCommand<
         }
         if (args.mode === "empty") {
           const r = await ops.call("restart_when_empty");
-          return { text: r.ok ? (r.already ? "Уже жду, когда опустеет, — второй раз не ставлю." : "Готово: перезапущу, когда на сервере никого не будет. Отмена — `/eb рестарт отмена`.") : `Не вышло: ${r.error ?? "?"}` };
+          return { text: r.ok ? (r.already ? "Уже жду, когда опустеет, — второй раз не ставлю." : "Готово: перезапущу, когда на сервере никого не будет. Передумаешь — скажи «отмени рестарт».") : `Не вышло: ${r.error ?? "?"}` };
         }
         const r = await ops.call("restart_now", { reason: "команда владельца из Еблуши" });
         return { text: r.ok ? "Перезапускаю сервер. Он вернётся через 2–4 минуты; join-код не меняется." : `Не вышло: ${r.error ?? "?"}` };
@@ -160,7 +162,6 @@ export function createCommands(world: VhWorld, ops: OpsClientLike): ChatCommand<
     name: "valheim_backup",
     access: "owner",
     confirm: true,
-    help: "`/eb бэкап` — архив мира в backups-manual",
     match: (t) => (BACKUP_RE.test(t.trim()) ? true : null),
     async prepare() {
       return { question: "Сделать архив мира (tar.gz с SHA256) в `/DATA/valheim/backups-manual/`? Игра сохраняет мир раз в 30 минут — в архив попадёт последнее сохранение." };
@@ -181,7 +182,6 @@ export function createCommands(world: VhWorld, ops: OpsClientLike): ChatCommand<
     name: "valheim_world",
     access: "owner",
     confirm: true,
-    help: "`/eb мир` — настройки мира; `/eb мир ResourceRate 3` — поменять",
     match(t) {
       const m = WORLD_RE.exec(t.trim());
       if (!m) return null;
@@ -200,11 +200,11 @@ export function createCommands(world: VhWorld, ops: OpsClientLike): ChatCommand<
           const changed = g.items.filter((i) => (i.kind === "flag" ? i.on : i.isDefault === false));
           lines.push(`- ${g.name}: ${changed.length ? changed.map((i) => `${i.label} — ${optionValueText(i)} (\`${i.key}\`)`).join("; ") : "всё по умолчанию"}`);
         }
-        lines.push("", "Поменять: `/eb мир <ключ> <значение>`, например `/eb мир ResourceRate 3` или `/eb мир NoBuildCost выкл`.");
+        lines.push("", "Поменять — просто попроси словами, например «поставь добычу ресурсов x3» или «выключи бесплатное строительство».");
         return { reply: { text: lines.join("\n") } };
       }
       const item = findOption(opts.groups, args.key);
-      if (!item) return { reply: { text: `Нет такой настройки: «${args.key}». Список — \`/eb мир\`.` } };
+      if (!item) return { reply: { text: `Нет такой настройки: «${args.key}». Спроси «какие настройки мира?» — покажу список.` } };
       const v = parseOptionValue(item, args.val);
       if ("error" in v) return { reply: { text: `«${item.label}»: ${v.error}.` } };
       const to = item.kind === "flag" ? (v.value === "on" ? "вкл" : "выкл") : item.kind === "scale" ? `x${v.value}` : v.value;
@@ -220,7 +220,7 @@ export function createCommands(world: VhWorld, ops: OpsClientLike): ChatCommand<
         if ("error" in v) return { text: `«${item.label}»: ${v.error}.` };
         // valheim-ops ещё раз сверит ключ и значение со списком /options — ему бот не доверяет.
         const r = await ops.call("options_set", { key: item.key, value: v.value });
-        return { text: r.ok ? `Готово: ${String(r.applied ?? args.key)}. Проверить — \`/eb мир\`.` : `Не вышло: ${r.error ?? "?"}` };
+        return { text: r.ok ? `Готово: ${String(r.applied ?? args.key)}.` : `Не вышло: ${r.error ?? "?"}` };
       } catch (e) {
         return opsError(e);
       }

@@ -17,6 +17,15 @@ export interface ValheimConfig {
   opsSocket: string | null;
   /** Часовой пояс для времени в ответах. */
   timeZone: string;
+  /**
+   * API агента администрирования Valheim (/DATA/valheim-agent, 127.0.0.1:3013): свободные просьбы
+   * игроков об изменениях сервера с планом и «да». null/пусто — просьбы не принимаются.
+   */
+  agentUrl?: string | null;
+  /** Файл токена агента (X-Agent-Token); в контейнере — смонтированный только на чтение. */
+  agentTokenFile?: string | null;
+  /** Просьб агенту на человека в сутки (владельца не касается). */
+  agentUserDaily?: number;
 }
 
 function s(env: NodeJS.ProcessEnv, key: string, def: string): string {
@@ -39,5 +48,8 @@ export function loadValheimConfig(env: NodeJS.ProcessEnv = process.env): Valheim
     publicMapUrl: s(env, "VALHEIM_PUBLIC_MAP_URL", "https://v.koban.uk/map/"),
     opsSocket: opt(env, "VALHEIM_OPS_SOCKET", "/run/valheim-ops/ops.sock"),
     timeZone: s(env, "BOT_TIME_ZONE", "Europe/Moscow"),
+    agentUrl: opt(env, "VALHEIM_AGENT_URL", "http://127.0.0.1:3013")?.replace(/\/+$/, "") ?? null,
+    agentTokenFile: opt(env, "VALHEIM_AGENT_TOKEN_FILE", "/run/secrets/valheim-agent.token"),
+    agentUserDaily: Math.max(1, Math.min(200, Number(s(env, "VALHEIM_AGENT_USER_DAILY", "15")) || 15)),
   };
 }

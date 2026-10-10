@@ -252,7 +252,8 @@ services:
   # backend при этом — 127.0.0.1:4000 (порт опубликован на loopback хоста).
   # Секреты: ../.env.bot-account — логин/пароль бота и id владельца (src/scripts/seedBotUser.ts),
   #          ../.env.bot         — ANTHROPIC_API_KEY (кладёт владелец; без него бот отвечает шаблонами).
-  # Состояние (SQLite: расходы, привязки ников, подтверждения) — том eblusha-bot-data. Подробности: bot/README.md.
+  # Состояние (SQLite: расходы, привязки ников, подтверждения, задачи агента Valheim) — том eblusha-bot-data.
+  # Подробности: bot/README.md.
   eblusha-bot:
     profiles: ["bot"]
     build:
@@ -277,6 +278,11 @@ services:
       BOT_MODULES: valheim
       VALHEIM_BOT_TOKEN_FILE: /run/secrets/webmap-bot.token
       VALHEIM_OPS_SOCKET: /run/valheim-ops/ops.sock
+      # Агент администрирования Valheim (/DATA/valheim-agent, контракт docs/API.md там же): свободные
+      # просьбы игроков об изменениях сервера — план → «да» любого привязанного игрока → отчёт.
+      # Слушает только loopback хоста (у бота network_mode: host).
+      VALHEIM_AGENT_URL: http://127.0.0.1:3013
+      VALHEIM_AGENT_TOKEN_FILE: /run/secrets/valheim-agent.token
     volumes:
       - eblusha-bot-data:/data
       # Токен закрытого канала мода WebMap для бота (X-Bot-Token, только чтение). Файл должен
@@ -285,6 +291,14 @@ services:
       - type: bind
         source: /DATA/valheim/config/bepinex/webmap-bot.token
         target: /run/secrets/webmap-bot.token
+        read_only: true
+        bind:
+          create_host_path: false
+      # Токен API агента Valheim (X-Agent-Token): root:1000, 0640 — читает пользователь node (gid 1000).
+      # Файл есть, пока установлен агент (/DATA/valheim-agent/deploy/up.sh); без него compose не стартует.
+      - type: bind
+        source: /DATA/valheim-agent/secrets/api.token
+        target: /run/secrets/valheim-agent.token
         read_only: true
         bind:
           create_host_path: false

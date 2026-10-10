@@ -263,17 +263,26 @@ test("картинки после данных модуля — только с 
   assert.equal(h.images.length, 3, "скачана только картинка с вики");
 });
 
-test("команды: встроенная помощь — всем; расход — только владельцу в личке", async () => {
+test("команды: помощь — всем и без команд; «расход» — молчаливый синоним владельца в его чате, остальное — модели", async () => {
   const h = await harness();
   await h.deliver(msg({ conversationId: GROUP, senderId: ALICE, content: "/eb помощь" }));
   assert.match(h.api.sent[0]!.content!, /Я — Еблуша/);
+  assert.doesNotMatch(h.api.sent[0]!.content!, /\/eb|\/еб|команд[аы]:/i, "в подсказках команд нет");
+  // не владелец и владелец вне своего «Чата с Еблушей» — не отказ «только владелец», а свободная форма (модель)
   await h.deliver(msg({ conversationId: GROUP, senderId: OWNER, content: "/eb расход" }));
-  assert.match(h.api.sent[1]!.content!, /только владелец/);
   await h.deliver(msg({ conversationId: DM_ALICE, senderId: ALICE, content: "/eb расход" }));
-  assert.match(h.api.sent[2]!.content!, /только владелец/);
+  assert.equal(h.llm.calls.length, 2);
+  assert.ok(!h.api.sent.some((s) => /только владел/.test(s.content ?? "")));
+  // владелец в своём чате — старая команда работает молча
   await h.deliver(msg({ conversationId: DM_OWNER, senderId: OWNER, content: "Еблуша, расход" }));
-  assert.match(h.api.sent[3]!.content!, /Расход на модель/);
-  assert.equal(h.llm.calls.length, 0);
+  assert.match(h.api.sent.at(-1)!.content!, /Расход на модель/);
+  assert.equal(h.llm.calls.length, 2);
+  // «сколько потратили?» словами: инструмент bot_spending — владельцу где угодно, остальным — отказ
+  h.llm.reply = async (req) => ({ text: (await req.tools.run("bot_spending", {})).content });
+  await h.deliver(msg({ conversationId: GROUP, senderId: OWNER, content: "Еблуша, сколько мы потратили на тебя в этом месяце?" }));
+  assert.match(h.api.sent.at(-1)!.content!, /Расход на модель/);
+  await h.deliver(msg({ conversationId: GROUP, senderId: ALICE, content: "Еблуша, а сколько потратили?" }));
+  assert.match(h.api.sent.at(-1)!.content!, /только владельцу/);
 });
 
 test("команда владельца с подтверждением: вопрос → «да» → выполняется один раз", async () => {
@@ -293,10 +302,12 @@ test("команда владельца с подтверждением: воп�
   const mod: BotModule = { name: "test", commands: [restart] };
   const h = await harness({ modules: [mod] });
 
-  // не владелец / не в личке — отказ без вопроса
+  // не владелец / не в личке — не отказ и не вопрос: свободная форма уходит модели (команды — молчаливые синонимы)
   await h.deliver(msg({ conversationId: GROUP, senderId: OWNER, content: "Еблуша, перезапусти сервер" }));
   await h.deliver(msg({ conversationId: DM_ALICE, senderId: ALICE, content: "/eb рестарт" }));
-  assert.equal(h.api.sent.filter((s) => /только владелец/.test(s.content ?? "")).length, 2);
+  assert.equal(h.api.sent.filter((s) => /только владел/.test(s.content ?? "")).length, 0);
+  assert.equal(h.llm.calls.length, 2);
+  assert.equal(runs, 0);
 
   await h.deliver(msg({ conversationId: DM_OWNER, senderId: OWNER, content: "/eb рестарт сейчас" }));
   const question = h.api.sentMessages[h.api.sentMessages.length - 1]!;
@@ -311,8 +322,8 @@ test("команда владельца с подтверждением: воп�
   assert.equal(h.api.sent[h.api.sent.length - 1]!.content, "Перезапускаю.");
   await h.deliver(yes("cyes00000000000000000000002"));
   assert.equal(runs, 1, "второй «да» не срабатывает");
-  assert.match(h.api.sent[h.api.sent.length - 1]!.content!, /истёк или команда уже выполнена/);
-  assert.equal(h.llm.calls.length, 0, "команды не идут через модель");
+  assert.match(h.api.sent[h.api.sent.length - 1]!.content!, /истёк или это уже выполнено/);
+  assert.equal(h.llm.calls.length, 2, "команда владельца в его чате не идёт через модель");
 });
 
 test("подтверждение истекает", async () => {

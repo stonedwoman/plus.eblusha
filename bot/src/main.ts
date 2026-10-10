@@ -23,13 +23,16 @@ import type { BotModule } from "./modules/api";
 import type { LlmEngine } from "./llm/types";
 
 const DISPLAY_NAME = "Еблуша";
-const BIO = "Бот мессенджера. Позови в любой беседе: «Еблуша, …» или /eb. Продолжай ответом на моё сообщение.";
+const BIO = "Бот мессенджера. Позови в любой беседе: «Еблуша, …». Продолжай ответом на моё сообщение.";
+/** Прежнее описание (с «/eb»): его заменяем, чужое (заданное вручную) — не трогаем. */
+const OLD_BIOS = new Set(["Бот мессенджера. Позови в любой беседе: «Еблуша, …» или /eb. Продолжай ответом на моё сообщение."]);
 
 /** Имя, описание и аватар (фирменная «Б») — один раз, если их ещё нет. */
 async function ensureProfile(api: EblushaApi, log: Logger, assetsDir: string): Promise<void> {
   try {
     const me = await api.me();
-    if (me.displayName !== DISPLAY_NAME || !me.bio) await api.updateMe({ displayName: DISPLAY_NAME, ...(me.bio ? {} : { bio: BIO }) });
+    const bioStale = !me.bio || OLD_BIOS.has(me.bio);
+    if (me.displayName !== DISPLAY_NAME || bioStale) await api.updateMe({ displayName: DISPLAY_NAME, ...(bioStale ? { bio: BIO } : {}) });
     if (!me.avatarUrl) {
       const file = path.resolve(assetsDir, "avatar.png");
       if (fs.existsSync(file)) {

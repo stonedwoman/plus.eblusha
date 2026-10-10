@@ -313,10 +313,15 @@ async function main() {
     console.log("[bot-it] ok: «Чат с Еблушей» — без обращения; привязка ника; владельцу уведомление в его чат");
 
     // ---------- команда владельца с подтверждением ----------
+    // Команды — молчаливые синонимы (решение владельца 2026-10-10): вне его чата и не владельцу — не отказ
+    // «только владелец», а свободная форма — ответ модели; команда при этом не выполняется.
+    const llmBeforeCmd = llm.calls.length;
     const denyGroup = await send(tO, { conversationId: group.id, content: "/eb ит-рестарт" });
-    assert.match((await botReplyTo(denyGroup)).content ?? "", /только владелец/);
+    assert.match((await botReplyTo(denyGroup)).content ?? "", /ОтветМодели42/);
     const deny = await send(tA, { conversationId: chatA, content: "/eb ит-рестарт" });
-    assert.match((await botReplyTo(deny)).content ?? "", /только владелец/);
+    assert.match((await botReplyTo(deny)).content ?? "", /ОтветМодели42/);
+    assert.equal(llm.calls.length, llmBeforeCmd + 2);
+    assert.equal(restarts, 0);
     const c1 = await send(tO, { conversationId: chatO, content: "ит-рестарт" });
     const question = await botReplyTo(c1);
     assert.match(question.content ?? "", /Точно перезапустить/);
@@ -324,9 +329,10 @@ async function main() {
     const yes1 = await send(tO, { conversationId: chatO, content: "да", replyToId: question.id });
     assert.equal((await botReplyTo(yes1)).content, "Готово (ит).");
     const yes2 = await send(tO, { conversationId: chatO, content: "да", replyToId: question.id });
-    assert.match((await botReplyTo(yes2)).content ?? "", /истёк или команда уже выполнена/);
+    assert.match((await botReplyTo(yes2)).content ?? "", /истёк или это уже выполнено/);
     assert.equal(restarts, 1);
-    console.log("[bot-it] ok: команда владельца — только в его «Чате с Еблушей», «да» срабатывает один раз");
+    assert.equal(llm.calls.length, llmBeforeCmd + 2, "команда владельца в его чате — без модели");
+    console.log("[bot-it] ok: команда владельца — молчаливый синоним только в его «Чате с Еблушей», «да» срабатывает один раз; в остальных местах — свободная форма");
 
     // ---------- бот нигде не участник, кроме личных чатов с ботом ----------
     const memberships = await prisma.conversationParticipant.findMany({ where: { userId: botId }, select: { conversationId: true } });

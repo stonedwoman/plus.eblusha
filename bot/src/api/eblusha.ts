@@ -40,6 +40,11 @@ export interface ChatApi {
   typing(grant: string, typing: boolean): Promise<void>;
   /** Реакция на сообщение из беседы обращения («спасибо» → 👍). */
   react(grant: string, messageId: string, emoji: string): Promise<void>;
+  /**
+   * Долгое разрешение на ту же беседу (POST /api/bot/followup): отчёт о задаче, которая идёт дольше
+   * жизни обычного разрешения (агент Valheim ждёт перезапуска). Брать, пока grant жив.
+   */
+  followup?(grant: string): Promise<{ grant: string; expiresAt: number }>;
   upload(data: Buffer, filename: string, mime: string): Promise<UploadResult>;
   /** Скачать вложение Еблуши (/api/files/…); thumb — серверное превью картинки. */
   fetchFile(url: string, opts?: { thumb?: boolean; maxBytes?: number }): Promise<{ data: Buffer; mime: string } | null>;
@@ -198,6 +203,11 @@ export class EblushaApi implements ChatApi {
 
   async react(grant: string, messageId: string, emoji: string): Promise<void> {
     await this.request("POST", "/api/bot/react", { grant, messageId, emoji });
+  }
+
+  async followup(grant: string): Promise<{ grant: string; expiresAt: number }> {
+    const j = await this.request<{ grant: string; expiresAt: number }>("POST", "/api/bot/followup", { grant });
+    return { grant: j.grant, expiresAt: Number(j.expiresAt) };
   }
 
   async upload(data: Buffer, filename: string, mime: string): Promise<UploadResult> {

@@ -59,11 +59,12 @@ test("разбор команд владельца — кодом, без мод
   assert.match((parseOptionValue(findOption(opts.groups, "WorldLevel")!, "11") as { error: string }).error, /от 0 до 10/);
 });
 
-test("рестарт: не владельцу и в группе — отказ; владельцу — вопрос с игроками, «да» один раз", async () => {
+test("рестарт: не владельцу и в группе — свободная форма (модель); владельцу в его чате — вопрос с игроками, «да» один раз", async () => {
   const { h, ops, last, yes } = await setup();
   await h.deliver(msg({ conversationId: DM_ALICE, senderId: ALICE, content: "Еблуша, перезапусти сервер" }));
   await h.deliver(msg({ conversationId: GROUP, senderId: OWNER, content: "/eb рестарт сейчас" }));
-  assert.equal(h.api.sent.filter((s) => /только владелец/.test(s.content ?? "")).length, 2);
+  assert.equal(h.api.sent.filter((s) => /только владел/.test(s.content ?? "")).length, 0);
+  assert.equal(h.llm.calls.length, 2, "просьба словами — модели (а та — агенту через admin_request)");
 
   await h.deliver(msg({ conversationId: DM_OWNER, senderId: OWNER, content: "/eb рестарт сейчас" }));
   const q = last();
@@ -76,7 +77,7 @@ test("рестарт: не владельцу и в группе — отказ;
   assert.match(last().content!, /Перезапускаю сервер/);
   await h.deliver(yes(q));
   assert.equal(ops.calls.length, 1, "второе «да» не срабатывает");
-  assert.equal(h.llm.calls.length, 0, "команды не идут через модель");
+  assert.equal(h.llm.calls.length, 2, "команда владельца в его чате — без модели");
 });
 
 test("рестарт «когда опустеет», отмена, «нет»", async () => {

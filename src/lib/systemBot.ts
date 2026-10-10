@@ -47,7 +47,8 @@ export const BOT_WELCOME_TEXT = [
   "Привет! Я — **Еблуша**, бот этого мессенджера.",
   "",
   "- Здесь можно писать мне без обращения.",
-  "- В любой обычной беседе позови: «Еблуша, …» или `/eb …`, а продолжай ответом на моё сообщение.",
+  "- В любой обычной беседе позови: «Еблуша, …», а продолжай ответом на моё сообщение.",
+  "- Команды не нужны — пиши словами, как человеку.",
   "- В секретных чатах я не работаю.",
   "",
   "Выключить этот чат: настройки → «Чат с Еблушей».",
@@ -59,6 +60,16 @@ export const BOT_GRANT_TTL_SECONDS = 20 * 60;
 export const BOT_GRANT_MAX_MESSAGES = 12;
 /** Реакций бота на одно обращение («спасибо» → 👍). */
 export const BOT_GRANT_MAX_REACTIONS = 3;
+/**
+ * Продолжение (follow-up) — разрешение на отчёт о ДОЛГОЙ задаче в ту же беседу: агент Valheim после
+ * «да» может ждать, пока все выйдут с сервера, до 49 ч (AGENT_RESTART_WAIT_HOURS). Берётся по живому
+ * обычному разрешению (POST /api/bot/followup), из продолжения новое не взять, реакций нет.
+ */
+export const BOT_FOLLOWUP_TTL_SECONDS = 72 * 3600;
+/** Сообщений по продолжению («применяю», «ждёт перезапуска», отчёт). */
+export const BOT_FOLLOWUP_MAX_MESSAGES = 4;
+/** Продолжений с одного обычного разрешения. */
+export const BOT_FOLLOWUPS_PER_GRANT = 2;
 /** Обращений к боту от одного человека в минуту — защита очереди от флуда (лимиты денег — в боте). */
 export const BOT_DISPATCH_PER_MINUTE = 20;
 /** Уведомлений бота в личный чат человека (без обращения) в час. */
@@ -375,6 +386,8 @@ export interface BotGrant {
   triggerMessageId: string;
   authorId: string;
   kind: BotConversationKind;
+  /** Продолжение (BOT_FOLLOWUP_*): живёт дольше, без реакций, продлить нельзя. */
+  followup?: true;
 }
 
 const GRANT_RE = /^[A-Za-z0-9_-]{20,80}$/;
@@ -393,6 +406,7 @@ export async function readBotGrant(token: unknown): Promise<BotGrant | null> {
       triggerMessageId: g.triggerMessageId,
       authorId: g.authorId,
       kind: g.kind === "bot" || g.kind === "group" ? g.kind : "dm",
+      ...(g.followup === true ? { followup: true as const } : {}),
     };
   } catch (error) {
     logger.warn({ error }, "bot: grant read failed");
@@ -401,17 +415,36 @@ export async function readBotGrant(token: unknown): Promise<BotGrant | null> {
 }
 
 /** Израсходовать одно действие по разрешению. false — лимит исчерпан (или Redis недоступен). */
-export async function spendBotGrant(token: string, what: "msg" | "react", max: number): Promise<boolean> {
+export async function spendBotGrant(token: string, what: "msg" | "react" | "followup", max: number, ttlSeconds = BOT_GRANT_TTL_SECONDS): Promise<boolean> {
+  if (max <= 0) return false;
   try {
     const redis = await getRedisClient();
     const key = `${grantKey(token)}:${what}`;
     const n = await redis.incr(key);
-    if (n === 1) await redis.expire(key, BOT_GRANT_TTL_SECONDS);
+    if (n === 1) await redis.expire(key, ttlSeconds);
     return n <= max;
   } catch (error) {
     logger.warn({ error }, "bot: grant spend failed");
     return false;
   }
+}
+
+/**
+ * Продолжение по живому разрешению: та же беседа и то же обращение (удалят обращение — отчёт не
+ * примут), свой счётчик сообщений, срок BOT_FOLLOWUP_TTL_SECONDS. Проверки — в маршруте.
+ */
+export async function createBotFollowupGrant(parent: BotGrant): Promise<{ grant: string; expiresAt: number }> {
+  const redis = await getRedisClient();
+  const grant = crypto.randomBytes(24).toString("base64url");
+  const value: BotGrant = {
+    conversationId: parent.conversationId,
+    triggerMessageId: parent.triggerMessageId,
+    authorId: parent.authorId,
+    kind: parent.kind,
+    followup: true,
+  };
+  await redis.set(grantKey(grant), JSON.stringify(value), { EX: BOT_FOLLOWUP_TTL_SECONDS });
+  return { grant, expiresAt: Date.now() + BOT_FOLLOWUP_TTL_SECONDS * 1000 };
 }
 
 /** Счётчик в окне (секунды). true — ещё можно. */
