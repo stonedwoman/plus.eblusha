@@ -8,6 +8,7 @@ import {
   setPresenceDevice,
   type PresenceDevice,
 } from '../domain/store/presenceDeviceStore'
+import { installLocalTimeSync } from '../domain/localTime/localTimeSync'
 
 function isTruthyEnv(v: unknown): boolean {
   const s = String(v ?? '').trim().toLowerCase()
@@ -141,15 +142,43 @@ function emitPresenceStateNow(opts?: { force?: boolean }) {
     socket.emit('presence:state', payload)
   } catch {
     /* WebSocket может быть уже в CLOSING/CLOSED при реконнекте */
+    return
+  }
+  presenceSentListeners.forEach((fn) => {
+    try {
+      fn()
+    } catch {
+      /* ignore */
+    }
+  })
+}
+
+/**
+ * «presence:state ушёл на сервер» — после него (а не раньше) устройство сообщает свой часовой пояс:
+ * сервер по presence:state решает, каким устройством человек пользуется сейчас (localTimeSync).
+ */
+const presenceSentListeners = new Set<() => void>()
+export function onPresenceStateSent(cb: () => void): () => void {
+  presenceSentListeners.add(cb)
+  return () => {
+    presenceSentListeners.delete(cb)
   }
 }
 
+// force «залипает» до отправки: иначе фокус/блюр в первые 180 мс после connect заменяли
+// отложенный принудительный вызов обычным, и при неизменном состоянии presence:state на новое
+// соединение не уходил вовсе.
+let presenceForcePending = false
+
 function scheduleEmitPresenceState(opts?: { force?: boolean }) {
   if (typeof window === 'undefined') return
+  if (opts?.force) presenceForcePending = true
   if (presenceSyncTimer) window.clearTimeout(presenceSyncTimer)
   presenceSyncTimer = window.setTimeout(() => {
     presenceSyncTimer = null
-    emitPresenceStateNow(opts)
+    const force = presenceForcePending
+    presenceForcePending = false
+    emitPresenceStateNow({ force })
   }, PRESENCE_STATE_DEBOUNCE_MS)
 }
 
@@ -185,6 +214,22 @@ if (typeof window !== 'undefined') {
     (window as any).socket = socket;
   }
 }
+
+// Местное время: пояс этого устройства → сервер, пояса собеседников и своя настройка ← сервер.
+installLocalTimeSync({
+  socket,
+  onPresenceStateSent,
+  getUserId: () => useAppStore.getState().session?.user?.id ?? null,
+  onUserChange: (cb) => {
+    let prev = useAppStore.getState().session?.user?.id ?? null
+    return useAppStore.subscribe((s) => {
+      const next = s.session?.user?.id ?? null
+      if (next === prev) return
+      prev = next
+      cb(next)
+    })
+  },
+})
 
 export function connectSocket() {
   // На Android используем только нативный сокет, JS сокет отключен

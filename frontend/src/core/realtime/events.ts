@@ -104,6 +104,22 @@ export type SecretNotifyPayload = {
   messageId?: string
 }
 
+/** Беседу прочитали на одном из моих устройств (read-sync, сервер: src/push/readSync.ts). */
+export type ConversationReadSelfPayload = {
+  conversationId: string
+  /** Мс по часам сервера. */
+  readAt: number
+  /** Устройство, на котором прочитали; нет — неизвестно (догон при подключении, REST без устройства). */
+  byDeviceId?: string
+  /** Догон при подключении сокета. */
+  replay?: true
+}
+
+/** Местное время собеседника (сервер: src/lib/localTime.ts). */
+export type LocalTimeInfoPayload = { timeZone: string; city: string | null; offsetMinutes: number }
+export type LocalTimeUpdatePayload = { userId: string; localTime: LocalTimeInfoPayload | null }
+export type LocalTimeSettingsPayload = { shareLocalTime: boolean; shareLocalTimeAt: number }
+
 export type RealtimeInboundEventMap = {
   connect: undefined
   disconnect: string | undefined
@@ -140,6 +156,9 @@ export type RealtimeInboundEventMap = {
   'session:new': SessionNewPayload
   'secret:notify': SecretNotifyPayload
   'secret:chat:accepted': SecretChatAcceptedPayload
+  'conversation:read-self': ConversationReadSelfPayload
+  'localtime:update': LocalTimeUpdatePayload
+  'localtime:settings': LocalTimeSettingsPayload
 }
 
 export type RealtimeOutboundEventMap = {

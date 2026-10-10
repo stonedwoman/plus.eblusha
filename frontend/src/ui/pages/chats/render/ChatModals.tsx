@@ -23,6 +23,7 @@ import { VideoViewer } from '../../../components/VideoViewer'
 import { VideoMessageBubble } from '../../../components/VideoMessageBubble'
 import { LazyImage } from '../../../components/LazyImage'
 import { LinkDeviceModal } from '../../../components/LinkDeviceModal'
+import { LocalTimeSettingsSection } from '../../../components/LocalTimeSettingsSection'
 import LoadingSpinner from '../../../components/LoadingSpinner'
 import { systemConfirm, systemToast } from '../../../../domain/store/systemUiStore'
 import { canForwardFromConversation } from '../../../../domain/secret/secretInboxGuards'
@@ -1211,6 +1212,8 @@ export function renderChatModals(ctx: ChatModalsCtx) {
               </div>
             </div>
           )}
+
+          <LocalTimeSettingsSection />
 
           <CallRoutingSection />
 

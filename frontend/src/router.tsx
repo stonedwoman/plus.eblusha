@@ -22,6 +22,8 @@ const CallConnectingDemo = import.meta.env.DEV ? lazy(() => import('./ui/dev/Cal
 const ElectronMigrationDemo = import.meta.env.DEV ? lazy(() => import('./ui/dev/ElectronMigrationDemo')) : null
 // Dev-стенд подписей шифрования звонка («Шифрование через сервер» / «Без шифрования», сбой ключа) — только dev.
 const CallLockDemo = import.meta.env.DEV ? lazy(() => import('./ui/dev/CallLockDemo')) : null
+// Dev-стенд «местного времени собеседника» под статусом в шапке 1:1 — только dev.
+const LocalTimeDemo = import.meta.env.DEV ? lazy(() => import('./ui/dev/LocalTimeDemo')) : null
 
 
 const withSuspense = (node: ReactNode) => (
@@ -32,6 +34,7 @@ const messengerRoutes: RouteObject[] = [
   ...(CallConnectingDemo ? [{ path: '/__dev/call-connecting', element: withSuspense(<CallConnectingDemo />) }] : []),
   ...(ElectronMigrationDemo ? [{ path: '/__dev/electron-migration', element: withSuspense(<ElectronMigrationDemo />) }] : []),
   ...(CallLockDemo ? [{ path: '/__dev/call-lock', element: withSuspense(<CallLockDemo />) }] : []),
+  ...(LocalTimeDemo ? [{ path: '/__dev/local-time', element: withSuspense(<LocalTimeDemo />) }] : []),
   {
     path: '/auth',
     element: <PublicRoute />,

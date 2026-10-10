@@ -56,6 +56,7 @@ import { VoiceMessagePlayer } from './chats/components/VoiceMessagePlayer'
 import { DeviceLinkInline } from './chats/components/DeviceLinkInline'
 import { DIALING_TONE_PERIOD_MS, useChatAudio } from './chats/hooks/useChatAudio'
 import { useChatSocketSubscriptions } from './chats/hooks/useChatSocketSubscriptions'
+import { useReadSelfSync } from './chats/hooks/useReadSelfSync'
 import { useChatTyping } from './chats/hooks/useChatTyping'
 import { useChatsResponsive } from './chats/hooks/useChatsResponsive'
 import { useChatUiStore } from '../../core/chat-sync/chatUiStore'
@@ -4105,6 +4106,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     playNotifySoundIfAllowed,
   })
 
+  // read-sync: беседу прочитали на другом моём устройстве → свежие счётчики (+ плашки Electron).
+  useReadSelfSync({ client, meId: currentUserId, activeCalls })
+
   // Прилипание к низу, начальное позиционирование, догрузка при коротком контенте и
   // возврат на низ при росте хвоста — теперь всё делает Virtuoso (followOutput +
   // initialTopMostItemIndex=последний + startReached). Старые ручные эффекты удалены.
@@ -4291,9 +4295,16 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }
   }
 
+  // «Прочитано» уходит, только пока беседа реально перед глазами: окно видно и в фокусе, а на узком
+  // экране открыта сама беседа, а не список поверх неё (беседа остаётся активной под списком после
+  // «назад»). Иначе входящее в неё квитировалось бы без чтения — и read-sync гасил бы уведомления
+  // на телефоне и ПК (как CloudReadGate на Android, CanAutoMarkRead в нативе).
+  const readOnScreenRef = useRef(true)
+  readOnScreenRef.current = !isMobile || mobileView === 'conversation'
+
   function canAutoMarkRead() {
     try {
-      return document.visibilityState === 'visible' && document.hasFocus()
+      return document.visibilityState === 'visible' && document.hasFocus() && readOnScreenRef.current
     } catch {
       return false
     }
@@ -4381,6 +4392,16 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messagesQuery.data])
+
+  // Узкий экран: вернулись из списка в ту же беседу (activeId не менялся) — дочитать то, что пришло,
+  // пока она была под списком.
+  useEffect(() => {
+    if (canAutoMarkRead()) {
+      markAllReadNow()
+      markConversationReadNow()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isMobile, mobileView])
 
   useEffect(() => {
     const onFocus = () => {

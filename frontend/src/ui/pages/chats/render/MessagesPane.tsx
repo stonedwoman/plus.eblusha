@@ -33,6 +33,7 @@ import { VideoViewer } from '../../../components/VideoViewer'
 import { VideoMessageBubble } from '../../../components/VideoMessageBubble'
 import { LazyImage } from '../../../components/LazyImage'
 import { LinkDeviceModal } from '../../../components/LinkDeviceModal'
+import { PeerLocalTimeLine } from '../components/PeerLocalTimeLine'
 import LoadingSpinner from '../../../components/LoadingSpinner'
 import { systemConfirm, systemToast } from '../../../../domain/store/systemUiStore'
 import { canForwardFromConversation } from '../../../../domain/secret/secretInboxGuards'
@@ -603,6 +604,8 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                               }
                               return <span>{formatPresence(peer)}</span>
                             })()}
+                            {/* Местное время собеседника — только в 1:1 (эта ветка) и только если у него не моё время. */}
+                            {peer?.id ? <PeerLocalTimeLine peerId={peer.id} listLocalTime={peer.localTime} /> : null}
                           </div>
                         </div>
                       </div>

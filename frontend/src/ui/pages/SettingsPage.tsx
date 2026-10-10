@@ -2,6 +2,7 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { type FormEvent, useState } from 'react'
 import { api } from '../../utils/api'
 import { LinkDeviceModal } from '../components/LinkDeviceModal'
+import { LocalTimeSettingsSection } from '../components/LocalTimeSettingsSection'
 import { systemConfirm } from '../../domain/store/systemUiStore'
 
 export default function SettingsPage() {
@@ -74,6 +75,8 @@ export default function SettingsPage() {
       </form>
 
       <div style={{ height: 24 }} />
+      <LocalTimeSettingsSection />
+
       <h2>Устройства</h2>
       <div style={{ display: 'grid', gap: 10 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
