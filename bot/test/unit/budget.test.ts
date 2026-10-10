@@ -45,7 +45,7 @@ test("неизвестная модель считается по дорогой
   assert.equal(priceFor("something-new").input, 5);
 });
 
-test("потолки: месяц, сутки, человек; владелец без личного лимита", () => {
+test("потолки: месяц, сутки, человек; владелец без личного и дневного лимита", () => {
   const store = new Store(":memory:");
   let now = Date.parse("2026-10-10T12:00:00Z");
   const b = new Budget(store, { monthlyBudgetUsd: 10, dailyBudgetUsd: 3, userDailyQuestions: 2, userDailyUsd: 1 }, () => now);
@@ -61,7 +61,9 @@ test("потолки: месяц, сутки, человек; владелец �
   assert.deepEqual(b.check("u2", false), { ok: false, reason: "user_usd" });
 
   b.record("owner", "c", "answer", "claude-opus-5-5", cost(1.5));
-  assert.deepEqual(b.check("owner", true), { ok: false, reason: "day" }); // 2.9 + запас > 3
+  assert.deepEqual(b.check("u3", false), { ok: false, reason: "day" }); // 2.9 + запас > 3
+  // владельца общий дневной потолок не держит (его могли выбрать чужие вопросы), месячный — держит
+  assert.deepEqual(b.check("owner", true), { ok: true });
 
   now = Date.parse("2026-10-11T12:00:00Z"); // новые сутки
   assert.deepEqual(b.check("u1", false), { ok: true });

@@ -22,6 +22,9 @@ export function builtinCommands(budget: Budget, registry: Registry): ChatCommand
         "- В секретных чатах я не работаю.",
       ];
       if (registry.characters) lines.push("- Привязать ник в игре: «Еблуша, мой ник в игре Парасюха».");
+      if (registry.characters && ctx.requester.isOwner) {
+        lines.push("- Владельцу: привязать другого — «Еблуша, его ник …» ответом на его сообщение; снять чужую привязку — «Еблуша, отвяжи персонажа …».");
+      }
       const extra = registry.commands
         .filter((c) => c.help && (c.access !== "owner" || (ctx.requester.isOwner && ctx.chat.kind === "dm")))
         .map((c) => `- ${c.help}`);

@@ -32,23 +32,63 @@ export interface RealtimeOut {
   declineCall(conversationId: string): void;
 }
 
+/** Минимум socket.io-клиента, который нам нужен (подменяется в тестах). */
+export type SocketLike = Pick<Socket, "on" | "emit" | "connect" | "disconnect" | "connected" | "active">;
+export type SocketFactory = (url: string, opts: Parameters<typeof io>[1]) => SocketLike;
+
+export interface RealtimeOptions {
+  connect?: SocketFactory;
+  /** Первая пауза перед ручным переподключением, мс (дальше — вдвое, до 2 минут). */
+  manualRetryMs?: number;
+}
+
+const MANUAL_RETRY_MAX_MS = 120_000;
+
 export class Realtime implements RealtimeOut {
-  private socket: Socket | null = null;
+  private socket: SocketLike | null = null;
   private presenceTimer: NodeJS.Timeout | null = null;
+  private retryTimer: NodeJS.Timeout | null = null;
+  private retryMs: number;
+  private stopped = false;
+  private readonly connectFn: SocketFactory;
 
   constructor(
     private readonly baseUrl: string,
     private readonly getToken: () => Promise<string>,
     private readonly handlers: RealtimeHandlers,
-    private readonly log: Logger
-  ) {}
+    private readonly log: Logger,
+    private readonly opts: RealtimeOptions = {}
+  ) {
+    this.connectFn = opts.connect ?? ((url, o) => io(url, o));
+    this.retryMs = opts.manualRetryMs ?? 5000;
+  }
 
   get connected(): boolean {
     return this.socket?.connected ?? false;
   }
 
+  /**
+   * socket.io-клиент сам переподключается после обрыва связи, но НЕ после отказа сервера:
+   * отказ в рукопожатии (middleware: «Unauthorized» — например, токен не обновился, пока backend
+   * поднимался) и «io server disconnect». Тогда socket.active === false и без ручного connect()
+   * бот оглох бы навсегда. Повторяем сами, с паузой (5 с → … → 2 мин).
+   */
+  private scheduleManualReconnect(why: string): void {
+    if (this.stopped || this.retryTimer || !this.socket) return;
+    const delay = this.retryMs;
+    this.retryMs = Math.min(this.retryMs * 2, MANUAL_RETRY_MAX_MS);
+    this.log.warn("socket.manual_reconnect", { why, inMs: delay });
+    // Таймер НЕ unref: пока сокета нет, других дел у процесса может не быть.
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      const s = this.socket;
+      if (!this.stopped && s && !s.connected && !s.active) s.connect();
+    }, delay);
+  }
+
   start(): void {
-    const socket = io(this.baseUrl, {
+    this.stopped = false;
+    const socket = this.connectFn(this.baseUrl, {
       path: "/socket.io/",
       transports: ["websocket"],
       reconnection: true,
@@ -67,14 +107,20 @@ export class Realtime implements RealtimeOut {
 
     socket.on("connect", () => {
       this.log.info("socket.connected");
+      this.retryMs = this.opts.manualRetryMs ?? 5000;
       this.sendPresence();
       this.handlers.onConnect();
     });
     socket.on("disconnect", (reason) => {
       this.log.warn("socket.disconnected", { reason });
       this.handlers.onDisconnect();
+      // «io server disconnect»: сервер выкинул сокет — сам клиент больше не попробует.
+      if (reason !== "io client disconnect" && !socket.active) this.scheduleManualReconnect(String(reason));
     });
-    socket.on("connect_error", (e) => this.log.warn("socket.connect_error", { err: e }));
+    socket.on("connect_error", (e) => {
+      this.log.warn("socket.connect_error", { err: e, active: socket.active });
+      if (!socket.active) this.scheduleManualReconnect("rejected");
+    });
 
     socket.on("message:notify", (p: { conversationId: string; messageId: string; senderId: string; message?: EbMessage }) => {
       if (!p || typeof p.conversationId !== "string") return;
@@ -129,6 +175,9 @@ export class Realtime implements RealtimeOut {
   }
 
   stop(): void {
+    this.stopped = true;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
     if (this.presenceTimer) clearInterval(this.presenceTimer);
     this.presenceTimer = null;
     this.socket?.disconnect();

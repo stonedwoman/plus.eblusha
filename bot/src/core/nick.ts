@@ -164,6 +164,7 @@ export type LinkIntent =
   | { kind: "link_self"; nick: string }
   | { kind: "unlink_self" }
   | { kind: "link_other"; nick: string } // владелец, в ответ на сообщение того человека
+  | { kind: "unlink_character"; nick: string } // владелец: снять чужую привязку
   | { kind: "whoami" };
 
 const GAME = String.raw`(?:в\s+(?:игре|валхейме|вальхейме|valheim|вальхе|вальке)|игровой)`;
@@ -184,6 +185,10 @@ export function parseLinkIntent(text: string): LinkIntent | null {
   };
 
   if (/^(?:отвяжи|отвязать|забудь)\s+(?:меня|мой\s+ник|мою\s+привязку|мой\s+персонаж)(?=$|[\s.,!?])/i.test(lower)) return { kind: "unlink_self" };
+  {
+    const nick = tail(t.match(/^(?:отвяжи|отвязать)\s+(?:персонажа|перса|ник|игрока)\s+(?<nick>.+)$/iu));
+    if (nick) return { kind: "unlink_character", nick };
+  }
   if (/^(?:кто\s+я|какой\s+у\s+меня\s+ник|мой\s+ник\s*\?|за\s+кого\s+ты\s+меня\s+считаешь)/i.test(lower)) return { kind: "whoami" };
 
   const selfPatterns: RegExp[] = [

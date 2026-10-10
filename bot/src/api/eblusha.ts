@@ -15,6 +15,10 @@ import type {
   UploadResult,
 } from "./types";
 
+const AUTH_TIMEOUT_MS = 20_000;
+const REQUEST_TIMEOUT_MS = 30_000;
+const UPLOAD_TIMEOUT_MS = 120_000;
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -110,6 +114,7 @@ export class EblushaApi implements ChatApi {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-native-client": "1" },
       body: JSON.stringify({ username: this.creds.username, password: this.creds.password, client: "eblusha-bot" }),
+      signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
     });
     if (!res.ok) throw new ApiError(res.status, "/api/auth/login", null, `login failed: HTTP ${res.status}`);
     const j = (await res.json()) as { user: { id: string }; accessToken: string; refreshToken: string };
@@ -129,6 +134,7 @@ export class EblushaApi implements ChatApi {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-native-client": "1" },
       body: JSON.stringify({ refreshToken: prev.refresh, client: "eblusha-bot" }),
+      signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
     });
     if (!res.ok) throw new ApiError(res.status, "/api/auth/refresh", null, `refresh failed: HTTP ${res.status}`);
     const j = (await res.json()) as { accessToken: string; refreshToken: string };
@@ -152,6 +158,8 @@ export class EblushaApi implements ChatApi {
       },
     };
     if (body !== undefined) init.body = body instanceof FormData ? body : JSON.stringify(body);
+    // Без таймаута зависший backend держал бы очередь беседы (и обновление токена) вечно.
+    init.signal = AbortSignal.timeout(body instanceof FormData ? UPLOAD_TIMEOUT_MS : REQUEST_TIMEOUT_MS);
     const res = await this.fetchImpl(`${this.baseUrl}${path}`, init);
     if (res.status === 401 && !retried) {
       await this.ensureSession(true);
@@ -246,7 +254,7 @@ export class EblushaApi implements ChatApi {
     if (!/^\/api\/files\/[A-Za-z0-9._\/-]+$/.test(url)) return null;
     const s = await this.ensureSession();
     const full = `${this.baseUrl}${url}${opts.thumb ? "?thumb=1" : ""}`;
-    const res = await this.fetchImpl(full, { headers: { Authorization: `Bearer ${s.access}` } });
+    const res = await this.fetchImpl(full, { headers: { Authorization: `Bearer ${s.access}` }, signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS) });
     if (!res.ok) return null;
     const max = opts.maxBytes ?? 8 * 1024 * 1024;
     const len = Number(res.headers.get("content-length") ?? "0");

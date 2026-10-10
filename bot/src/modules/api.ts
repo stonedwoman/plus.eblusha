@@ -35,6 +35,13 @@ export interface ChatInfo {
   kind: "dm" | "group";
   title: string | null;
   participantCount: number;
+  /**
+   * Можно ли показывать здесь данные игроков: в личке — да; в группе ответ видят ВСЕ, поэтому
+   * по умолчанию — только если все участники группы — игроки (BOT_GROUP_PLAYER_DATA=all).
+   * Ядро учитывает это само для access "player"; модулю — для «смягчённых» ответов
+   * (как «кто в игре»: непривязанным — только число). Хелпер — playerDataVisible() в core/registry.
+   */
+  playerDataOk: boolean;
 }
 
 export interface OutgoingImage {

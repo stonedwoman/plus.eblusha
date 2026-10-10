@@ -4,7 +4,7 @@
  * minimum/maximum, а с eager_input_streaming сервер вход не проверяет вовсе) и
  * проверка доступа до вызова run().
  */
-import type { Access, BotModule, BotTool, ChatCommand, CharacterDirectory, JsonSchemaObject, JsonSchemaProp, Requester } from "../modules/api";
+import type { Access, BotModule, BotTool, ChatCommand, ChatInfo, CharacterDirectory, JsonSchemaObject, JsonSchemaProp, Requester } from "../modules/api";
 
 const NAME_RE = /^[a-z][a-z0-9_]{0,63}$/;
 const RESERVED = new Set(["web_search", "web_fetch", "code_execution", "attach_image"]);
@@ -98,14 +98,28 @@ export function validateInput(input: unknown, s: JsonSchemaObject): string | nul
   return null;
 }
 
-export function hasAccess(access: Access, r: Requester, isDm: boolean): boolean {
+/**
+ * Доступ к команде/инструменту. playerDataOk — можно ли показывать данные игроков в этой беседе
+ * (ChatInfo.playerDataOk: в группе с непривязанными участниками — нельзя, ответ увидят все).
+ */
+export function hasAccess(access: Access, r: Requester, isDm: boolean, playerDataOk = true): boolean {
   if (access === "anyone") return true;
-  if (access === "player") return r.isPlayer;
+  if (access === "player") return r.isPlayer && (isDm || playerDataOk);
   return r.isOwner && isDm;
 }
 
-export function accessDeniedText(access: Access): string {
-  if (access === "player")
+/** Данные игроков видны: спрашивает игрок, и ответ не уйдёт непривязанным людям. */
+export function playerDataVisible(ctx: { requester: Requester; chat: Pick<ChatInfo, "kind" | "playerDataOk"> }): boolean {
+  return ctx.requester.isPlayer && (ctx.chat.kind === "dm" || ctx.chat.playerDataOk);
+}
+
+export const GROUP_AUDIENCE_TEXT =
+  "В этой группе есть люди, не привязанные к игровому персонажу, а ответ увидят все. Данные игроков покажу в личке с ботом (или в группе, где привязаны все).";
+
+export function accessDeniedText(access: Access, r?: Requester): string {
+  if (access === "player") {
+    if (r?.isPlayer) return GROUP_AUDIENCE_TEXT;
     return "Это видят только игроки сервера. Привяжи свой ник: «Еблуша, мой ник в игре …».";
+  }
   return "Это может только владелец, и только в личке с ботом.";
 }

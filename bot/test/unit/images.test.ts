@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { downloadImage, ImageFetchError, isPrivateAddress, sniffImage } from "../../src/core/images";
-import { apiSchema, hasAccess, validateInput } from "../../src/core/registry";
+import { downloadImage, ImageFetchError, isPrivateAddress, isWikiImageUrl, sniffImage } from "../../src/core/images";
+import { accessDeniedText, apiSchema, hasAccess, playerDataVisible, validateInput } from "../../src/core/registry";
 import type { JsonSchemaObject, Requester } from "../../src/modules/api";
 
 test("сигнатуры и размеры картинок", () => {
@@ -40,6 +40,16 @@ test("внутренние адреса запрещены", () => {
     assert.equal(isPrivateAddress(ip), true, ip);
   }
   for (const ip of ["8.8.8.8", "151.101.1.1", "2606:4700::1111"]) assert.equal(isPrivateAddress(ip), false, ip);
+});
+
+test("картиночные хосты вики (после данных модулей — только они)", () => {
+  assert.equal(isWikiImageUrl("https://static.wikia.nocookie.net/valheim/images/a/ab/Troll.png/revision/latest?cb=1"), true);
+  assert.equal(isWikiImageUrl("https://upload.wikimedia.org/wikipedia/commons/a/ab/X.jpg"), true);
+  assert.equal(isWikiImageUrl("https://valheim.wiki.gg/images/Troll.png"), true);
+  assert.equal(isWikiImageUrl("http://valheim.wiki.gg/images/Troll.png"), false);
+  assert.equal(isWikiImageUrl("https://wiki.gg.evil.example/x.png"), false);
+  assert.equal(isWikiImageUrl("https://evilwiki.gg/x.png"), false);
+  assert.equal(isWikiImageUrl("не адрес"), false);
 });
 
 test("downloadImage: только https и не во внутреннюю сеть (без сетевых походов)", async () => {
@@ -83,4 +93,13 @@ test("доступ: anyone / player / owner (только в личке)", () =>
   assert.equal(hasAccess("player", r({ isPlayer: true, characters: ["X"] }), false), true);
   assert.equal(hasAccess("owner", r({ isOwner: true, isPlayer: true }), false), false);
   assert.equal(hasAccess("owner", r({ isOwner: true, isPlayer: true }), true), true);
+  // группа, где не все — игроки: данные игроков закрыты даже для игрока; в личке — открыты
+  assert.equal(hasAccess("player", r({ isPlayer: true, characters: ["X"] }), false, false), false);
+  assert.equal(hasAccess("player", r({ isPlayer: true, characters: ["X"] }), true, false), true);
+  assert.equal(hasAccess("anyone", r({}), false, false), true);
+  assert.equal(playerDataVisible({ requester: r({ isPlayer: true }), chat: { kind: "group", playerDataOk: false } }), false);
+  assert.equal(playerDataVisible({ requester: r({ isPlayer: true }), chat: { kind: "dm", playerDataOk: false } }), true);
+  assert.equal(playerDataVisible({ requester: r({}), chat: { kind: "dm", playerDataOk: true } }), false);
+  assert.match(accessDeniedText("player", r({ isPlayer: true })), /есть люди, не привязанные/);
+  assert.match(accessDeniedText("player", r({})), /только игроки сервера/);
 });

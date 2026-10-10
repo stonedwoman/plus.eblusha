@@ -162,10 +162,15 @@ export class Budget {
     private readonly now: () => number = Date.now
   ) {}
 
+  /**
+   * Потолки: месяц — для всех, включая владельца; сутки на всех и личные лимиты — кроме
+   * владельца (бот принимает контакты от любого пользователя мессенджера: чужие вопросы
+   * могут выбрать общий дневной потолок, и владелец не должен из-за этого остаться без бота).
+   */
   check(userId: string, isOwner: boolean): BudgetVerdict {
     const t = this.now();
     if (this.store.spentMonth(utcMonth(t)) + RESERVE_USD > this.cfg.monthlyBudgetUsd) return { ok: false, reason: "month" };
-    if (this.store.spentDay(utcDay(t)) + RESERVE_USD > this.cfg.dailyBudgetUsd) return { ok: false, reason: "day" };
+    if (!isOwner && this.store.spentDay(utcDay(t)) + RESERVE_USD > this.cfg.dailyBudgetUsd) return { ok: false, reason: "day" };
     if (!isOwner) {
       const u = this.store.userDay(userId, utcDay(t));
       if (u.questions >= this.cfg.userDailyQuestions) return { ok: false, reason: "user_questions" };

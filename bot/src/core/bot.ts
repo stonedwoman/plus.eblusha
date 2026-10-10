@@ -22,12 +22,12 @@ import type { ChatCommand, ChatInfo, CommandReply, CoreServices, OutgoingImage, 
 import { Budget, budgetRefusalText, type CostBreakdown } from "./budget";
 import { builtinCommands } from "./builtins";
 import { buildChain, chainToTurns, loadMessageImages, MessageCache } from "./context";
-import { downloadImage as realDownloadImage, ImageFetchError } from "./images";
+import { downloadImage as realDownloadImage, ImageFetchError, isWikiImageUrl } from "./images";
 import { isThanksOrLaugh, parseInvocation } from "./invoke";
 import { hasHttpsLink, safeUrl, sanitizeMarkdown, splitMessage } from "./markup";
 import { cleanNick, fuzzyCharacter, matchCharacter, parseLinkIntent, readableName, type LinkIntent } from "./nick";
 import { accessDeniedText, apiSchema, hasAccess, Registry, validateInput } from "./registry";
-import type { Store } from "./store";
+import { utcDay, type Store } from "./store";
 
 export interface BotDeps {
   cfg: BotConfig;
@@ -45,6 +45,8 @@ export interface BotDeps {
 
 const THUMBS_UP = "👍";
 const CONFIRM_TTL_MS = 2 * 60_000;
+/** Сопоставлений ника моделью на человека в сутки (владельца не касается). */
+const NICK_LLM_PER_DAY = 6;
 const MAX_IMAGES = 4;
 const MAX_MODEL_IMAGES = 2;
 const TOOL_TIMEOUT_MS = 25_000;
@@ -339,12 +341,24 @@ export class Bot implements RealtimeHandlers {
     };
   }
 
+  /** Игрок: владелец или привязан хотя бы к одному персонажу. */
+  private isPlayerUser(userId: string): boolean {
+    return (!!this.d.cfg.ownerUserId && userId === this.d.cfg.ownerUserId) || this.d.store.getCharacters(userId).length > 0;
+  }
+
   private chatInfo(conv: EbConversation): ChatInfo {
+    // В группе ответ видят все участники: данные игроков — только если все они игроки
+    // (правило владельца), либо если так разрешено настройкой BOT_GROUP_PLAYER_DATA=requester.
+    const playerDataOk =
+      !conv.isGroup ||
+      this.d.cfg.groupPlayerData === "requester" ||
+      conv.participants.every((p) => p.userId === this.botId || this.isPlayerUser(p.userId));
     return {
       conversationId: conv.id,
       kind: conv.isGroup ? "group" : "dm",
       title: conv.title ?? null,
       participantCount: conv.participants.length,
+      playerDataOk,
     };
   }
 
@@ -434,9 +448,9 @@ export class Bot implements RealtimeHandlers {
   // ---------------------------------------------------------------- команды
   private async handleCommand(cmd: ChatCommand<any>, args: unknown, m: EbMessage, conv: EbConversation, requester: Requester, log: Logger): Promise<void> {
     const isDm = !conv.isGroup;
-    if (!hasAccess(cmd.access, requester, isDm)) {
+    if (!hasAccess(cmd.access, requester, isDm, this.chatInfo(conv).playerDataOk)) {
       log.info("command.denied", { cmd: cmd.name });
-      await this.sendReply(conv.id, m.id, accessDeniedText(cmd.access));
+      await this.sendReply(conv.id, m.id, accessDeniedText(cmd.access, requester));
       return;
     }
     const images: OutgoingImage[] = [];
@@ -511,23 +525,35 @@ export class Bot implements RealtimeHandlers {
   }
 
   // ---------------------------------------------------------------- привязка ников
-  private async resolveCharacter(nick: string, log: Logger): Promise<{ kind: "ok"; character: string; verified: boolean } | { kind: "ambiguous"; candidates: string[] } | { kind: "unknown"; known: string[] }> {
+  private async resolveCharacter(
+    nick: string,
+    requester: Requester,
+    log: Logger
+  ): Promise<{ kind: "ok"; character: string; verified: boolean } | { kind: "ambiguous"; candidates: string[] } | { kind: "unknown"; known: string[] } | { kind: "unavailable" }> {
     const dir = this.d.registry.characters;
     if (!dir) return { kind: "ok", character: nick, verified: false };
     let known: string[];
     try {
       known = await dir.listKnownCharacters();
     } catch (e) {
+      // Не сверили — не привязываем: привязка открывает данные игроков (места, склады).
       log.warn("characters.list_failed", { err: e as Error });
-      return { kind: "ok", character: nick, verified: false };
+      return { kind: "unavailable" };
     }
     const det = matchCharacter(nick, known);
     if (det.kind === "exact") return { kind: "ok", character: det.character, verified: true };
     if (det.kind === "ambiguous") return { kind: "ambiguous", candidates: det.candidates };
-    if (this.d.llm && this.budget.check("system:nick", true).ok) {
+    // Сопоставление моделью — за счёт спрашивающего и не чаще NICK_LLM_PER_DAY в сутки
+    // (иначе фразами с выдуманными никами можно выжечь общий дневной бюджет).
+    const day = utcDay(this.now());
+    const llmOk =
+      !!this.d.llm &&
+      this.budget.check(requester.userId, requester.isOwner).ok &&
+      (requester.isOwner || this.d.store.userKindCount(requester.userId, day, "nick_match") < NICK_LLM_PER_DAY);
+    if (this.d.llm && llmOk) {
       try {
         const r = await this.d.llm.matchCharacter(nick, known, AbortSignal.timeout(60_000));
-        this.recordCost("system:nick", "-", "nick_match", r.cost);
+        this.recordCost(requester.userId, "-", "nick_match", r.cost);
         if (r.character) return { kind: "ok", character: r.character, verified: true };
         return { kind: "unknown", known };
       } catch (e) {
@@ -549,6 +575,28 @@ export class Bot implements RealtimeHandlers {
       const n = this.d.store.unlinkUser(requester.userId);
       log.info("link.unlinked", { n });
       await reply(n ? "Отвязал. Я больше не считаю тебя никем из персонажей." : "Ты и так ни к кому не привязан.");
+      return;
+    }
+    if (intent.kind === "unlink_character") {
+      if (!requester.isOwner) {
+        await reply("Снимать чужие привязки может только владелец. Свою — «Еблуша, отвяжи меня».");
+        return;
+      }
+      const nick = cleanNick(intent.nick) ?? intent.nick;
+      const linked = this.d.store.allLinks().map((l) => l.character);
+      const exact = linked.find((c) => c.toLowerCase() === nick.toLowerCase());
+      const det = exact ? { kind: "exact" as const, character: exact } : matchCharacter(nick, linked);
+      if (det.kind === "ambiguous") {
+        await reply(`Похоже сразу на нескольких: ${det.candidates.map((c) => `**${c}**`).join(", ")}. Напиши ник точнее.`);
+        return;
+      }
+      if (det.kind !== "exact") {
+        await reply(`Персонаж «${nick}» ни к кому не привязан.`);
+        return;
+      }
+      const was = this.d.store.unlinkCharacter(det.character);
+      log.info("link.unlinked_by_owner", { from: was });
+      await reply(`Снял привязку: **${det.character}** больше ни за кем не числится.`);
       return;
     }
 
@@ -573,7 +621,11 @@ export class Bot implements RealtimeHandlers {
       await reply("Не понял ник. Напиши его как в игре, например: «Еблуша, мой ник в игре Парасюха».");
       return;
     }
-    const r = await this.resolveCharacter(nick, log);
+    const r = await this.resolveCharacter(nick, requester, log);
+    if (r.kind === "unavailable") {
+      await reply("Сервер игры сейчас не отвечает — не могу сверить ник. Попробуй чуть позже.");
+      return;
+    }
     if (r.kind === "ambiguous") {
       await reply(`Похоже сразу на нескольких: ${r.candidates.map((c) => `**${c}**`).join(", ")}. Напиши ник точнее.`);
       return;
@@ -587,6 +639,7 @@ export class Bot implements RealtimeHandlers {
       );
       return;
     }
+    const before = this.d.store.getCharacters(targetUserId);
     const res = this.d.store.link(targetUserId, r.character, {
       linkedBy: requester.userId,
       verified: r.verified,
@@ -608,6 +661,21 @@ export class Bot implements RealtimeHandlers {
         ? `Привязал: ${who} — ${name}.`
         : `Запомнил: ${who} — ${name}. Сверю с сервером, когда он увидит этого персонажа.`
     );
+    // Привязка — самозаявление, а она открывает данные игроков (места, склады). Владельцу —
+    // короткое уведомление о каждой новой самопривязке, чтобы чужака можно было снять.
+    if (!requester.isOwner && !before.includes(r.character)) {
+      await this.notifyOwner(
+        `Новая привязка: «${requester.displayName}» назвался персонажем ${name}${conv.isGroup ? ` (в группе «${cleanName(conv.title ?? "без названия")}»)` : ""}. Если это не он — «Еблуша, отвяжи персонажа ${r.character}».`
+      );
+    }
+  }
+
+  /** Сообщение владельцу в его личку с ботом (если такая беседа есть). Ошибки — только в журнал. */
+  private async notifyOwner(text: string): Promise<void> {
+    const owner = this.d.cfg.ownerUserId;
+    const dm = owner ? this.dmWith(owner) : null;
+    if (!dm) return;
+    await this.sendReply(dm.id, null, text).catch((e: unknown) => this.d.log.warn("owner.notify_failed", { err: e as Error }));
   }
 
   // ---------------------------------------------------------------- вопрос модели
@@ -639,7 +707,11 @@ export class Bot implements RealtimeHandlers {
     return lines.join("\n");
   }
 
-  private toolRuntime(ctx: ToolContext, modelImages: { count: number }): ToolRuntime {
+  /**
+   * modelImages.moduleData — в этом ответе уже были данные модулей (Valheim): дальше картинки
+   * по адресу от модели — только с вики (isWikiImageUrl), чтобы их нельзя было увести в адресе.
+   */
+  private toolRuntime(ctx: ToolContext, modelImages: { count: number; moduleData: boolean }): ToolRuntime {
     const reg = this.d.registry;
     const defs = [
       { name: ATTACH_IMAGE_TOOL.name, description: ATTACH_IMAGE_TOOL.description, input_schema: ATTACH_IMAGE_TOOL.input_schema as unknown as Record<string, unknown> },
@@ -652,6 +724,10 @@ export class Bot implements RealtimeHandlers {
           const url = typeof (input as { url?: unknown })?.url === "string" ? safeUrl((input as { url: string }).url) : null;
           if (!url) return { content: "Нужен прямой https-адрес картинки.", isError: true };
           if (modelImages.count >= MAX_MODEL_IMAGES) return { content: "Хватит картинок: больше двух не прикладываю.", isError: true };
+          if (modelImages.moduleData && !isWikiImageUrl(url)) {
+            ctx.log.info("image.blocked_after_module_data");
+            return { content: "В этом ответе уже есть данные сервера, поэтому картинки прикладываю только с вики (upload.wikimedia.org, static.wikia.nocookie.net, *.wiki.gg). Обойдись без картинки или возьми её с вики.", isError: true };
+          }
           try {
             const img = await this.fetchImage(url, { signal: ctx.signal });
             modelImages.count++;
@@ -664,9 +740,13 @@ export class Bot implements RealtimeHandlers {
         }
         const tool = reg.tools.get(name);
         if (!tool) return { content: `Нет инструмента ${name}.`, isError: true };
+        modelImages.moduleData = true;
         const bad = validateInput(input, tool.inputSchema);
         if (bad) return { content: JSON.stringify({ INVALID_INPUT: bad }), isError: true };
-        if (!hasAccess(tool.access, ctx.requester, ctx.chat.kind === "dm")) return { content: accessDeniedText(tool.access), isError: false };
+        if (!hasAccess(tool.access, ctx.requester, ctx.chat.kind === "dm", ctx.chat.playerDataOk)) {
+          ctx.log.info("tool.denied", { tool: name, audience: ctx.requester.isPlayer && tool.access === "player" });
+          return { content: accessDeniedText(tool.access, ctx.requester), isError: false };
+        }
         try {
           const r = await Promise.race([
             tool.run(input as Record<string, unknown>, ctx),
@@ -722,12 +802,13 @@ export class Bot implements RealtimeHandlers {
       if (turns.length === 0) return;
       const effort = chooseEffort(text);
       const ctx = this.toolContext(conv, requester, images, abort, log);
+      const imageState = { count: 0, moduleData: false };
       const res = await this.d.llm.answer({
         turns,
         contextNote: this.contextNote(conv, requester),
         effort,
         userKey: crypto.createHash("sha256").update(`eblusha-bot:${requester.userId}`).digest("hex").slice(0, 32),
-        tools: this.toolRuntime(ctx, { count: 0 }),
+        tools: this.toolRuntime(ctx, imageState),
         signal: abort,
         maxUsd: this.d.cfg.requestMaxUsd,
       });
@@ -741,6 +822,7 @@ export class Bot implements RealtimeHandlers {
         body = clean.text;
         for (const im of clean.images) {
           if (images.length >= MAX_MODEL_IMAGES) break;
+          if (imageState.moduleData && !isWikiImageUrl(im.url)) continue; // то же правило, что у attach_image
           try {
             images.push(await this.fetchImage(im.url, { signal: abort }));
           } catch {

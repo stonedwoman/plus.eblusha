@@ -147,6 +147,14 @@ export class Store {
     return { questions: Number(r.n) || 0, usd: Number(all.s) || 0 };
   }
 
+  /** Сколько обращений вида kind сделал человек за сутки (например, nick_match). */
+  userKindCount(userId: string, day: string, kind: string): number {
+    const r = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM usage WHERE day = ? AND user_id = ? AND kind = ?`)
+      .get(day, userId, kind) as { n: number };
+    return Number(r.n) || 0;
+  }
+
   monthSummary(month: string): { requests: number; usd: number; webSearches: number; users: number } {
     const r = this.db
       .prepare(
@@ -209,6 +217,13 @@ export class Store {
   unlinkUser(userId: string): number {
     const r = this.db.prepare(`DELETE FROM char_links WHERE user_id = ?`).run(userId);
     return Number(r.changes);
+  }
+
+  /** Снять привязку персонажа (владелец: «отвяжи персонажа X»). Возвращает, у кого он был. */
+  unlinkCharacter(character: string): string | null {
+    const holder = this.getLinkOwner(character);
+    if (holder) this.db.prepare(`DELETE FROM char_links WHERE character = ?`).run(character);
+    return holder;
   }
 
   // ---------- подтверждения владельца ----------

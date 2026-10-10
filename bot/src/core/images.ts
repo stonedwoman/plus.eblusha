@@ -104,6 +104,23 @@ export function sniffImage(buf: Buffer): { mime: OutgoingImage["mime"]; width: n
 
 export class ImageFetchError extends Error {}
 
+/**
+ * Картиночные хосты вики. Скачивание картинки — запрос с нашего сервера на адрес, который выбрала
+ * модель; если в ответе уже есть данные модулей (места игроков, склады), подсунутая страница могла
+ * бы попросить модель «приложить» https://чужой-сайт/x.png?d=<данные>. Поэтому после данных
+ * модулей качаем только отсюда (у web_fetch Anthropic похожее правило: только адреса из беседы).
+ */
+const WIKI_IMAGE_HOSTS = /^(?:upload\.wikimedia\.org|static\.wikia\.nocookie\.net|(?:[a-z0-9-]+\.)*wiki\.gg)$/i;
+
+export function isWikiImageUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.protocol === "https:" && WIKI_IMAGE_HOSTS.test(u.hostname);
+  } catch {
+    return false;
+  }
+}
+
 function getOnce(url: URL, timeoutMs: number, signal?: AbortSignal): Promise<{ status: number; location?: string; body?: Buffer; type?: string }> {
   return new Promise((resolve, reject) => {
     const req = https.get(

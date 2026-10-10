@@ -131,18 +131,36 @@ test("статус: с помощником и без него", async () => {
 });
 
 test("привязка ника свободной фразой: «Привязал: ты — IiApaCiOxa (Парасюха)»", async () => {
-  const { h, last } = await setup();
+  const { h } = await setup();
+  // после самопривязки бот ещё уведомляет владельца в его личке — смотрим ответ в своей беседе
+  const lastIn = (c: string) => h.api.sentMessages.filter((m) => m.conversationId === c).at(-1)!;
   await h.deliver(msg({ conversationId: DM_ALICE, senderId: ALICE, content: "Еблуша, мой ник в игре Парасюха" }));
-  assert.equal(last().content, "Привязал: ты — **IiApaCiOxa** (Парасюха).");
+  assert.equal(lastIn(DM_ALICE).content, "Привязал: ты — **IiApaCiOxa** (Парасюха).");
   assert.deepEqual(h.store.getCharacters(ALICE), ["IiApaCiOxa"]);
+  assert.match(lastIn(DM_OWNER).content!, /Новая привязка: .*\*\*IiApaCiOxa\*\* \(Парасюха\)/);
   await h.deliver(msg({ conversationId: DM_ALICE, senderId: ALICE, content: "Еблуша, я — куралеска" }));
-  assert.equal(last().content, "Привязал: ты — **Куралеска**.");
+  assert.equal(lastIn(DM_ALICE).content, "Привязал: ты — **Куралеска**.");
   assert.deepEqual(h.store.getCharacters(ALICE), ["Куралеска"], "перепривязка той же фразой");
   await h.deliver(msg({ conversationId: GROUP, senderId: BOB, content: "Еблуша, я в игре KYPAJIECKA" }));
-  assert.match(last().content!, /уже привязан к другому/);
+  assert.match(lastIn(GROUP).content!, /уже привязан к другому/);
   await h.deliver(msg({ conversationId: GROUP, senderId: BOB, content: "Еблуша, мой ник в игре роман" }));
-  assert.equal(last().content, "Привязал: ты — **РомаH** (Роман).");
+  assert.equal(lastIn(GROUP).content, "Привязал: ты — **РомаH** (Роман).");
   assert.equal(h.llm.matchCalls.length, 0, "похожие буквы решает нормализатор, модель не нужна");
+});
+
+test("кто в игре в группе с непривязанными: только число, даже если спрашивает игрок", async () => {
+  const { h } = await setup();
+  const results: Array<{ content: string; isError: boolean }> = [];
+  h.llm.reply = async (req) => {
+    results.push(await req.tools.run("valheim_players_online", {}));
+    results.push(await req.tools.run("valheim_where_is", { player: "Куралеска" }));
+    return { text: "ок" };
+  };
+  h.store.link(ALICE, "IiApaCiOxa", { linkedBy: ALICE, verified: true, replaceOwn: true, force: false });
+  await h.deliver(msg({ conversationId: GROUP, senderId: ALICE, content: "Еблуша, кто в вальхейме?" }));
+  assert.match(results[0]!.content, /В игре сейчас: 3\./);
+  assert.doesNotMatch(results[0]!.content, /IiApaCiOxa|РомаH/);
+  assert.match(results[1]!.content, /есть люди, не привязанные/);
 });
 
 test("инструменты через ядро: данные игры обёрнуты как недоверенные; непривязанному — отказ", async () => {

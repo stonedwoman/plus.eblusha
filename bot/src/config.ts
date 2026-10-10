@@ -55,6 +55,13 @@ export interface BotConfig {
 
   /** В личке отвечать и без «Еблуша,» (по умолчанию нет — правило владельца). */
   dmWithoutPrefix: boolean;
+  /**
+   * Данные игроков (access "player": где кто, склады, карточка карты) в ГРУППАХ.
+   * "all" (по умолчанию) — только если ВСЕ участники группы — игроки (привязаны или владелец):
+   * ответ в группе видят все, а правило владельца — данные игроков только игрокам.
+   * "requester" — достаточно, что игрок тот, кто спрашивает.
+   */
+  groupPlayerData: "all" | "requester";
   /** Модули: имена через запятую (valheim, …). Пусто — только ядро. */
   modules: string[];
   /** Часовой пояс для «сейчас» в подсказке модели. */
@@ -91,6 +98,8 @@ function bool(env: NodeJS.ProcessEnv, key: string, def: boolean): boolean {
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
   const level = str(env, "BOT_LOG_LEVEL", "info");
   if (!["debug", "info", "warn", "error"].includes(level)) throw new Error(`BOT_LOG_LEVEL=${level}`);
+  const groupPlayerData = str(env, "BOT_GROUP_PLAYER_DATA", "all").toLowerCase();
+  if (groupPlayerData !== "all" && groupPlayerData !== "requester") throw new Error(`BOT_GROUP_PLAYER_DATA=${groupPlayerData}: ждём all или requester`);
   return {
     apiUrl: str(env, "BOT_API_URL", "http://127.0.0.1:4000").replace(/\/+$/, ""),
     username: str(env, "BOT_USERNAME"),
@@ -113,6 +122,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     maxToolIterations: Math.max(1, Math.floor(num(env, "BOT_MAX_TOOL_ITERATIONS", 8))),
     maxConcurrentLlm: Math.max(1, Math.floor(num(env, "BOT_MAX_CONCURRENT_LLM", 3))),
     dmWithoutPrefix: bool(env, "BOT_DM_WITHOUT_PREFIX", false),
+    groupPlayerData,
     modules: (optStr(env, "BOT_MODULES") ?? "")
       .split(",")
       .map((s) => s.trim().toLowerCase())
@@ -137,5 +147,6 @@ export function describeConfig(c: BotConfig): Record<string, unknown> {
     userDailyUsd: c.userDailyUsd,
     modules: c.modules,
     dmWithoutPrefix: c.dmWithoutPrefix,
+    groupPlayerData: c.groupPlayerData,
   };
 }

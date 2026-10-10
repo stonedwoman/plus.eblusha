@@ -44,6 +44,9 @@ test("фразы привязки", () => {
     ["его ник в игре Парасюха", { kind: "link_other", nick: "Парасюха" }],
     ["она — Куралеска", { kind: "link_other", nick: "Куралеска" }],
     ["отвяжи меня", { kind: "unlink_self" }],
+    ["отвяжи мой ник", { kind: "unlink_self" }],
+    ["отвяжи персонажа IiApaCiOxa", { kind: "unlink_character", nick: "IiApaCiOxa" }],
+    ["отвяжи ник «Куралеска»", { kind: "unlink_character", nick: "Куралеска" }],
     ["кто я", { kind: "whoami" }],
   ];
   for (const [input, want] of cases) assert.deepEqual(parseLinkIntent(input), want, input);

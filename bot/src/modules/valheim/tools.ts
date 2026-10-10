@@ -4,13 +4,15 @@
  * Приватность — здесь, в коде, а не в просьбах к модели:
  *   - данные игроков (где кто, экипировка, склады, порталы, карточка карты) — access "player":
  *     ядро пускает только привязанных к персонажу и владельца;
- *   - «кто в игре» доступен всем, но непривязанным — только число;
+ *   - «кто в игре» доступен всем, но непривязанным — только число (и в группе, где есть
+ *     непривязанные: ответ увидят все — ChatInfo.playerDataOk);
  *   - игрок, снявший в игре галочку «показывать на карте» (hidden), — «место скрыто»
  *     и на карточке не рисуется (себя самого видно);
  *   - имена, метки порталов, надписи табличек пишут игроки → результат untrusted.
  */
 import type { BotTool, ToolContext, ToolResult } from "../api";
 import { fuzzyCharacter, matchCharacter, sameCharacter, skeletons } from "../../core/nick";
+import { GROUP_AUDIENCE_TEXT, playerDataVisible } from "../../core/registry";
 import { VhUnavailable } from "./client";
 import type { ValheimConfig } from "./config";
 import { evaluateGear, gearReport } from "./gear";
@@ -164,8 +166,10 @@ export function createTools(world: VhWorld, cfg: ValheimConfig): BotTool<any>[] 
       }
       const t = await world.time(ctx.signal).catch(() => null);
       const n = snap.players.length;
-      if (!ctx.requester.isPlayer) {
-        return `В игре сейчас: ${n}. ${timeLine(t)}\nИмена и места видят только игроки сервера — пусть привяжет ник: «Еблуша, мой ник в игре …».`;
+      if (!playerDataVisible(ctx)) {
+        return ctx.requester.isPlayer
+          ? `В игре сейчас: ${n}. ${timeLine(t)}\nКто именно и где — не скажу здесь: ${GROUP_AUDIENCE_TEXT.charAt(0).toLowerCase()}${GROUP_AUDIENCE_TEXT.slice(1)}`
+          : `В игре сейчас: ${n}. ${timeLine(t)}\nИмена и места видят только игроки сервера — пусть привяжет ник: «Еблуша, мой ник в игре …».`;
       }
       if (!n) return `Сейчас на сервере никого. ${timeLine(t)}`;
       const lines = [`В игре ${n}:`];
