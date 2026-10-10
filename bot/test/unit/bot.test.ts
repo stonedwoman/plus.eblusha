@@ -244,7 +244,7 @@ test("привязка ника: свободная фраза, похожие �
   const mod: BotModule = { name: "vh", characters: { listKnownCharacters: async () => ["РомаH", "Куралеска", "IiApaCiOxa"] } };
   const h = await harness({ modules: [mod] });
   await h.deliver(msg({ conversationId: DM_ALICE, senderId: ALICE, content: "Еблуша, мой ник в игре Парасюха" }));
-  assert.match(h.api.sent[0]!.content!, /в игре ты — \*\*IiApaCiOxa\*\*/);
+  assert.match(h.api.sent[0]!.content!, /^Привязал: ты — \*\*IiApaCiOxa\*\* \(Парасюха\)\.$/);
   assert.deepEqual(h.store.getCharacters(ALICE), ["IiApaCiOxa"]);
 
   await h.deliver(msg({ conversationId: DM_ALICE, senderId: ALICE, content: "Еблуша, я — куралеска" }));
@@ -274,7 +274,7 @@ test("владелец привязывает другого ответом на
   await h.deliver(msg({ conversationId: GROUP, senderId: ALICE, content: "Еблуша, его ник Парасюха", replyToId: bobMsg.id, replyTo: { id: bobMsg.id, content: bobMsg.content, senderId: BOB } }));
   assert.match(h.api.sent[0]!.content!, /только владелец/);
   await h.deliver(msg({ conversationId: GROUP, senderId: OWNER, content: "Еблуша, его ник Парасюха", replyToId: bobMsg.id, replyTo: { id: bobMsg.id, content: bobMsg.content, senderId: BOB } }));
-  assert.match(h.api.sent[1]!.content!, /Боб в игре — \*\*IiApaCiOxa\*\*/);
+  assert.match(h.api.sent[1]!.content!, /Привязал: Боб — \*\*IiApaCiOxa\*\* \(Парасюха\)/);
   assert.deepEqual(h.store.getCharacters(BOB), ["IiApaCiOxa"]);
 });
 

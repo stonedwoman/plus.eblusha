@@ -116,10 +116,57 @@ export function createValheimModule(): BotModule {
   человек; `ctx.requester.characters` / `isPlayer` — в каждом вызове инструмента;
 - подключение — строка в `FACTORIES` (`src/modules/index.ts`) и `BOT_MODULES=valheim`.
 
+## Модуль Valheim (`src/modules/valheim`, `BOT_MODULES=valheim`)
+
+Живой мир сервера Valheim «Koban» на stoned. Источники (бот с `network_mode: host`, всё — loopback):
+
+- **плагин карты WebMap** `127.0.0.1:3010` — работает всегда: игроки (WS-кадр `players`: x, z,
+  поворот, здоровье, dead/inBed/pvp, «скрыт»), `/time`, `/bosses`, `/structures` (порталы с метками,
+  кровати, станки, корабли, могилы), `/locations`, `/config`, `/options`, `/map` и `/fog` (PNG);
+- **закрытый канал мода для бота** `127.0.0.1:3011/bot/v1/*` (`X-Bot-Token`, ветка `bot-api` мода,
+  описание — `WebMap/Bot/API.md`) — точные игроки (высота, биом, подземелье, стамина, эйтр,
+  **экипировка**), **сундуки** со содержимым, кровати/станки/таблички, справочник предметов,
+  известные персонажи. Пока мод не выложен, модуль работает на данных карты, а экипировка и сундуки
+  честно отвечают «мод ещё не выложен»;
+- `valheim-join-code.json` через хаб — join-код и когда кто заходил;
+- помощник **valheim-ops** (`bot/ops`) — только для команд владельца.
+
+Инструменты модели (`tools.ts`, только чтение, `strict`):
+
+| Инструмент | Доступ | Что |
+|---|---|---|
+| `valheim_players_online` | все (непривязанным — только число) | кто в игре, где примерно, биом, здоровье, время в мире |
+| `valheim_where_is(player)` | игроки | место словами (у какого портала/базы/локации, сколько метров и куда), биом, подземелье, куда смотрит, здоровье, до дома; оффлайн — когда был; могилы |
+| `valheim_player_gear(player)` | игроки | надетое + «последний ли комплект» по убитым боссам (таблица тиров `gear.ts`, сверена с рецептами игры `UpgraderNArmor`) и что лучшее уже доступно |
+| `valheim_find_items(query, area)` | игроки | сундуки/повозки/корабли: что где лежит; `home` — главный дом и базы с кроватью или меткой «ДОМ…» (`home.ts`); слова по-русски с падежами → точные префабы (`search.ts`) |
+| `valheim_bosses_progress` | все | убиты/нет по порядку, следующий, найден ли алтарь (без координат) |
+| `valheim_world_time` | все | день, время, можно ли спать, набег, join-код |
+| `valheim_portals(near)` | игроки | метки, пары, где стоят, расстояния от игрока/дома |
+| `valheim_map_card(center, scale)` | игроки | PNG-карточка (`render.ts`, sharp): фрагмент `/map`, туман `/fog` притушен, стрелки игроков цветами сайта, порталы, дом, могилы, масштаб; ссылка на https://v.koban.uk/map/ |
+
+Приватность — в коде: данные игроков только привязанным (`access: "player"`); игрок, снявший в игре
+галочку «показывать на карте», — «место скрыто» и не рисуется (себе — видно); имена, метки порталов,
+таблички — `untrusted`. Игровой чат модуль не читает вовсе.
+
+Команды владельца (`commands.ts`, только владелец и только в личке, разбор регулярками, «да» ответом):
+`/eb сервер` (статус, без подтверждения), `/eb рестарт` (когда опустеет), `/eb рестарт сейчас`
+(предупреждает, кого выкинет), `/eb рестарт отмена`, `/eb бэкап`, `/eb мир`, `/eb мир <ключ> <значение>`.
+Выполняет их `valheim-ops` — у модели таких инструментов нет.
+
+| Переменная | По умолчанию | Что |
+|---|---|---|
+| `VALHEIM_MAP_URL` | `http://127.0.0.1:3010` | плагин карты |
+| `VALHEIM_BOT_URL` | `http://127.0.0.1:3011` | канал мода для бота |
+| `VALHEIM_BOT_TOKEN_FILE` | `/run/secrets/webmap-bot.token` | токен канала (в compose — файл `/DATA/valheim/config/bepinex/webmap-bot.token` только на чтение); после 401 перечитывается |
+| `VALHEIM_JOIN_JSON_URL` | `http://127.0.0.1:8090/v/valheim-join-code.json` | пусто — не брать |
+| `VALHEIM_PUBLIC_MAP_URL` | `https://v.koban.uk/map/` | ссылка для людей |
+| `VALHEIM_OPS_SOCKET` | `/run/valheim-ops/ops.sock` | пусто — команды только показывают статус |
+
 ## Тесты
 
 ```
 cd bot && npm test                                                        # юнит (node:test), без сети
+                                                                          # (Valheim — на снимках реальных ответов: test/fixtures/valheim)
 test/secret-env/secret-test.sh run test/bot-core.integration.test.ts     # ядро против настоящего backend
 ```
 
@@ -131,6 +178,11 @@ test/secret-env/secret-test.sh run test/bot-core.integration.test.ts     # яд�
 1. `npx ts-node src/scripts/seedBotUser.ts --env-file /DATA/eblusha-plus/.env.bot-account --owner-username <логин владельца>`
    (из корня репозитория; создаёт пользователя `eblusha_bot`, пароль генерируется и не печатается).
 2. Владелец кладёт `ANTHROPIC_API_KEY=…` в `/DATA/eblusha-plus/.env.bot` (600).
-3. `docker compose -f deploy/docker-compose.full.yml --env-file .env --profile bot up -d --build eblusha-bot`
+3. Valheim: токен канала мода должен существовать до запуска бота (compose его монтирует и без файла
+   не стартует). Если мод ещё не выкладывали — создать заранее, мод возьмёт этот же:
+   `f=/DATA/valheim/config/bepinex/webmap-bot.token; [ -f $f ] || (umask 077; openssl rand -hex 32 > $f; chown 1000:1000 $f)`.
+   Помощник для команд владельца — `bot/ops/README.md` (без него бот работает, но рестарт/бэкап/мир недоступны).
+4. `docker compose -f deploy/docker-compose.full.yml --env-file .env --profile bot up -d --build eblusha-bot`
    (сервис в профиле `bot`: общий `up -d` стека его не поднимает).
-4. Людям: добавить бота в контакты по его EBLID (`GET /api/status/me` бота) или в группу.
+5. Людям: добавить бота в контакты по его EBLID (`GET /api/status/me` бота) или в группу; игрокам —
+   привязать ник: «Еблуша, мой ник в игре …».

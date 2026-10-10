@@ -86,6 +86,19 @@ export function skeletons(raw: string): string[] {
   return [...out];
 }
 
+/**
+ * Как ник читается по-русски, если он набран латиницей или смесью: «IiApaCiOxa» → «Парасюха»,
+ * «РомаH» → «Роман», «Kurolesska» → «Куролесска». Обычная кириллица → null (читать нечего).
+ */
+export function readableName(nick: string): string | null {
+  if (!/[A-Za-z0-9|!@]/.test(nick)) return null;
+  const cyr = (s: string) => (s.length >= 2 && /^[А-Я]+$/.test(s) ? s : null);
+  const s = cyr(shapeSkeleton(nick)) ?? cyr(translitSkeleton(nick));
+  if (!s) return null;
+  const pretty = s[0] + s.slice(1).toLowerCase();
+  return pretty.toLowerCase() === nick.toLowerCase() ? null : pretty;
+}
+
 /** Тот же персонаж по детерминированным правилам. */
 export function sameCharacter(a: string, b: string): boolean {
   const sa = skeletons(a);

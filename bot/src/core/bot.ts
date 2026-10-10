@@ -25,7 +25,7 @@ import { buildChain, chainToTurns, loadMessageImages, MessageCache } from "./con
 import { downloadImage as realDownloadImage, ImageFetchError } from "./images";
 import { isThanksOrLaugh, parseInvocation } from "./invoke";
 import { hasHttpsLink, safeUrl, sanitizeMarkdown, splitMessage } from "./markup";
-import { cleanNick, fuzzyCharacter, matchCharacter, parseLinkIntent, type LinkIntent } from "./nick";
+import { cleanNick, fuzzyCharacter, matchCharacter, parseLinkIntent, readableName, type LinkIntent } from "./nick";
 import { accessDeniedText, apiSchema, hasAccess, Registry, validateInput } from "./registry";
 import type { Store } from "./store";
 
@@ -599,11 +599,14 @@ export class Bot implements RealtimeHandlers {
       return;
     }
     log.info("link.linked", { target: targetUserId, verified: r.verified, by: requester.userId });
-    const who = targetUserId === requester.userId ? "в игре ты" : `${targetName} в игре`;
+    const who = targetUserId === requester.userId ? "ты" : targetName;
+    // «Привязал: ты — IiApaCiOxa (Парасюха).» — в скобках как ник читается по-русски.
+    const reading = readableName(r.character);
+    const name = `**${r.character}**${reading ? ` (${reading})` : ""}`;
     await reply(
       r.verified
-        ? `Готово: ${who} — **${r.character}**.`
-        : `Запомнил: ${who} — **${r.character}**. Сверю с сервером, когда он увидит этого персонажа.`
+        ? `Привязал: ${who} — ${name}.`
+        : `Запомнил: ${who} — ${name}. Сверю с сервером, когда он увидит этого персонажа.`
     );
   }
 

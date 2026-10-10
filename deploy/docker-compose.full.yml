@@ -267,8 +267,23 @@ services:
     environment:
       BOT_API_URL: http://127.0.0.1:${BACKEND_PORT:-4000}
       BOT_DATA_DIR: /data
+      # Модуль Valheim (сервер Koban): bot/src/modules/valheim, переменные VALHEIM_* — bot/README.md.
+      BOT_MODULES: valheim
+      VALHEIM_BOT_TOKEN_FILE: /run/secrets/webmap-bot.token
+      VALHEIM_OPS_SOCKET: /run/valheim-ops/ops.sock
     volumes:
       - eblusha-bot-data:/data
+      # Токен закрытого канала мода WebMap для бота (X-Bot-Token, только чтение). Файл должен
+      # существовать ДО запуска (bot/README.md, «Выкладка»): без него compose откажется стартовать,
+      # а не создаст на его месте каталог (что сломало бы мод).
+      - type: bind
+        source: /DATA/valheim/config/bepinex/webmap-bot.token
+        target: /run/secrets/webmap-bot.token
+        read_only: true
+        bind:
+          create_host_path: false
+      # Сокет помощника valheim-ops (bot/ops): команды владельца — рестарт, бэкап, настройки мира.
+      - /run/valheim-ops:/run/valheim-ops
     read_only: true
     tmpfs:
       - /tmp

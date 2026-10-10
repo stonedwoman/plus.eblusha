@@ -8,9 +8,13 @@ COPY src ./src
 RUN npx tsc -p tsconfig.json && npm prune --omit=dev
 
 FROM node:22-alpine
+# Шрифт с кириллицей для карточек карты Valheim (SVG-подписи → PNG через sharp/librsvg).
+RUN apk add --no-cache fontconfig font-dejavu && fc-cache -f
+# Корень только для чтения: кэш fontconfig — во временном /tmp (tmpfs в compose).
 ENV NODE_ENV=production \
     BOT_DATA_DIR=/data \
-    BOT_ASSETS_DIR=/app/assets
+    BOT_ASSETS_DIR=/app/assets \
+    XDG_CACHE_HOME=/tmp/.cache
 WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist

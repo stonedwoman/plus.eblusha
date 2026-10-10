@@ -1,0 +1,26 @@
+# Помощник бота «Еблуша» для сервера Valheim (bot/ops/valheim-ops.py).
+# Установка — bot/ops/README.md. Работает от root: нужен docker и systemd-run.
+[Unit]
+Description=valheim-ops: команды владельца из бота Еблуша (белый список)
+After=docker.service network-online.target
+Wants=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/valheim-ops/valheim-ops.py
+Environment=OPS_SOCKET=/run/valheim-ops/ops.sock
+Environment=OPS_SOCKET_GID=1000
+Environment=OPS_LOG=/var/log/valheim-ops.log
+Restart=on-failure
+RestartSec=5
+# Сокет и каталог создаёт сам сервис. Каталог НЕ удаляется при остановке: контейнер бота
+# смонтировал именно его, новый каталог он увидел бы только после своего перезапуска.
+RuntimeDirectory=valheim-ops
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
