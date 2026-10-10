@@ -300,6 +300,14 @@ async function main() {
       assert.equal(await jobOf(m.id), null);
       assert.equal(m.metadata?.botAsk, undefined);
     });
+    await step("голосовое ответом боту (даже с botAsk:true) вне «Чата с Еблушей» → не обращение", async () => {
+      const voice = { type: "AUDIO", replyToId: answer.id, attachments: [{ url: "/api/files/voice-1.eblusha", type: "AUDIO" }] };
+      const v1 = await send(B, direct, "", voice);
+      assert.equal(await jobOf(v1.id), null);
+      const v2 = await send(B, direct, "", { ...voice, metadata: { botAsk: true } });
+      assert.equal(await jobOf(v2.id), null, "botAsk:true с голосовым не помогает — решает сервер");
+      assert.equal(v2.metadata?.botAsk, undefined);
+    });
     await step("ответ на сообщение бота из ДРУГОЙ беседы → не обращение", async () => {
       const m = await send(A, other, "отвечаю на чужое", { replyToId: answer.id });
       assert.equal(await jobOf(m.id), null);
@@ -487,6 +495,8 @@ async function main() {
       assert.deepEqual(j.conversation.participantIds, [A.id]);
       const r = await botPost({ grant: j.grant, content: "Привет!", replyToId: m.id });
       assert.equal(r.status, 201);
+      const v = await send(A, botChat, "", { type: "AUDIO", attachments: [{ url: "/api/files/voice-2.eblusha", type: "AUDIO" }] });
+      assert.equal((await jobOf(v.id))?.via, "botchat", "в «Чате с Еблушей» и голосовое — боту (он ответит «напиши текстом»)");
     });
     await step("уведомление в «Чат с Еблушей» по userId; выключен — 409 BOT_CHAT_DISABLED", async () => {
       const ok = await botPost({ userId: A.id, content: "Новая привязка: …", kind: "notice" });

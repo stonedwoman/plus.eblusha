@@ -245,7 +245,14 @@ export class Bot {
       return;
     }
     if (!text && !(m.attachments ?? []).some((a) => a.type === "IMAGE")) {
-      await this.sendReply(conv, m.id, "Я тут 🙂 Спрашивай: «Еблуша, …». Что умею — `/eb помощь`.", [], "notice");
+      // Голосовое приходит только из «Чата с Еблушей» (в остальных беседах сервер его боту не отдаёт).
+      const voice = m.type === "AUDIO" || (m.attachments ?? []).some((a) => a.type === "AUDIO");
+      const reply = voice
+        ? "Голосовые я пока не слушаю — напиши текстом 🙂"
+        : conv.kind === "bot"
+          ? "Я тут 🙂 Пиши вопрос — здесь можно без обращения. Что умею — `/eb помощь`."
+          : "Я тут 🙂 Спрашивай: «Еблуша, …». Что умею — `/eb помощь`.";
+      await this.sendReply(conv, m.id, reply, [], "notice");
       return;
     }
     // 3. команды

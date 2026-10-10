@@ -157,6 +157,9 @@ export function detectBotAddress(i: BotAddressInput): BotAddressVia | null {
   if (i.type === "SYSTEM" || i.type === "CALL") return null;
   if (i.botAsk === false) return null;
   if (i.isBotChat) return "botchat";
+  // Голосовое вне «Чата с Еблушей» — людям, даже ответом боту: слушать бот не умеет, а его «напиши текстом»
+  // в общей беседе — шум. Клиенты шлют с голосовым botAsk по-разному — решает сервер, одинаково для всех.
+  if (i.type === "AUDIO") return null;
   if (i.botAsk === true) return "explicit";
   if (i.isForward) return null;
   const text = i.content ?? "";

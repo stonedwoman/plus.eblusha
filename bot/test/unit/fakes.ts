@@ -226,7 +226,9 @@ export async function harness(opts: { cfg?: Partial<BotConfig>; modules?: BotMod
       const via =
         conv.kind === "bot"
           ? "botchat"
-          : stripNamePrefix(text) !== null
+          : m.type === "AUDIO"
+            ? null // голосовое вне «Чата с Еблушей» — людям (detectBotAddress сервера)
+            : stripNamePrefix(text) !== null
             ? "name"
             : stripCommandPrefix(text) !== null
               ? "command"

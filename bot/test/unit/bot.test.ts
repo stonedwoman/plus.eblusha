@@ -141,6 +141,30 @@ test("отказ модели → короткий отказ; ошибка → 
   assert.equal(h.api.typingEvents.filter((e) => e.startsWith("off:")).length, 2, "typing снят и после ошибки");
 });
 
+test("голосовое: в «Чате с Еблушей» — «напиши текстом» без модели; ответом боту в группе — боту не достаётся", async () => {
+  const h = await harness();
+  const voice = (conversationId: string, replyToId?: string) =>
+    msg({
+      conversationId,
+      senderId: ALICE,
+      content: null,
+      type: "AUDIO",
+      attachments: [{ id: "a", url: "/api/files/v.eblusha", type: "AUDIO" }],
+      ...(replyToId ? { replyToId } : {}),
+    } as never);
+  await h.deliver(voice(DM_ALICE));
+  assert.equal(h.llm.calls.length, 0);
+  assert.match(h.api.sent[0]!.content!, /Голосовые я пока не слушаю/);
+  assert.equal(h.api.sent[0]!.kind, "notice");
+  await h.deliver(msg({ conversationId: GROUP, senderId: ALICE, content: "Еблуша, привет" }));
+  const answer = h.api.sentMessages[h.api.sentMessages.length - 1]!;
+  const sentBefore = h.api.sent.length;
+  assert.equal(await h.deliver(voice(GROUP, answer.id)), null);
+  assert.equal(h.api.sent.length, sentBefore);
+  await h.deliver(msg({ conversationId: DM_ALICE, senderId: ALICE, content: "/eb" }));
+  assert.match(h.api.sent[h.api.sent.length - 1]!.content!, /можно без обращения/);
+});
+
 test("вопрос удалили, пока бот думал (409 BOT_TRIGGER_DELETED) — без извинений и повторов", async () => {
   const h = await harness();
   h.api.postError = new ApiError(409, "/api/bot/messages", "BOT_TRIGGER_DELETED", "HTTP 409 (BOT_TRIGGER_DELETED)");
