@@ -15,6 +15,17 @@ import { replayRecentReads } from "../push/readSync";
 import { cloudMessageWritesAllowed, isSecretConversation } from "../lib/secretLatch";
 import { acceptSecretThread, announceSecretThreadAccepted, declineSecretThread } from "../lib/secretThreadState";
 import { initCloudRealtime } from "../cloud/realtime";
+import {
+  LOCALTIME_REPORTS_PER_MINUTE,
+  USE_BUMP_MS,
+  bumpDeviceUse,
+  localTimeDeviceKey,
+  noteDeviceActivity,
+  reportDeviceTimeZone,
+  type LocalTimeInfo,
+  type LocalTimeShareState,
+  type ReportResult,
+} from "../lib/localTime";
 
 type PresenceGame = {
   discordAppId: string;
@@ -84,6 +95,14 @@ type ServerToClientEvents = {
   "secret:thread:created": (payload: { threadId: string; type: "SECRET" }) => void;
   "device:revoked": (payload: { deviceId: string; reason?: string }) => void;
   "session:new": (payload: { userId: string; deviceId: string; deviceName?: string; platform?: string; lastIp?: string; lastCity?: string; lastCountry?: string; ts: number; firstSeen?: boolean }) => void;
+  /**
+   * Местное время собеседника по беседе 1:1 сменилось: другой пояс (пересел на устройство в другом поясе,
+   * сменил пояс) или переключил «Показывать моё местное время». localTime: null — строку не показывать.
+   * Уходит в комнаты user:<id> всех его собеседников 1:1 (в группах не показывается). См. lib/localTime.ts.
+   */
+  "localtime:update": (payload: { userId: string; localTime: LocalTimeInfo | null }) => void;
+  /** Своя настройка «Показывать моё местное время» изменилась (с этого или другого устройства) — в user:<свой id>. */
+  "localtime:settings": (payload: LocalTimeShareState) => void;
 };
 
 type ClientToServerEvents = {
@@ -117,10 +136,21 @@ type ClientToServerEvents = {
   "presence:game:clear": (payload: { reason: PresenceGameClearReason }) => void;
   "presence:game:subscribe": (payload: { peerUserId: string }) => void;
   "presence:game:hello": (payload: { openPeers: string[] }) => void;
+  /**
+   * Часовой пояс этого устройства (IANA, напр. "Asia/Krasnoyarsk") — при КАЖДОМ подключении сокета и при
+   * смене пояса. shareLocalTime/shareLocalTimeAt — последнее известное клиенту состояние своей настройки
+   * (из ответа/события localtime:settings); сервер примет его, только если оно новее своего. Ответ (ack) —
+   * ReportResult или {ok:false, error:"rate_limited"}. См. lib/localTime.ts.
+   */
+  "localtime:report": (
+    payload: { timeZone: string; shareLocalTime?: boolean; shareLocalTimeAt?: number } | string,
+    ack?: (res: ReportResult | { ok: false; error: "rate_limited" }) => void,
+  ) => void;
 };
 
 type InterServerEvents = Record<string, never>;
-type SocketData = { userId: string; deviceId?: string };
+/** ltzActive — приложение этого сокета на переднем плане (presence:state); ltzBumpAt — последнее продление (lib/localTime). */
+type SocketData = { userId: string; deviceId?: string; ltzActive?: boolean; ltzBumpAt?: number };
 type CallPresenceSocket = {
   data: SocketData;
   rooms: Set<string>;
@@ -491,6 +521,39 @@ async function resolveDeviceId(socket: any, userId: string, jwtDid: string | nul
     }
   }
   return null;
+}
+
+/**
+ * Местное время (lib/localTime.ts): приложение этого сокета вышло на передний план или ушло с него.
+ * «Ушло» засчитывается устройству, только если у него не осталось другого активного сокета (две вкладки
+ * одного браузера, окно + трей). Повторное «активно» ничего не пишет — дальше продлевает хартбит.
+ */
+async function noteLocalTimeActivity(
+  io: Server<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>,
+  socket: { id: string; data: SocketData },
+  active: boolean,
+): Promise<void> {
+  const userId = socket.data.userId;
+  const deviceKey = localTimeDeviceKey(socket.data.deviceId);
+  const was = !!socket.data.ltzActive;
+  socket.data.ltzActive = active;
+  if (active) {
+    if (was) return;
+    socket.data.ltzBumpAt = Date.now();
+    await noteDeviceActivity({ userId, deviceKey, active: true });
+    return;
+  }
+  if (!was) return;
+  try {
+    const sockets = await io.in(userRoom(userId)).fetchSockets();
+    const stillActive = sockets.some(
+      (s) => s.id !== socket.id && localTimeDeviceKey(s.data?.deviceId) === deviceKey && s.data?.ltzActive === true,
+    );
+    if (stillActive) return;
+  } catch {
+    // не смогли проверить — считаем, что ушло (хуже не станет: следующий хартбит вернёт «активно»)
+  }
+  await noteDeviceActivity({ userId, deviceKey, active: false });
 }
 
 let ioInstance: Server<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData> | null = null;
@@ -1698,6 +1761,12 @@ export async function initSocket(
           // ignore heartbeat failures
         }
       })();
+      // Местное время: пока приложение на переднем плане, устройство остаётся «последним, которым пользуются».
+      const nowTs = Date.now();
+      if (socket.data.ltzActive && nowTs - (socket.data.ltzBumpAt ?? 0) >= USE_BUMP_MS) {
+        socket.data.ltzBumpAt = nowTs;
+        void bumpDeviceUse({ userId, deviceKey: localTimeDeviceKey(socket.data.deviceId), now: nowTs });
+      }
     }, PRESENCE_HEARTBEAT_MS);
     // initial heartbeat write (best-effort)
     void writeAggregatedPresenceRedis(userId);
@@ -1811,6 +1880,7 @@ export async function initSocket(
           }
           void recomputePresenceFromRedis(io, userId);
         })();
+        void noteLocalTimeActivity(io, socket, normalized.active);
       } catch (error) {
         logger.warn({ error, userId }, "Failed to handle presence:state");
       }
@@ -1829,6 +1899,39 @@ export async function initSocket(
         }
         void recomputePresenceFromRedis(io, userId);
       })();
+      void noteLocalTimeActivity(io, socket, normalized.active);
+    });
+
+    // Местное время: устройство сообщает свой часовой пояс (lib/localTime.ts). Строка — тоже принимается.
+    const localTimeReportTimes: number[] = [];
+    socket.on("localtime:report", (payload, ack) => {
+      const reply = typeof ack === "function" ? ack : () => {};
+      try {
+        const nowTs = Date.now();
+        while (localTimeReportTimes.length > 0 && nowTs - localTimeReportTimes[0]! > 60_000) localTimeReportTimes.shift();
+        if (localTimeReportTimes.length >= LOCALTIME_REPORTS_PER_MINUTE) {
+          reply({ ok: false, error: "rate_limited" });
+          return;
+        }
+        localTimeReportTimes.push(nowTs);
+        const p: Record<string, unknown> =
+          typeof payload === "string" ? { timeZone: payload } : payload && typeof payload === "object" ? (payload as any) : {};
+        void reportDeviceTimeZone({
+          userId,
+          deviceKey: localTimeDeviceKey(socket.data.deviceId),
+          timeZone: p.timeZone,
+          active: socket.data.ltzActive === true,
+          shareLocalTime: p.shareLocalTime,
+          shareLocalTimeAt: p.shareLocalTimeAt,
+          now: nowTs,
+        }).then(
+          (res) => reply(res),
+          () => reply({ ok: false, error: "error" }),
+        );
+      } catch (error) {
+        logger.warn({ error, userId }, "Failed to handle localtime:report");
+        reply({ ok: false, error: "error" });
+      }
     });
 
     socket.on("presence:game:update", ({ game }) => {
@@ -3007,6 +3110,9 @@ export async function initSocket(
           broadcastCallStatus(conversationId);
         }
       }
+
+      // Местное время: сокет был на переднем плане — устройство перестало быть «используемым сейчас».
+      if (socket.data.ltzActive) void noteLocalTimeActivity(io, socket, false);
 
       try {
         await removeSocketPresenceAndActivityRedis(userId, socket.id);

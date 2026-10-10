@@ -8,6 +8,7 @@ import { revokeRefreshTokensForDevice, revokeRefreshTokensForDevices } from "../
 import { kickDevice } from "../realtime/socket";
 import { buildIpLocation } from "../lib/ipLocation";
 import { resolveCurrentDeviceId } from "../lib/currentDevice";
+import { forgetDevice as forgetLocalTimeDevice } from "../lib/localTime";
 
 const router = Router();
 
@@ -516,6 +517,8 @@ router.delete("/:deviceId", async (req, res) => {
   } catch {
     // ignore
   }
+  // Пояс отозванного устройства больше не показываем собеседникам (не бросает).
+  void forgetLocalTimeDevice(userId, deviceId);
   res.json({ success: true });
 });
 
@@ -546,6 +549,9 @@ router.post("/revoke-others", async (req, res) => {
     others.map((row) => row.id),
     "device_revoked"
   );
+  void (async () => {
+    for (const row of others) await forgetLocalTimeDevice(userId, row.id);
+  })();
   res.json({ success: true });
 });
 

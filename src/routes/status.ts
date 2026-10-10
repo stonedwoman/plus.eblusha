@@ -5,6 +5,14 @@ import { getIO } from "../realtime/socket";
 import { z } from "zod";
 import { getMetricsSnapshot } from "../obs/metrics";
 import env from "../config/env";
+import { rateLimit } from "../middlewares/rateLimit";
+import { resolveCurrentDeviceId } from "../lib/currentDevice";
+import {
+  getOwnLocalTimeState,
+  localTimeDeviceKey,
+  reportDeviceTimeZone,
+  setShareLocalTime,
+} from "../lib/localTime";
 
 const router = Router();
 
@@ -110,6 +118,62 @@ router.patch("/me", async (req, res) => {
 
   res.json({ user: updated });
 });
+
+/**
+ * Местное время (lib/localTime.ts) — своя настройка и свой пояс.
+ *
+ * GET /status/me/local-time →
+ *   { shareLocalTime, shareLocalTimeAt, localTime: {timeZone, city, offsetMinutes} | null }
+ *   localTime — какой пояс сейчас видят собеседники (если настройка включена); null — ни одно устройство
+ *   ещё не сообщило пояс.
+ * PUT /status/me/local-time { shareLocalTime?: boolean, timeZone?: string } → то же, что GET.
+ *   shareLocalTime — переключить «Показывать моё местное время» (рассылается своим устройствам событием
+ *   localtime:settings, собеседникам — localtime:update). timeZone — пояс ЭТОГО устройства (X-Device-Id /
+ *   did токена), запасной путь к сокет-событию localtime:report; засчитывается как «пользовался сейчас»,
+ *   поэтому звать только с переднего плана. Негодный пояс — 400 INVALID_TIME_ZONE.
+ */
+router.get("/me/local-time", async (req, res) => {
+  const userId = (req as AuthedRequest).user!.id;
+  res.json(await getOwnLocalTimeState(userId));
+});
+
+const localTimeSchema = z.object({
+  shareLocalTime: z.boolean().optional(),
+  timeZone: z.string().min(1).max(64).optional(),
+});
+
+router.put(
+  "/me/local-time",
+  rateLimit({ name: "local_time_put", windowMs: 60_000, max: 30 }),
+  async (req, res) => {
+    const userId = (req as AuthedRequest).user!.id;
+    const parsed = localTimeSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ message: "Invalid payload" });
+      return;
+    }
+    const { shareLocalTime, timeZone } = parsed.data;
+    if (timeZone !== undefined) {
+      const deviceId = await resolveCurrentDeviceId(req);
+      const result = await reportDeviceTimeZone({
+        userId,
+        deviceKey: localTimeDeviceKey(deviceId),
+        timeZone,
+        use: true,
+      });
+      if (!result.ok) {
+        if (result.error === "invalid_time_zone") {
+          res.status(400).json({ message: "Invalid time zone", code: "INVALID_TIME_ZONE" });
+        } else {
+          res.status(503).json({ message: "Local time is temporarily unavailable" });
+        }
+        return;
+      }
+    }
+    if (shareLocalTime !== undefined) await setShareLocalTime(userId, shareLocalTime);
+    res.json(await getOwnLocalTimeState(userId));
+  },
+);
 
 // POST /status/me/avatars/remove { url } — drop a past avatar from the owner's history.
 router.post("/me/avatars/remove", async (req, res) => {

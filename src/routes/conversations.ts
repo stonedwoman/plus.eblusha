@@ -18,6 +18,7 @@ import logger from "../config/logger";
 import { extractFirstUrl } from "../lib/linkPreview";
 import { enqueueLinkPreview, enqueuePush } from "../jobs/queue";
 import { rateLimit } from "../middlewares/rateLimit";
+import { getPublicLocalTimes } from "../lib/localTime";
 import {
   forwardedHostedBlobUrlLikely,
   hostedForwardedAttachmentBlobExists,
@@ -508,6 +509,29 @@ router.get("/", async (req, res) => {
       return { ...cp, unreadCount } as any;
     })
   );
+
+  // Местное время собеседника — только в беседах 1:1 и только у собеседника (lib/localTime.ts):
+  // participants[].user.localTime = {timeZone, city, offsetMinutes} | null. В группах поля нет.
+  try {
+    const peerIds = new Set<string>();
+    for (const cp of withUnread) {
+      const conv = cp.conversation;
+      if (!conv || conv.isGroup) continue;
+      for (const p of conv.participants ?? []) if (p.userId !== userId) peerIds.add(p.userId);
+    }
+    if (peerIds.size > 0) {
+      const times = await getPublicLocalTimes(Array.from(peerIds));
+      for (const cp of withUnread) {
+        const conv = cp.conversation;
+        if (!conv || conv.isGroup) continue;
+        for (const p of conv.participants ?? []) {
+          if (p.userId !== userId && p.user) p.user.localTime = times.get(p.userId) ?? null;
+        }
+      }
+    }
+  } catch (error) {
+    logger.warn({ error, userId }, "localtime: conversation list enrichment failed");
+  }
 
   res.json({ conversations: withUnread });
 });
