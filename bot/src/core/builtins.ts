@@ -16,8 +16,10 @@ export function builtinCommands(budget: Budget, registry: Registry): ChatCommand
       const lines = [
         "**Я — Еблуша.** Отвечаю на что угодно, умею искать в интернете и давать ссылки на источники.",
         "",
-        "- Позвать: начни сообщение с «Еблуша,» (или «Еблуша:», «Еблуша!») или с `/eb`.",
+        "- Позвать в любой беседе: начни сообщение с «Еблуша,» (или «Еблуша:», «Еблуша!») или с `/eb`.",
         "- Продолжить разговор: ответь (reply) на моё сообщение.",
+        "- Остальную переписку я не вижу — только то, что адресовано мне, и цепочку ответов.",
+        "- Личный «Чат с Еблушей» (включается в настройках): там можно без обращения.",
         "- «Спасибо» в ответ — поставлю 👍.",
         "- В секретных чатах я не работаю.",
       ];
@@ -26,7 +28,7 @@ export function builtinCommands(budget: Budget, registry: Registry): ChatCommand
         lines.push("- Владельцу: привязать другого — «Еблуша, его ник …» ответом на его сообщение; снять чужую привязку — «Еблуша, отвяжи персонажа …».");
       }
       const extra = registry.commands
-        .filter((c) => c.help && (c.access !== "owner" || (ctx.requester.isOwner && ctx.chat.kind === "dm")))
+        .filter((c) => c.help && (c.access !== "owner" || (ctx.requester.isOwner && ctx.chat.kind === "bot")))
         .map((c) => `- ${c.help}`);
       if (extra.length) lines.push("", "**Команды:**", ...extra);
       return { text: lines.join("\n") };

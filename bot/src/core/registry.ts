@@ -99,27 +99,28 @@ export function validateInput(input: unknown, s: JsonSchemaObject): string | nul
 }
 
 /**
- * Доступ к команде/инструменту. playerDataOk — можно ли показывать данные игроков в этой беседе
- * (ChatInfo.playerDataOk: в группе с непривязанными участниками — нельзя, ответ увидят все).
+ * Доступ к команде/инструменту. isPrivate — личный «Чат с Еблушей» (ChatInfo.kind === "bot");
+ * playerDataOk — можно ли показывать данные игроков в этой беседе (ChatInfo.playerDataOk: в беседе
+ * с непривязанными участниками — нельзя, ответ увидят все).
  */
-export function hasAccess(access: Access, r: Requester, isDm: boolean, playerDataOk = true): boolean {
+export function hasAccess(access: Access, r: Requester, isPrivate: boolean, playerDataOk = true): boolean {
   if (access === "anyone") return true;
-  if (access === "player") return r.isPlayer && (isDm || playerDataOk);
-  return r.isOwner && isDm;
+  if (access === "player") return r.isPlayer && (isPrivate || playerDataOk);
+  return r.isOwner && isPrivate;
 }
 
 /** Данные игроков видны: спрашивает игрок, и ответ не уйдёт непривязанным людям. */
 export function playerDataVisible(ctx: { requester: Requester; chat: Pick<ChatInfo, "kind" | "playerDataOk"> }): boolean {
-  return ctx.requester.isPlayer && (ctx.chat.kind === "dm" || ctx.chat.playerDataOk);
+  return ctx.requester.isPlayer && (ctx.chat.kind === "bot" || ctx.chat.playerDataOk);
 }
 
 export const GROUP_AUDIENCE_TEXT =
-  "В этой группе есть люди, не привязанные к игровому персонажу, а ответ увидят все. Данные игроков покажу в личке с ботом (или в группе, где привязаны все).";
+  "В этой беседе есть люди, не привязанные к игровому персонажу, а ответ увидят все. Данные игроков покажу в личном «Чате с Еблушей» (включается в настройках) или в беседе, где привязаны все.";
 
 export function accessDeniedText(access: Access, r?: Requester): string {
   if (access === "player") {
     if (r?.isPlayer) return GROUP_AUDIENCE_TEXT;
     return "Это видят только игроки сервера. Привяжи свой ник: «Еблуша, мой ник в игре …».";
   }
-  return "Это может только владелец, и только в личке с ботом.";
+  return "Это может только владелец, и только в личном «Чате с Еблушей».";
 }

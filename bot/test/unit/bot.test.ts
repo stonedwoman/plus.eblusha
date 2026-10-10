@@ -2,9 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chooseEffort } from "../../src/core/bot";
 import type { BotModule, ChatCommand } from "../../src/modules/api";
-import { ALICE, BOB, BOT, DM_ALICE, DM_OWNER, GROUP, harness, msg, OWNER, SECRET } from "./fakes";
-
-const tick = () => new Promise((r) => setTimeout(r, 30));
+import { ALICE, BOB, BOT, DM_ALICE, DM_OWNER, GROUP, harness, msg, OWNER, PAIR } from "./fakes";
 
 test("вызов: typing → модель → ответ ответом на вопрос, разметка почищена", async () => {
   const h = await harness();
@@ -26,8 +24,10 @@ test("вызов: typing → модель → ответ ответом на в�
   assert.equal(out.replyToId, q.id);
   assert.equal(out.type, "TEXT");
   assert.equal(out.content, "Вот **ответ**:\n- **1** — b: 2");
-  assert.equal(h.rt.events[0], `start:${GROUP}`);
-  assert.equal(h.rt.events[h.rt.events.length - 1], `stop:${GROUP}`);
+  assert.equal(out.kind, "answer");
+  assert.ok(out.grant && !out.userId, "ответ — по разрешению из задачи");
+  assert.equal(h.api.typingEvents[0], `on:${GROUP}`);
+  assert.equal(h.api.typingEvents[h.api.typingEvents.length - 1], `off:${GROUP}`);
   // расход учтён
   assert.equal(h.store.userDay(ALICE, new Date().toISOString().slice(0, 10)).questions, 1);
 });
@@ -40,13 +40,19 @@ test("без обращения и не ответом боту — молчим
   assert.equal(h.api.sent.length, 0);
 });
 
-test("в личке без префикса — одна подсказка в неделю, модель не зовём", async () => {
+test("«Чат с Еблушей»: без обращения — вопрос модели; личка двух людей без обращения — боту не достаётся", async () => {
   const h = await harness();
-  await h.deliver(msg({ conversationId: DM_ALICE, senderId: ALICE, content: "привет" }));
-  await h.deliver(msg({ conversationId: DM_ALICE, senderId: ALICE, content: "алло" }));
-  assert.equal(h.llm.calls.length, 0);
-  assert.equal(h.api.sent.length, 1);
-  assert.match(h.api.sent[0]!.content!, /Еблуша,/);
+  const job = await h.deliver(msg({ conversationId: DM_ALICE, senderId: ALICE, content: "какая погода в Бухаресте?" }));
+  assert.equal(job?.via, "botchat");
+  assert.equal(h.llm.calls.length, 1);
+  assert.deepEqual(h.llm.calls[0]!.turns, [{ role: "user", text: "Алиса: какая погода в Бухаресте?" }]);
+  assert.match(h.llm.calls[0]!.contextNote, /«Чат с Еблушей» — ответ видит только этот человек/);
+  assert.equal(h.api.sent[0]!.conversationId, DM_ALICE);
+
+  assert.equal(await h.deliver(msg({ conversationId: PAIR, senderId: BOB, content: "привет, Алиса" })), null);
+  await h.deliver(msg({ conversationId: PAIR, senderId: BOB, content: "Еблуша, рассуди нас" }));
+  assert.equal(h.llm.calls.length, 2);
+  assert.match(h.llm.calls[1]!.contextNote, /личная переписка двух людей\. Ответ увидят оба/);
 });
 
 test("продолжение по цепочке ответов: история уходит модели по ролям", async () => {
@@ -80,36 +86,28 @@ test("«спасибо» в ответ боту → 👍, без модели и
   const t = msg({ conversationId: GROUP, senderId: ALICE, content: "ахахах спасибо 😂", replyToId: a1.id, replyTo: { id: a1.id, content: a1.content, senderId: BOT } });
   await h.deliver(t);
   assert.equal(h.llm.calls.length, 1);
-  assert.deepEqual(h.api.reactions, [{ messageId: t.id, emoji: "👍" }]);
+  assert.deepEqual(h.api.reactions, [{ conversationId: GROUP, messageId: t.id, emoji: "👍" }]);
   assert.equal(h.api.sent.length, 1);
 });
 
-test("секретные чаты: бот туда не пишет и не читает; приглашение отклоняется", async () => {
-  const h = await harness();
-  // при старте висящий PENDING-тред уже отклонён
-  assert.deepEqual(h.api.declined, [SECRET]);
-  await h.deliver(msg({ conversationId: SECRET, senderId: ALICE, content: "Еблуша, привет" }));
+test("писать бот может только по разрешению: протухшая задача — молча мимо, дубль — один ответ", async () => {
+  const now = Date.parse("2026-10-10T12:00:00Z");
+  const h = await harness({ now: () => now });
+  // задача пролежала в очереди 11 минут (бот лежал) — вопрос неактуален, отвечать не будем
+  await h.deliver(msg({ conversationId: GROUP, senderId: ALICE, content: "Еблуша, ты тут?" }), { enqueuedAt: now - 11 * 60_000 });
+  // разрешение вот-вот истечёт — сообщение уже не примут
+  await h.deliver(msg({ conversationId: GROUP, senderId: ALICE, content: "Еблуша, а сейчас?" }), { grantExpiresAt: now + 5_000 });
   assert.equal(h.llm.calls.length, 0);
   assert.equal(h.api.sent.length, 0);
-  assert.equal(await h.bot.sendReply(SECRET, null, "тест"), null);
-
-  // новое приглашение → отказ + короткая записка в обычную личку (раз в сутки)
-  h.bot.onSecretThread({ conversationId: SECRET, fromUserId: ALICE });
-  await tick();
-  h.bot.onSecretThread({ conversationId: SECRET, fromUserId: ALICE });
-  await tick();
-  assert.equal(h.api.declined.filter((x) => x === SECRET).length, 3);
+  // та же задача дважды (повтор доставки) — ответ один
+  const q2 = msg({ conversationId: GROUP, senderId: ALICE, content: "Еблуша, раз?" });
+  await h.deliver(q2);
+  await h.deliver(q2);
+  assert.equal(h.llm.calls.length, 1);
   assert.equal(h.api.sent.length, 1);
-  assert.equal(h.api.sent[0]!.conversationId, DM_ALICE);
-  assert.match(h.api.sent[0]!.content!, /секретных чатах я не работаю/);
-});
-
-test("звонок: в личке отклоняем, групповой не трогаем", async () => {
-  const h = await harness();
-  h.bot.onIncomingCall({ conversationId: DM_ALICE, fromUserId: ALICE });
-  h.bot.onIncomingCall({ conversationId: GROUP, fromUserId: ALICE });
-  await tick();
-  assert.deepEqual(h.rt.events, [`decline:${DM_ALICE}`]);
+  // своё сообщение бот не обрабатывает, даже если его подсунули задачей
+  await h.deliver(msg({ conversationId: DM_ALICE, senderId: BOT, content: "Еблуша, эхо", isBot: true }));
+  assert.equal(h.llm.calls.length, 1);
 });
 
 test("лимиты: исчерпан личный лимит — шаблон без модели; владельца не касается", async () => {
@@ -139,7 +137,7 @@ test("отказ модели → короткий отказ; ошибка → 
   };
   await h.deliver(msg({ conversationId: DM_ALICE, senderId: ALICE, content: "Еблуша, ещё?" }));
   assert.match(h.api.sent[1]!.content!, /сломалось/);
-  assert.equal(h.rt.events.filter((e) => e.startsWith("stop:")).length, 2, "typing снят и после ошибки");
+  assert.equal(h.api.typingEvents.filter((e) => e.startsWith("off:")).length, 2, "typing снят и после ошибки");
 });
 
 test("источники дописываются, если модель их не дала", async () => {
@@ -465,34 +463,51 @@ test("инструменты модулей: доступ игрокам, про
   assert.match(h.llm.calls[1]!.contextNote, /Персонажи Valheim этого человека: «IiApaCiOxa»/);
 });
 
-test("докачка после обрыва сокета: отвечает на пропущенное, но не на уже отвеченное", async () => {
-  const h = await harness();
-  h.bot.onDisconnect();
-  const old = msg({ conversationId: DM_ALICE, senderId: ALICE, content: "Еблуша, старое?", createdAt: new Date(Date.now() - 20 * 60_000).toISOString() });
-  const answered = msg({ conversationId: DM_ALICE, senderId: ALICE, content: "Еблуша, уже отвечено?" });
-  const botAns = msg({ conversationId: DM_ALICE, senderId: BOT, content: "давно ответил", replyToId: answered.id });
-  const thanked = msg({ conversationId: DM_ALICE, senderId: ALICE, content: "Еблуша, спасибо", reactions: [{ userId: BOT, emoji: "👍" }] });
-  const missed = msg({ conversationId: GROUP, senderId: BOB, content: "Еблуша, ты тут?" });
-  for (const m of [old, answered, botAns, thanked, missed]) h.api.addHistory(m);
-  h.bot.onConnect();
-  await tick();
-  await h.bot.idle();
-  assert.equal(h.llm.calls.length, 1);
-  assert.equal(h.api.sent.length, 1);
-  assert.equal(h.api.sent[0]!.replyToId, missed.id);
-  // повторное подключение ничего не дублирует
-  h.bot.onDisconnect();
-  h.bot.onConnect();
-  await tick();
-  await h.bot.idle();
-  assert.equal(h.llm.calls.length, 1);
+test("уведомление владельцу — в его «Чат с Еблушей»; выключен — молча не шлём", async () => {
+  const mod: BotModule = { name: "vh", characters: { listKnownCharacters: async () => ["IiApaCiOxa"] } };
+  const h = await harness({ modules: [mod] });
+  h.api.botChatOn.delete(OWNER);
+  await h.deliver(msg({ conversationId: GROUP, senderId: BOB, content: "Еблуша, мой ник в игре Парасюха" }));
+  assert.match(h.api.sent.at(-1)!.content!, /Привязал: ты — \*\*IiApaCiOxa\*\*/);
+  assert.equal(h.api.sent.filter((s) => s.conversationId === DM_OWNER).length, 0);
+  assert.equal(await h.bot.coreServices().notify(OWNER, "тест"), false);
+  h.api.botChatOn.add(OWNER);
+  assert.equal(await h.bot.coreServices().notify(OWNER, "тест"), true);
+  assert.equal(h.api.sent.at(-1)!.conversationId, DM_OWNER);
+  assert.equal(h.api.sent.at(-1)!.userId, OWNER);
+  assert.equal(h.api.sent.at(-1)!.kind, "notice");
 });
 
-test("докачка после рестарта бота — от последней отметки, не дальше 10 минут", async () => {
-  const h1 = await harness();
-  await h1.deliver(msg({ conversationId: DM_ALICE, senderId: ALICE, content: "просто так" }));
-  const mark = h1.store.getMark("lastSeen");
-  assert.ok(mark && Math.abs(mark - Date.now()) < 5000, "отметка последнего сообщения сохранена");
+test("данные игроков в личке двух людей — только если оба игроки", async () => {
+  let ran = 0;
+  const mod: BotModule = {
+    name: "vh",
+    characters: { listKnownCharacters: async () => ["IiApaCiOxa"] },
+    tools: [
+      {
+        name: "valheim_where",
+        description: "где игрок",
+        access: "player",
+        inputSchema: { type: "object", properties: {}, required: [], additionalProperties: false },
+        run: async () => {
+          ran++;
+          return "у портала";
+        },
+      },
+    ],
+  };
+  const h = await harness({ modules: [mod] });
+  h.store.link(ALICE, "IiApaCiOxa", { linkedBy: ALICE, verified: true, replaceOwn: true, force: false });
+  const out: string[] = [];
+  h.llm.reply = async (req) => {
+    out.push((await req.tools.run("valheim_where", {})).content);
+    return { text: "ок" };
+  };
+  await h.deliver(msg({ conversationId: PAIR, senderId: ALICE, content: "Еблуша, где я?" }));
+  assert.equal(ran, 0, "Боб не игрок, а ответ увидит и он");
+  assert.match(out[0]!, /есть люди, не привязанные/);
+  await h.deliver(msg({ conversationId: DM_ALICE, senderId: ALICE, content: "где я?" }));
+  assert.equal(ran, 1, "в личном чате с ботом — можно");
 });
 
 test("усилие по задаче", () => {

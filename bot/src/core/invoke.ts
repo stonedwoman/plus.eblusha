@@ -1,18 +1,11 @@
 /**
- * Кому адресовано сообщение.
+ * Разбор обращения на стороне бота.
  *
- * Правила владельца:
- *  - вызов — сообщение НАЧИНАЕТСЯ с «Еблуша» + «,» / «:» / «!» (регистр и е/ё не важны,
- *    похожие латинские буквы тоже прощаем), или с команды /eb, /еб;
- *  - продолжение — ТОЛЬКО ответом (replyTo) на сообщение бота;
- *  - «спасибо», «ахаха» и т.п. в ответ боту — реакция 👍, а не текст.
- * В личке без префикса бот молчит (если не включён BOT_DM_WITHOUT_PREFIX).
+ * Решает, адресовано ли сообщение боту, СЕРВЕР (src/lib/systemBot.ts → detectBotAddress, те же
+ * правила владельца): «Еблуша,» / «Еблуша:» / «Еблуша!» в начале (регистр, е/ё и похожая латиница
+ * не важны), /eb, /еб, ответ на сообщение бота, «Чат с Еблушей». Бот получает только такие сообщения
+ * и здесь лишь срезает обращение с текста (invocationText) и узнаёт благодарность («спасибо» → 👍).
  */
-
-export type Invocation =
-  | { kind: "none" }
-  | { kind: "invoke"; text: string; via: "name" | "command" | "dm" }
-  | { kind: "continue"; text: string };
 
 /** Сворачивает первые символы к виду «еблуша»: регистр, ё, похожая латиница. */
 function foldHead(s: string): string {
@@ -36,25 +29,17 @@ export function stripNamePrefix(content: string): string | null {
   return after.slice(p[0].length).trim();
 }
 
-/** «/eb …», «/еб …» → остаток (может быть пустым), иначе null. */
+/** «/eb …», «/еб …» (любой регистр, как на сервере) → остаток (может быть пустым), иначе null. */
 export function stripCommandPrefix(content: string): string | null {
-  const m = /^\s*\/(?:eb|еб|ЕБ|EB|Eb|Еб)(?=$|\s)/u.exec(content);
+  const m = /^\s*\/(?:eb|еб)(?=$|\s)/iu.exec(content);
   if (!m) return null;
   return content.slice(m[0].length).trim();
 }
 
-export function parseInvocation(
-  content: string | null | undefined,
-  opts: { botId: string; replyToSenderId?: string | null; isDm: boolean; dmWithoutPrefix: boolean }
-): Invocation {
-  const text = (content ?? "").trim();
-  const byName = stripNamePrefix(text);
-  if (byName !== null) return { kind: "invoke", text: byName, via: "name" };
-  const byCmd = stripCommandPrefix(text);
-  if (byCmd !== null) return { kind: "invoke", text: byCmd, via: "command" };
-  if (opts.replyToSenderId && opts.replyToSenderId === opts.botId) return { kind: "continue", text };
-  if (opts.isDm && opts.dmWithoutPrefix && text.length > 0) return { kind: "invoke", text, via: "dm" };
-  return { kind: "none" };
+/** Текст вопроса без обращения: «Еблуша, …» / «/eb …» срезаются, остальное — как есть. */
+export function invocationText(content: string | null | undefined): string {
+  const t = (content ?? "").trim();
+  return stripNamePrefix(t) ?? stripCommandPrefix(t) ?? t;
 }
 
 const THANKS_CORE = new Set([

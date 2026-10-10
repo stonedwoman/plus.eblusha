@@ -86,7 +86,7 @@ test("проверка входа инструмента и схема для st
   assert.ok(api.includes('"additionalProperties":false'));
 });
 
-test("доступ: anyone / player / owner (только в личке)", () => {
+test("доступ: anyone / player / owner (только в личном «Чате с Еблушей»)", () => {
   const r = (o: Partial<Requester>): Requester => ({ userId: "u", displayName: "u", isOwner: false, characters: [], isPlayer: false, ...o });
   assert.equal(hasAccess("anyone", r({}), false), true);
   assert.equal(hasAccess("player", r({}), true), false);
@@ -98,8 +98,9 @@ test("доступ: anyone / player / owner (только в личке)", () =>
   assert.equal(hasAccess("player", r({ isPlayer: true, characters: ["X"] }), true, false), true);
   assert.equal(hasAccess("anyone", r({}), false, false), true);
   assert.equal(playerDataVisible({ requester: r({ isPlayer: true }), chat: { kind: "group", playerDataOk: false } }), false);
-  assert.equal(playerDataVisible({ requester: r({ isPlayer: true }), chat: { kind: "dm", playerDataOk: false } }), true);
-  assert.equal(playerDataVisible({ requester: r({}), chat: { kind: "dm", playerDataOk: true } }), false);
+  assert.equal(playerDataVisible({ requester: r({ isPlayer: true }), chat: { kind: "bot", playerDataOk: false } }), true);
+  assert.equal(playerDataVisible({ requester: r({ isPlayer: true }), chat: { kind: "dm", playerDataOk: false } }), false, "личку двух людей видят оба");
+  assert.equal(playerDataVisible({ requester: r({}), chat: { kind: "bot", playerDataOk: true } }), false);
   assert.match(accessDeniedText("player", r({ isPlayer: true })), /есть люди, не привязанные/);
   assert.match(accessDeniedText("player", r({})), /только игроки сервера/);
 });

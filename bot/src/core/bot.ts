@@ -1,29 +1,33 @@
 /**
- * Ядро бота: событие → решение → ответ.
+ * Ядро бота: задача из очереди → решение → ответ.
  *
- * Порядок разбора входящего сообщения (только обычные беседы; секретные — никогда):
- *   1. адресовано ли боту (core/invoke.ts): «Еблуша,»/«/eb» или ответ на сообщение бота;
- *   2. «да»/«нет» владельца в ответ на вопрос-подтверждение;
- *   3. «спасибо»/смех → реакция 👍;
- *   4. детерминированные команды (встроенные и модулей) — с проверкой доступа;
- *   5. привязка ника свободной фразой;
- *   6. вопрос модели: лимиты → typing → цепочка ответов → Claude → разметка → ответ (+картинки).
- * Журнал — без текста сообщений.
+ * Бот — часть системы, а не участник бесед. Сервер (src/lib/systemBot.ts) кладёт в очередь `bot`
+ * только сообщение, адресованное боту, в обычной беседе («Еблуша,»/«/eb», ответ на сообщение бота,
+ * «Чат с Еблушей»), вместе с цепочкой ответов и разрешением (grant) ответить в эту беседу.
+ * Секретные беседы сюда не попадают никогда: их текст не видит и сервер.
+ *
+ * Порядок разбора задачи:
+ *   1. «да»/«нет» владельца в ответ на вопрос-подтверждение;
+ *   2. «спасибо»/смех → реакция 👍;
+ *   3. детерминированные команды (встроенные и модулей) — с проверкой доступа;
+ *   4. привязка ника свободной фразой;
+ *   5. вопрос модели: лимиты → typing → цепочка ответов → Claude → разметка → ответ (+картинки).
+ * Пишет бот только по разрешению из задачи (в беседу обращения) и в личный «Чат с Еблушей» человека
+ * (уведомления владельцу). Журнал — без текста сообщений.
  */
 import crypto from "node:crypto";
 import type { BotConfig, Effort } from "../config";
 import type { Logger } from "../log";
-import type { ChatApi } from "../api/eblusha";
-import type { RealtimeHandlers, RealtimeOut } from "../api/realtime";
-import { isSecretConversation, type EbConversation, type EbMessage } from "../api/types";
+import { ApiError, type ChatApi } from "../api/eblusha";
+import type { BotConversationKind, BotJob, BotJobMessage, BotPostInput, EbMessage } from "../api/types";
 import type { LlmEngine, ToolRuntime } from "../llm/types";
 import { ATTACH_IMAGE_TOOL } from "../llm/prompt";
 import type { ChatCommand, ChatInfo, CommandReply, CoreServices, OutgoingImage, Requester, ToolContext } from "../modules/api";
 import { Budget, budgetRefusalText, type CostBreakdown } from "./budget";
 import { builtinCommands } from "./builtins";
-import { buildChain, chainToTurns, loadMessageImages, MessageCache } from "./context";
+import { chainToTurns, jobChain, loadMessageImages } from "./context";
 import { downloadImage as realDownloadImage, ImageFetchError, isWikiImageUrl } from "./images";
-import { isThanksOrLaugh, parseInvocation } from "./invoke";
+import { invocationText, isThanksOrLaugh } from "./invoke";
 import { hasHttpsLink, safeUrl, sanitizeMarkdown, splitMessage } from "./markup";
 import { cleanNick, fuzzyCharacter, matchCharacter, parseLinkIntent, readableName, type LinkIntent } from "./nick";
 import { accessDeniedText, apiSchema, hasAccess, Registry, validateInput } from "./registry";
@@ -32,14 +36,13 @@ import { utcDay, type Store } from "./store";
 export interface BotDeps {
   cfg: BotConfig;
   api: ChatApi;
-  rt: RealtimeOut;
   store: Store;
   llm: LlmEngine | null;
   registry: Registry;
   log: Logger;
   now?: () => number;
   downloadImage?: (url: string, opts: { signal?: AbortSignal }) => Promise<OutgoingImage>;
-  /** Интервал typing_ping, мс (сервер держит typing 6 с). */
+  /** Интервал «печатает…», мс (клиенты гасят индикатор через ~6 с, сервер — через 10 с). */
   typingIntervalMs?: number;
 }
 
@@ -51,8 +54,8 @@ const MAX_IMAGES = 4;
 const MAX_MODEL_IMAGES = 2;
 const TOOL_TIMEOUT_MS = 25_000;
 const TOOL_RESULT_MAX = 20_000;
-/** Докачка пропущенного (обрыв сокета, рестарт бота) — не старше этого. */
-const CATCHUP_MAX_MS = 10 * 60_000;
+/** Не начинать ответ, если разрешению осталось жить меньше этого: сообщение уже не примут. */
+const GRANT_MARGIN_MS = 15_000;
 const YES_RE = /^(?:да|yes|ага|давай|подтверждаю|конечно|ок|ok|го|делай)[.!\s]*$/i;
 const NO_RE = /^(?:нет|no|отмена|отменить|не\s+надо|стоп)[.!\s]*$/i;
 
@@ -87,10 +90,21 @@ class Semaphore {
   }
 }
 
-export class Bot implements RealtimeHandlers {
+/** Беседа обращения — куда и кому отвечаем. */
+export interface Conv {
+  id: string;
+  kind: BotConversationKind;
+  title: string | null;
+  /** Люди-участники (без бота). */
+  participantIds: string[];
+  grant: string;
+}
+
+/** Куда писать: в беседу обращения (grant) или в личный «Чат с Еблушей» человека (userId). */
+type Target = { grant: string } | { userId: string };
+
+export class Bot {
   botId = "";
-  readonly conversations = new Map<string, EbConversation>();
-  readonly cache: MessageCache;
   private readonly processed = new Map<string, number>();
   private readonly queues = new Map<string, Promise<void>>();
   private readonly llmSlots: Semaphore;
@@ -98,18 +112,11 @@ export class Bot implements RealtimeHandlers {
   private readonly commands: ChatCommand<any>[];
   private readonly now: () => number;
   private readonly fetchImage: NonNullable<BotDeps["downloadImage"]>;
-  private refreshTimer: NodeJS.Timeout | null = null;
-  private refreshing: Promise<void> | null = null;
   /** Сколько обработок ещё в работе (для тестов и аккуратной остановки). */
   private inflight = 0;
-  /** Когда пропал сокет (для докачки после переподключения). */
-  private disconnectedAt: number | null = null;
-  /** С какого момента докачать при первом подключении (после рестарта бота). */
-  private catchUpSince: number | null = null;
 
   constructor(private readonly d: BotDeps) {
     this.now = d.now ?? Date.now;
-    this.cache = new MessageCache(d.api, 3000, 24 * 3600_000, this.now);
     this.llmSlots = new Semaphore(d.cfg.maxConcurrentLlm);
     this.budget = new Budget(d.store, d.cfg, this.now);
     this.commands = [...builtinCommands(this.budget, d.registry), ...d.registry.commands];
@@ -120,17 +127,13 @@ export class Bot implements RealtimeHandlers {
   async start(): Promise<void> {
     const me = await this.d.api.me();
     this.botId = me.id;
-    await this.refreshConversations();
-    const last = this.d.store.getMark("lastSeen");
-    this.catchUpSince = last !== null ? Math.max(last, this.now() - CATCHUP_MAX_MS) : null;
     for (const m of this.d.registry.modules) {
       if (m.start) await m.start(this.coreServices());
     }
-    this.d.log.info("bot.started", { botId: this.botId, conversations: this.conversations.size, modules: this.d.registry.modules.map((m) => m.name) });
+    this.d.log.info("bot.started", { botId: this.botId, modules: this.d.registry.modules.map((m) => m.name) });
   }
 
   async stop(): Promise<void> {
-    if (this.refreshTimer) clearTimeout(this.refreshTimer);
     for (const m of this.d.registry.modules) await m.stop?.().catch(() => {});
   }
 
@@ -149,192 +152,53 @@ export class Bot implements RealtimeHandlers {
         userOf: (c) => this.d.store.getLinkOwner(c),
         all: () => this.d.store.allLinks(),
       },
-      send: async (conversationId, text, opts) => {
-        await this.sendReply(conversationId, opts?.replyToId ?? null, text, opts?.images ?? []);
-      },
+      notify: (userId, text, opts) => this.notifyUser(userId, text, opts?.images ?? []),
     };
   }
 
-  // ---------------------------------------------------------------- беседы
-  async refreshConversations(): Promise<void> {
-    if (this.refreshing) return this.refreshing;
-    this.refreshing = (async () => {
-      try {
-        const list = await this.d.api.listConversations();
-        this.conversations.clear();
-        for (const c of list) this.conversations.set(c.id, c);
-        for (const c of list) {
-          if (isSecretConversation(c) && (c.secretStatus ?? "PENDING") === "PENDING") void this.declineSecret(c.id);
-        }
-      } catch (e) {
-        this.d.log.warn("conversations.refresh_failed", { err: e as Error });
-      } finally {
-        this.refreshing = null;
-      }
-    })();
-    return this.refreshing;
-  }
-
-  private scheduleRefresh(): void {
-    if (this.refreshTimer) return;
-    this.refreshTimer = setTimeout(() => {
-      this.refreshTimer = null;
-      void this.refreshConversations();
-    }, 1500);
-    this.refreshTimer.unref?.();
-  }
-
-  private async conversation(id: string): Promise<EbConversation | null> {
-    let c = this.conversations.get(id);
-    if (!c) {
-      await this.refreshConversations();
-      c = this.conversations.get(id);
-    }
-    return c ?? null;
-  }
-
-  private dmWith(userId: string): EbConversation | null {
-    for (const c of this.conversations.values()) {
-      if (c.isGroup || isSecretConversation(c)) continue;
-      if (c.participants.some((p) => p.userId === userId)) return c;
-    }
-    return null;
-  }
-
-  // ---------------------------------------------------------------- события сокета
-  onConnect(): void {
-    const since = this.disconnectedAt ?? this.catchUpSince;
-    this.disconnectedAt = null;
-    this.catchUpSince = null;
-    void this.refreshConversations()
-      .then(() => (since !== null ? this.catchUp(since) : undefined))
-      .catch((e: unknown) => this.d.log.warn("catchup.failed", { err: e as Error }));
-  }
-
-  onDisconnect(): void {
-    if (this.disconnectedAt === null) this.disconnectedAt = this.now();
-  }
-
+  // ---------------------------------------------------------------- очередь
   /**
-   * Сообщения, пришедшие, пока бот был без сокета (рестарт backend/бота): дочитать историю
-   * бесед и обработать то, что адресовано боту и на что он ещё не ответил. Не старше 10 минут.
+   * Задача из очереди. Промис завершается, когда ответ отправлен: BullMQ держит задачу «в работе».
+   * В одной беседе — строго по очереди (ответы не перемешиваются), разные беседы — параллельно.
    */
-  async catchUp(since: number): Promise<void> {
-    const floor = Math.max(since - 5_000, this.now() - CATCHUP_MAX_MS);
-    let fed = 0;
-    for (const c of [...this.conversations.values()]) {
-      if (isSecretConversation(c)) continue;
-      if (c.lastMessageAt && Date.parse(c.lastMessageAt) < floor) continue;
-      let page: EbMessage[];
-      try {
-        page = (await this.d.api.getMessages(c.id, 30)).messages;
-      } catch (e) {
-        this.d.log.warn("catchup.page_failed", { conv: c.id, err: e as Error });
-        continue;
-      }
-      const answered = new Set(page.filter((m) => m.senderId === this.botId && m.replyToId).map((m) => m.replyToId!));
-      const fresh = page
-        .filter((m) => m.senderId !== this.botId && !m.deletedAt && Date.parse(m.createdAt) >= floor)
-        .filter((m) => !answered.has(m.id) && !(m.reactions ?? []).some((r) => r.userId === this.botId))
-        .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
-      for (const m of fresh) {
-        for (const x of page) this.cache.remember(x);
-        this.onMessage({ conversationId: c.id, messageId: m.id, senderId: m.senderId, message: m });
-        fed++;
-      }
+  handleJob(job: BotJob): Promise<void> {
+    const m = job.message;
+    const now = this.now();
+    const log = this.d.log.child({ conv: job.conversation.id, msg: m.id, user: job.author.id });
+    if (m.isBot || m.senderId === this.botId || (this.botId && job.author.id === this.botId)) return Promise.resolve();
+    if (now - job.enqueuedAt > this.d.cfg.jobMaxAgeMs || now > job.grantExpiresAt - GRANT_MARGIN_MS) {
+      log.info("job.stale", { ageMs: now - job.enqueuedAt });
+      return Promise.resolve();
     }
-    if (fed) this.d.log.info("catchup.fed", { n: fed });
-  }
-
-  onConversationsChanged(p: { conversationId: string; kind: "new" | "updated" | "deleted" }): void {
-    if (p.kind === "deleted") {
-      this.conversations.delete(p.conversationId);
-      return;
-    }
-    this.scheduleRefresh();
-  }
-
-  onSecretThread(p: { conversationId: string; fromUserId?: string }): void {
-    void (async () => {
-      await this.declineSecret(p.conversationId);
-      let from = p.fromUserId ?? null;
-      if (!from) {
-        const c = this.conversations.get(p.conversationId) ?? (await this.conversation(p.conversationId));
-        from = c?.participants.find((x) => x.userId !== this.botId)?.userId ?? null;
-      }
-      if (!from) return;
-      const dm = this.dmWith(from);
-      if (dm && this.d.store.noticeOnce(`secret:${from}`, 24 * 3600_000, this.now())) {
-        await this.sendReply(dm.id, null, "В секретных чатах я не работаю: не вижу их и не пишу туда. Спрашивай здесь 🙂").catch(() => {});
-      }
-    })();
-  }
-
-  private async declineSecret(conversationId: string): Promise<void> {
-    try {
-      await this.d.api.declineSecretThread(conversationId);
-      this.d.log.info("secret.declined", { conv: conversationId });
-    } catch (e) {
-      this.d.log.warn("secret.decline_failed", { conv: conversationId, err: e as Error });
-    }
-  }
-
-  onContactRequest(p: { contactId: string; fromUserId: string }): void {
-    this.d.api
-      .acceptContact(p.contactId)
-      .then(() => {
-        this.d.log.info("contact.accepted", { from: p.fromUserId });
-        this.scheduleRefresh();
-      })
-      .catch((e: unknown) => this.d.log.warn("contact.accept_failed", { err: e as Error }));
-  }
-
-  onIncomingCall(p: { conversationId: string; fromUserId: string }): void {
-    void (async () => {
-      const c = await this.conversation(p.conversationId);
-      // Групповой звонок НЕ отклоняем: call:decline в группе завершает звонок всем.
-      if (c && !c.isGroup) {
-        this.d.rt.declineCall(p.conversationId);
-        this.d.log.info("call.declined", { conv: p.conversationId });
-      }
-    })();
-  }
-
-  onMessage(p: { conversationId: string; messageId: string; senderId: string; message?: EbMessage }): void {
-    const m = p.message;
-    if (!m || !m.id || m.senderId === this.botId) return;
-    if (this.processed.has(m.id)) return;
-    this.processed.set(m.id, this.now());
+    if (this.processed.has(m.id)) return Promise.resolve();
+    this.processed.set(m.id, now);
     if (this.processed.size > 5000) {
       for (const [k] of this.processed) {
         this.processed.delete(k);
         if (this.processed.size <= 4000) break;
       }
     }
-    this.cache.remember(m);
-    const ts = Date.parse(m.createdAt);
-    this.d.store.setMark("lastSeen", Number.isFinite(ts) ? Math.min(ts, this.now()) : this.now());
-    const key = m.conversationId;
+    const key = job.conversation.id;
     const prev = this.queues.get(key) ?? Promise.resolve();
     this.inflight++;
     const next = prev
-      .then(() => this.handleMessage(m))
-      .catch((e: unknown) => this.d.log.error("message.failed", { conv: key, msg: m.id, err: e as Error }))
+      .then(() => this.handleMessage(job, log))
+      .catch((e: unknown) => log.error("message.failed", { err: e as Error }))
       .finally(() => {
         this.inflight--;
         if (this.queues.get(key) === next) this.queues.delete(key);
       });
     this.queues.set(key, next);
+    return next;
   }
 
   // ---------------------------------------------------------------- разбор сообщения
-  private requesterOf(userId: string, m: EbMessage | null, conv: EbConversation): Requester {
+  private requesterOf(userId: string, displayName: string | null): Requester {
     const isOwner = !!this.d.cfg.ownerUserId && userId === this.d.cfg.ownerUserId;
     const characters = this.d.store.getCharacters(userId);
-    const part = conv.participants.find((p) => p.userId === userId);
     return {
       userId,
-      displayName: cleanName((m && m.senderId === userId ? m.sender?.displayName : null) ?? part?.user?.displayName ?? null),
+      displayName: cleanName(displayName),
       isOwner,
       characters,
       isPlayer: isOwner || characters.length > 0,
@@ -346,71 +210,45 @@ export class Bot implements RealtimeHandlers {
     return (!!this.d.cfg.ownerUserId && userId === this.d.cfg.ownerUserId) || this.d.store.getCharacters(userId).length > 0;
   }
 
-  private chatInfo(conv: EbConversation): ChatInfo {
-    // В группе ответ видят все участники: данные игроков — только если все они игроки
-    // (правило владельца), либо если так разрешено настройкой BOT_GROUP_PLAYER_DATA=requester.
+  private chatInfo(conv: Conv): ChatInfo {
+    // В личке двух людей и в группе ответ видят все участники: данные игроков — только если все они
+    // игроки (правило владельца), либо если так разрешено настройкой BOT_GROUP_PLAYER_DATA=requester.
     const playerDataOk =
-      !conv.isGroup ||
+      conv.kind === "bot" ||
       this.d.cfg.groupPlayerData === "requester" ||
-      conv.participants.every((p) => p.userId === this.botId || this.isPlayerUser(p.userId));
+      (conv.participantIds.length > 0 && conv.participantIds.every((id) => this.isPlayerUser(id)));
     return {
       conversationId: conv.id,
-      kind: conv.isGroup ? "group" : "dm",
+      kind: conv.kind,
       title: conv.title ?? null,
-      participantCount: conv.participants.length,
+      participantCount: conv.participantIds.length,
       playerDataOk,
     };
   }
 
-  private nameOf(conv: EbConversation, userId: string, m?: EbMessage): string {
-    if (m?.sender?.displayName) return cleanName(m.sender.displayName);
-    return cleanName(conv.participants.find((p) => p.userId === userId)?.user?.displayName ?? null);
-  }
+  private async handleMessage(job: BotJob, log: Logger): Promise<void> {
+    const conv: Conv = { ...job.conversation, grant: job.grant };
+    const m = job.message;
+    const parent = m.replyToId ? job.chain.find((x) => x.id === m.replyToId) ?? null : null;
+    const requester = this.requesterOf(job.author.id, job.author.displayName ?? m.senderName);
+    const text = invocationText(m.content);
+    log.info("message.addressed", { via: job.via, kind: conv.kind, len: text.length, chain: job.chain.length });
 
-  async handleMessage(m: EbMessage): Promise<void> {
-    const conv = await this.conversation(m.conversationId);
-    if (!conv || isSecretConversation(conv)) return;
-    if (m.type === "SYSTEM" || m.type === "CALL" || m.deletedAt) return;
-
-    const isDm = !conv.isGroup;
-    const parentSender = m.replyTo?.senderId ?? (m.replyToId ? this.cache.peek(m.replyToId)?.senderId ?? null : null);
-    const inv = parseInvocation(m.content, {
-      botId: this.botId,
-      replyToSenderId: parentSender,
-      isDm,
-      dmWithoutPrefix: this.d.cfg.dmWithoutPrefix,
-    });
-    if (inv.kind === "none") {
-      if (isDm && m.type === "TEXT" && this.d.store.noticeOnce(`dmhint:${m.senderId}`, 7 * 24 * 3600_000, this.now())) {
-        await this.sendReply(
-          conv.id,
-          null,
-          "Чтобы я ответил, начни сообщение с «Еблуша,» (или `/eb`), а продолжай разговор ответом на моё сообщение."
-        );
-      }
-      return;
-    }
-
-    const requester = this.requesterOf(m.senderId, m, conv);
-    const text = inv.text;
-    const log = this.d.log.child({ conv: conv.id, msg: m.id, user: m.senderId });
-    log.info("message.addressed", { kind: inv.kind, len: text.length, group: conv.isGroup });
-
-    // 2. подтверждение команды владельца
-    if (m.replyToId && parentSender === this.botId && this.d.store.isConfirmationMessage(m.replyToId)) {
+    // 1. подтверждение команды владельца
+    if (parent?.isBot && this.d.store.isConfirmationMessage(parent.id)) {
       await this.handleConfirmation(m, conv, requester, text, log);
       return;
     }
-    // 3. благодарность
+    // 2. благодарность
     if (text && isThanksOrLaugh(text)) {
-      await this.d.api.react(m.id, THUMBS_UP).catch((e: unknown) => log.warn("react.failed", { err: e as Error }));
+      await this.d.api.react(conv.grant, m.id, THUMBS_UP).catch((e: unknown) => log.warn("react.failed", { err: e as Error }));
       return;
     }
     if (!text && !(m.attachments ?? []).some((a) => a.type === "IMAGE")) {
-      await this.sendReply(conv.id, m.id, "Я тут 🙂 Спрашивай: «Еблуша, …». Что умею — `/eb помощь`.");
+      await this.sendReply(conv, m.id, "Я тут 🙂 Спрашивай: «Еблуша, …». Что умею — `/eb помощь`.", [], "notice");
       return;
     }
-    // 4. команды
+    // 3. команды
     for (const cmd of this.commands) {
       let args: unknown;
       try {
@@ -422,17 +260,17 @@ export class Bot implements RealtimeHandlers {
       await this.handleCommand(cmd, args, m, conv, requester, log);
       return;
     }
-    // 5. привязка ника
+    // 4. привязка ника
     const link = parseLinkIntent(text);
     if (link) {
-      await this.handleLink(link, m, conv, requester, log);
+      await this.handleLink(link, m, parent, conv, requester, log);
       return;
     }
-    // 6. модель
-    await this.handleAsk(m, conv, requester, text, log);
+    // 5. модель
+    await this.handleAsk(job, conv, requester, text, log);
   }
 
-  private toolContext(conv: EbConversation, requester: Requester, images: OutgoingImage[], signal: AbortSignal, log: Logger): ToolContext {
+  private toolContext(conv: Conv, requester: Requester, images: OutgoingImage[], signal: AbortSignal, log: Logger): ToolContext {
     return {
       requester,
       chat: this.chatInfo(conv),
@@ -446,11 +284,10 @@ export class Bot implements RealtimeHandlers {
   }
 
   // ---------------------------------------------------------------- команды
-  private async handleCommand(cmd: ChatCommand<any>, args: unknown, m: EbMessage, conv: EbConversation, requester: Requester, log: Logger): Promise<void> {
-    const isDm = !conv.isGroup;
-    if (!hasAccess(cmd.access, requester, isDm, this.chatInfo(conv).playerDataOk)) {
+  private async handleCommand(cmd: ChatCommand<any>, args: unknown, m: BotJobMessage, conv: Conv, requester: Requester, log: Logger): Promise<void> {
+    if (!hasAccess(cmd.access, requester, conv.kind === "bot", this.chatInfo(conv).playerDataOk)) {
       log.info("command.denied", { cmd: cmd.name });
-      await this.sendReply(conv.id, m.id, accessDeniedText(cmd.access, requester));
+      await this.sendReply(conv, m.id, accessDeniedText(cmd.access, requester), [], "notice");
       return;
     }
     const images: OutgoingImage[] = [];
@@ -459,12 +296,12 @@ export class Bot implements RealtimeHandlers {
       if (cmd.confirm) {
         const prep = cmd.prepare ? await cmd.prepare(args, ctx) : { question: `Выполнить «${cmd.name}»?` };
         if ("reply" in prep) {
-          await this.sendCommandReply(conv.id, m.id, prep.reply, images);
+          await this.sendCommandReply(conv, m.id, prep.reply, images);
           return;
         }
         const ttl = cmd.confirmTtlMs ?? CONFIRM_TTL_MS;
         const minutes = Math.max(1, Math.round(ttl / 60_000));
-        const sent = await this.sendReply(conv.id, m.id, `${prep.question}\n\nОтветь «**да**» на это сообщение в течение ${minutes} мин.`);
+        const sent = await this.sendReply(conv, m.id, `${prep.question}\n\nОтветь «**да**» на это сообщение в течение ${minutes} мин.`, [], "confirm");
         if (sent) {
           this.d.store.createConfirmation({
             ownerId: requester.userId,
@@ -479,29 +316,30 @@ export class Bot implements RealtimeHandlers {
         return;
       }
       const reply = await cmd.run(args, ctx);
-      await this.sendCommandReply(conv.id, m.id, reply, images);
+      await this.sendCommandReply(conv, m.id, reply, images);
       log.info("command.done", { cmd: cmd.name });
     } catch (e) {
       log.error("command.failed", { cmd: cmd.name, err: e as Error });
-      await this.sendReply(conv.id, m.id, "Команда не выполнилась — что-то сломалось. Подробности в журнале бота.");
+      await this.sendReply(conv, m.id, "Команда не выполнилась — что-то сломалось. Подробности в журнале бота.", [], "notice");
     }
   }
 
-  private async handleConfirmation(m: EbMessage, conv: EbConversation, requester: Requester, text: string, log: Logger): Promise<void> {
-    if (!requester.isOwner || conv.isGroup) return; // подтверждать может только владелец в личке
+  private async handleConfirmation(m: BotJobMessage, conv: Conv, requester: Requester, text: string, log: Logger): Promise<void> {
+    // подтверждать может только владелец и только в своём «Чате с Еблушей»
+    if (!requester.isOwner || conv.kind !== "bot") return;
     const yes = YES_RE.test(text.trim());
     const no = NO_RE.test(text.trim());
     if (!yes && !no) {
-      await this.sendReply(conv.id, m.id, "Ответь «да» или «нет».");
+      await this.sendReply(conv, m.id, "Ответь «да» или «нет».", [], "notice");
       return;
     }
     const row = this.d.store.takeConfirmation(m.replyToId!, requester.userId, this.now());
     if (!row) {
-      await this.sendReply(conv.id, m.id, "Срок подтверждения истёк или команда уже выполнена. Повтори команду.");
+      await this.sendReply(conv, m.id, "Срок подтверждения истёк или команда уже выполнена. Повтори команду.", [], "notice");
       return;
     }
     if (no) {
-      await this.sendReply(conv.id, m.id, "Отменил.");
+      await this.sendReply(conv, m.id, "Отменил.", [], "command");
       log.info("command.cancelled", { cmd: row.command });
       return;
     }
@@ -511,17 +349,17 @@ export class Bot implements RealtimeHandlers {
     const ctx = this.toolContext(conv, requester, images, AbortSignal.timeout(10 * 60_000), log);
     try {
       const reply = await cmd.run(JSON.parse(row.argsJson), ctx);
-      await this.sendCommandReply(conv.id, m.id, reply, images);
+      await this.sendCommandReply(conv, m.id, reply, images);
       log.info("command.confirmed_done", { cmd: cmd.name });
     } catch (e) {
       log.error("command.failed", { cmd: cmd.name, err: e as Error });
-      await this.sendReply(conv.id, m.id, "Команда не выполнилась — что-то сломалось. Подробности в журнале бота.");
+      await this.sendReply(conv, m.id, "Команда не выполнилась — что-то сломалось. Подробности в журнале бота.", [], "notice");
     }
   }
 
-  private async sendCommandReply(convId: string, replyToId: string, reply: CommandReply, extra: OutgoingImage[]): Promise<void> {
+  private async sendCommandReply(conv: Conv, replyToId: string, reply: CommandReply, extra: OutgoingImage[]): Promise<void> {
     const text = sanitizeMarkdown(reply.text).text;
-    await this.sendReply(convId, replyToId, text, [...(reply.images ?? []), ...extra].slice(0, MAX_IMAGES));
+    await this.sendReply(conv, replyToId, text, [...(reply.images ?? []), ...extra].slice(0, MAX_IMAGES), "command");
   }
 
   // ---------------------------------------------------------------- привязка ников
@@ -564,8 +402,8 @@ export class Bot implements RealtimeHandlers {
     return fz ? { kind: "ok", character: fz, verified: true } : { kind: "unknown", known };
   }
 
-  private async handleLink(intent: LinkIntent, m: EbMessage, conv: EbConversation, requester: Requester, log: Logger): Promise<void> {
-    const reply = (t: string) => this.sendReply(conv.id, m.id, t);
+  private async handleLink(intent: LinkIntent, m: BotJobMessage, parent: BotJobMessage | null, conv: Conv, requester: Requester, log: Logger): Promise<void> {
+    const reply = (t: string) => this.sendReply(conv, m.id, t, [], "command");
     if (intent.kind === "whoami") {
       const chars = this.d.store.getCharacters(requester.userId);
       await reply(chars.length ? `В игре ты — **${chars.join("**, **")}**.` : "Ты пока не привязан к персонажу. Напиши: «Еблуша, мой ник в игре …».");
@@ -607,13 +445,13 @@ export class Bot implements RealtimeHandlers {
         await reply("Привязывать других может только владелец. Свой ник привяжи так: «Еблуша, мой ник в игре …».");
         return;
       }
-      const parent = m.replyToId ? await this.cache.get(conv.id, m.replyToId) : null;
-      if (!parent || parent.senderId === this.botId) {
+      // «Еблуша, его ник …» — ответом на сообщение того человека: оно приходит в цепочке задачи.
+      if (!parent || parent.isBot || parent.senderId === this.botId) {
         await reply("Скажи это ответом на сообщение того человека — так я пойму, о ком речь.");
         return;
       }
       targetUserId = parent.senderId;
-      targetName = this.nameOf(conv, parent.senderId, parent);
+      targetName = cleanName(parent.senderName);
     }
 
     const nick = cleanNick(intent.nick);
@@ -665,21 +503,34 @@ export class Bot implements RealtimeHandlers {
     // короткое уведомление о каждой новой самопривязке, чтобы чужака можно было снять.
     if (!requester.isOwner && !before.includes(r.character)) {
       await this.notifyOwner(
-        `Новая привязка: «${requester.displayName}» назвался персонажем ${name}${conv.isGroup ? ` (в группе «${cleanName(conv.title ?? "без названия")}»)` : ""}. Если это не он — «Еблуша, отвяжи персонажа ${r.character}».`
+        `Новая привязка: «${requester.displayName}» назвался персонажем ${name}${conv.kind === "group" ? ` (в группе «${cleanName(conv.title ?? "без названия")}»)` : ""}. Если это не он — «Еблуша, отвяжи персонажа ${r.character}».`
       );
     }
   }
 
-  /** Сообщение владельцу в его личку с ботом (если такая беседа есть). Ошибки — только в журнал. */
+  /** Сообщение владельцу в его «Чат с Еблушей» (если включён). Ошибки — только в журнал. */
   private async notifyOwner(text: string): Promise<void> {
     const owner = this.d.cfg.ownerUserId;
-    const dm = owner ? this.dmWith(owner) : null;
-    if (!dm) return;
-    await this.sendReply(dm.id, null, text).catch((e: unknown) => this.d.log.warn("owner.notify_failed", { err: e as Error }));
+    if (owner) await this.notifyUser(owner, text, []);
+  }
+
+  /** Уведомление в личный «Чат с Еблушей» человека. false — чат выключен или сервер отказал. */
+  async notifyUser(userId: string, text: string, images: OutgoingImage[]): Promise<boolean> {
+    try {
+      const sent = await this.post({ userId }, null, text, images, "notice");
+      return sent !== null;
+    } catch (e) {
+      if (e instanceof ApiError && e.code === "BOT_CHAT_DISABLED") {
+        this.d.log.info("notify.chat_disabled", { user: userId });
+      } else {
+        this.d.log.warn("notify.failed", { user: userId, err: e as Error });
+      }
+      return false;
+    }
   }
 
   // ---------------------------------------------------------------- вопрос модели
-  private contextNote(conv: EbConversation, requester: Requester): string {
+  private contextNote(conv: Conv, requester: Requester): string {
     const d = new Date(this.now());
     const when = new Intl.DateTimeFormat("ru-RU", {
       timeZone: this.d.cfg.timeZone,
@@ -692,9 +543,11 @@ export class Bot implements RealtimeHandlers {
     }).format(d);
     const lines = [`Сейчас: ${when} (часовой пояс ${this.d.cfg.timeZone}).`];
     lines.push(
-      conv.isGroup
-        ? `Чат: группа «${cleanName(conv.title ?? "без названия")}», участников: ${conv.participants.length}. Ответ увидят все участники.`
-        : "Чат: личные сообщения с ботом."
+      conv.kind === "group"
+        ? `Чат: группа «${cleanName(conv.title ?? "без названия")}», участников: ${conv.participantIds.length}. Ответ увидят все участники.`
+        : conv.kind === "dm"
+          ? "Чат: личная переписка двух людей. Ответ увидят оба."
+          : "Чат: личный «Чат с Еблушей» — ответ видит только этот человек."
     );
     lines.push(`Спрашивает: «${requester.displayName}».${requester.isOwner ? " Это владелец бота и игровых серверов." : ""}`);
     if (this.d.registry.characters) {
@@ -743,7 +596,7 @@ export class Bot implements RealtimeHandlers {
         modelImages.moduleData = true;
         const bad = validateInput(input, tool.inputSchema);
         if (bad) return { content: JSON.stringify({ INVALID_INPUT: bad }), isError: true };
-        if (!hasAccess(tool.access, ctx.requester, ctx.chat.kind === "dm", ctx.chat.playerDataOk)) {
+        if (!hasAccess(tool.access, ctx.requester, ctx.chat.kind === "bot", ctx.chat.playerDataOk)) {
           ctx.log.info("tool.denied", { tool: name, audience: ctx.requester.isPlayer && tool.access === "player" });
           return { content: accessDeniedText(tool.access, ctx.requester), isError: false };
         }
@@ -772,31 +625,36 @@ export class Bot implements RealtimeHandlers {
     this.budget.record(userId, convId, kind, this.d.llm?.model ?? this.d.cfg.model, cost);
   }
 
-  private async handleAsk(m: EbMessage, conv: EbConversation, requester: Requester, text: string, log: Logger): Promise<void> {
+  /** «Печатает…» от бота: сбой — только в журнал, ответу он не мешает. */
+  private typing(conv: Conv, on: boolean, log: Logger): void {
+    this.d.api.typing(conv.grant, on).catch((e: unknown) => log.debug("typing.failed", { err: e as Error }));
+  }
+
+  private async handleAsk(job: BotJob, conv: Conv, requester: Requester, text: string, log: Logger): Promise<void> {
+    const m = job.message;
     if (!this.d.llm) {
-      await this.sendReply(conv.id, m.id, budgetRefusalText("no_key"));
+      await this.sendReply(conv, m.id, budgetRefusalText("no_key"), [], "notice");
       return;
     }
     const verdict = this.budget.check(requester.userId, requester.isOwner);
     if (!verdict.ok) {
       log.info("budget.refused", { reason: verdict.reason });
-      await this.sendReply(conv.id, m.id, budgetRefusalText(verdict.reason));
+      await this.sendReply(conv, m.id, budgetRefusalText(verdict.reason), [], "notice");
       return;
     }
 
     const release = await this.llmSlots.acquire();
     const started = this.now();
     const typingEvery = this.d.typingIntervalMs ?? 3000;
-    this.d.rt.typingStart(conv.id);
-    const typing = setInterval(() => this.d.rt.typingPing(conv.id), typingEvery);
+    this.typing(conv, true, log);
+    const typing = setInterval(() => this.typing(conv, true, log), typingEvery);
     typing.unref?.();
     const abort = AbortSignal.timeout(4 * 60_000);
     const images: OutgoingImage[] = [];
     try {
-      const chain = await buildChain(this.cache, m, this.d.cfg.contextMaxMessages);
+      const chain = jobChain(job, this.d.cfg.contextMaxMessages);
       const turns = await chainToTurns(chain, {
-        botId: this.botId,
-        nameOf: (uid, msg) => this.nameOf(conv, uid, msg),
+        nameOf: (msg) => cleanName(msg.senderName),
         loadImages: (msg) => loadMessageImages(this.d.api, msg).catch(() => []),
       });
       if (turns.length === 0) return;
@@ -848,7 +706,7 @@ export class Bot implements RealtimeHandlers {
           body = "Не нашёл, что ответить. Попробуй переформулировать.";
         }
       }
-      await this.sendReply(conv.id, m.id, body, images);
+      await this.sendReply(conv, m.id, body, images, "answer");
       log.info("answer.sent", {
         ms: this.now() - started,
         effort,
@@ -866,40 +724,52 @@ export class Bot implements RealtimeHandlers {
       });
     } catch (e) {
       log.error("answer.failed", { ms: this.now() - started, err: e as Error });
-      await this.sendReply(conv.id, m.id, "Что-то сломалось у меня внутри, попробуй ещё раз чуть позже.").catch(() => {});
+      await this.sendReply(conv, m.id, "Что-то сломалось у меня внутри, попробуй ещё раз чуть позже.", [], "notice").catch(() => {});
     } finally {
       clearInterval(typing);
-      this.d.rt.typingStop(conv.id);
+      this.typing(conv, false, log);
       release();
     }
   }
 
   // ---------------------------------------------------------------- отправка
   /**
-   * Ответ ботом: текст (по частям, если длинный) и картинки отдельным сообщением.
-   * В секретную беседу — никогда (сервер и так ответит 409, но мы даже не пытаемся).
-   * Возвращает первое отправленное текстовое сообщение (нужно для подтверждений).
+   * Ответ в беседу обращения (по разрешению из задачи). В секретную беседу бот писать не может в
+   * принципе: задач оттуда нет, а сервер не примет и разрешение на неё.
+   * Возвращает первое отправленное сообщение (нужно для подтверждений).
    */
-  async sendReply(conversationId: string, replyToId: string | null, text: string, images: OutgoingImage[] = []): Promise<EbMessage | null> {
-    const conv = this.conversations.get(conversationId);
-    if (!conv || isSecretConversation(conv)) {
-      this.d.log.warn("send.blocked", { conv: conversationId, reason: conv ? "secret" : "unknown_conversation" });
-      return null;
-    }
+  async sendReply(
+    conv: Conv,
+    replyToId: string | null,
+    text: string,
+    images: OutgoingImage[] = [],
+    kind: NonNullable<BotPostInput["kind"]> = "answer"
+  ): Promise<EbMessage | null> {
+    return this.post({ grant: conv.grant }, replyToId, text, images, kind);
+  }
+
+  /** Текст (по частям, если длинный) и картинки отдельным сообщением. */
+  private async post(
+    target: Target,
+    replyToId: string | null,
+    text: string,
+    images: OutgoingImage[],
+    kind: NonNullable<BotPostInput["kind"]>
+  ): Promise<EbMessage | null> {
     let first: EbMessage | null = null;
     const parts = text.trim() ? splitMessage(text.trim()) : [];
     for (let i = 0; i < parts.length; i++) {
-      const sent = await this.d.api.sendMessage({
-        conversationId,
+      const sent = await this.d.api.postMessage({
+        ...target,
         type: "TEXT",
         content: parts[i]!,
+        kind,
         ...(replyToId && i === 0 ? { replyToId } : {}),
       });
-      this.cache.remember(sent);
       first ??= sent;
     }
     if (images.length) {
-      const attachments: NonNullable<Parameters<ChatApi["sendMessage"]>[0]["attachments"]> = [];
+      const attachments: NonNullable<BotPostInput["attachments"]> = [];
       for (const img of images.slice(0, MAX_IMAGES)) {
         try {
           const up = await this.d.api.upload(img.data, img.name, img.mime);
@@ -921,13 +791,13 @@ export class Bot implements RealtimeHandlers {
         }
       }
       if (attachments.length) {
-        const sent = await this.d.api.sendMessage({
-          conversationId,
+        const sent = await this.d.api.postMessage({
+          ...target,
           type: "IMAGE",
           attachments,
+          kind,
           ...(replyToId && !first ? { replyToId } : {}),
         });
-        this.cache.remember(sent);
         first ??= sent;
       }
     }

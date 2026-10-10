@@ -1,5 +1,9 @@
 /**
- * REST-клиент backend Еблуши под учёткой бота.
+ * REST-клиент backend Еблуши под учёткой системного бота.
+ *
+ * Бот не участник бесед: обращения приходят задачами из очереди (api/queue.ts), а пишет бот
+ * только через /api/bot/* (src/routes/bot.ts на сервере) с разрешением (grant) из задачи —
+ * в ту беседу, где к нему обратились. Уведомления — в личный «Чат с Еблушей» человека (userId).
  *
  * Вход: POST /api/auth/login (лимит 10/мин на IP) → access (JWT ~15 мин) + refresh (ротация).
  * Обновление: POST /api/auth/refresh с заголовком x-native-client: 1 — тогда сервер берёт
@@ -7,13 +11,7 @@
  * входит паролем заново.
  */
 import type { Logger } from "../log";
-import type {
-  EbConversation,
-  EbMessage,
-  EbParticipant,
-  SendMessageInput,
-  UploadResult,
-} from "./types";
+import type { BotPostInput, EbMessage, UploadResult } from "./types";
 
 const AUTH_TIMEOUT_MS = 20_000;
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -36,17 +34,15 @@ export interface ChatApi {
   readonly baseUrl: string;
   me(): Promise<{ id: string; displayName: string | null; avatarUrl: string | null; bio: string | null }>;
   updateMe(patch: { displayName?: string; bio?: string; avatarUrl?: string }): Promise<void>;
-  listConversations(): Promise<EbConversation[]>;
-  getMessages(conversationId: string, limit: number, cursor?: string): Promise<{ messages: EbMessage[]; nextCursor: string | null }>;
-  sendMessage(input: SendMessageInput): Promise<EbMessage>;
-  react(messageId: string, emoji: string): Promise<void>;
+  /** Сообщение от бота: POST /api/bot/messages (grant — ответ на обращение, userId — в личный чат). */
+  postMessage(input: BotPostInput): Promise<EbMessage>;
+  /** «Печатает…» в беседе обращения. */
+  typing(grant: string, typing: boolean): Promise<void>;
+  /** Реакция на сообщение из беседы обращения («спасибо» → 👍). */
+  react(grant: string, messageId: string, emoji: string): Promise<void>;
   upload(data: Buffer, filename: string, mime: string): Promise<UploadResult>;
-  declineSecretThread(conversationId: string): Promise<void>;
-  acceptContact(contactId: string): Promise<void>;
   /** Скачать вложение Еблуши (/api/files/…); thumb — серверное превью картинки. */
   fetchFile(url: string, opts?: { thumb?: boolean; maxBytes?: number }): Promise<{ data: Buffer; mime: string } | null>;
-  /** Действующий access-токен (для рукопожатия socket.io). */
-  accessToken(): Promise<string>;
   /** id бота (известен после первого входа). */
   readonly userId: string | null;
 }
@@ -82,10 +78,6 @@ export class EblushaApi implements ChatApi {
 
   get userId(): string | null {
     return this.session?.userId ?? null;
-  }
-
-  async accessToken(): Promise<string> {
-    return (await this.ensureSession()).access;
   }
 
   private async ensureSession(force = false): Promise<Session> {
@@ -195,58 +187,23 @@ export class EblushaApi implements ChatApi {
     await this.request("PATCH", "/api/status/me", patch);
   }
 
-  async listConversations(): Promise<EbConversation[]> {
-    const j = await this.request<{ conversations: Array<{ conversation?: Record<string, unknown> }> }>("GET", "/api/conversations");
-    const out: EbConversation[] = [];
-    for (const row of j.conversations ?? []) {
-      const c = row.conversation;
-      if (!c || typeof c.id !== "string") continue;
-      const conv: EbConversation = {
-        id: c.id,
-        isGroup: c.isGroup === true,
-        isSecret: c.isSecret === true,
-        participants: Array.isArray(c.participants) ? (c.participants as EbParticipant[]) : [],
-      };
-      if (typeof c.type === "string") conv.type = c.type;
-      if (typeof c.secretStatus === "string") conv.secretStatus = c.secretStatus;
-      if (typeof c.title === "string") conv.title = c.title;
-      if (typeof c.lastMessageAt === "string") conv.lastMessageAt = c.lastMessageAt;
-      out.push(conv);
-    }
-    return out;
-  }
-
-  async getMessages(conversationId: string, limit: number, cursor?: string) {
-    const q = new URLSearchParams({ limit: String(limit) });
-    if (cursor) q.set("cursor", cursor);
-    const j = await this.request<{ messages: EbMessage[]; nextCursor?: string | null }>(
-      "GET",
-      `/api/conversations/${encodeURIComponent(conversationId)}/messages?${q}`
-    );
-    return { messages: j.messages ?? [], nextCursor: j.nextCursor ?? null };
-  }
-
-  async sendMessage(input: SendMessageInput): Promise<EbMessage> {
-    const j = await this.request<{ message: EbMessage }>("POST", "/api/conversations/send", input);
+  async postMessage(input: BotPostInput): Promise<EbMessage> {
+    const j = await this.request<{ message: EbMessage }>("POST", "/api/bot/messages", input);
     return j.message;
   }
 
-  async react(messageId: string, emoji: string): Promise<void> {
-    await this.request("POST", "/api/messages/react", { messageId, emoji });
+  async typing(grant: string, typing: boolean): Promise<void> {
+    await this.request("POST", "/api/bot/typing", { grant, typing });
+  }
+
+  async react(grant: string, messageId: string, emoji: string): Promise<void> {
+    await this.request("POST", "/api/bot/react", { grant, messageId, emoji });
   }
 
   async upload(data: Buffer, filename: string, mime: string): Promise<UploadResult> {
     const form = new FormData();
     form.append("file", new Blob([new Uint8Array(data)], { type: mime }), filename);
     return this.request<UploadResult>("POST", "/api/upload", form);
-  }
-
-  async declineSecretThread(conversationId: string): Promise<void> {
-    await this.request("POST", `/api/threads/secret/${encodeURIComponent(conversationId)}/decline`, {});
-  }
-
-  async acceptContact(contactId: string): Promise<void> {
-    await this.request("POST", "/api/contacts/respond", { contactId, action: "accept" });
   }
 
   async fetchFile(url: string, opts: { thumb?: boolean; maxBytes?: number } = {}) {

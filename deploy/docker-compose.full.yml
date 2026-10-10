@@ -245,6 +245,9 @@ services:
   # Бот «Еблуша» (bot/, отдельный пакет): обычный пользователь мессенджера, ходит в backend по HTTP
   # и socket.io, к модели — напрямую на api.anthropic.com (выход stoned через Румынию, прокси не нужен).
   # ПРОФИЛЬ bot: общий `up -d` стека бота НЕ поднимает. Запуск: `... --profile bot up -d eblusha-bot`.
+  # Бот — часть системы: обращения берёт из очереди BullMQ `bot` в Redis (BOT_REDIS_URL), отвечает
+  # через /api/bot/* backend. Перед первым запуском этой версии — миграция system_bot (backend) и
+  # src/scripts/setupSystemBot.ts --apply (bot/README.md, «Выкладка»).
   # network_mode: host — модулю Valheim нужен WebMap на 127.0.0.1:3010 (слушает только loopback);
   # backend при этом — 127.0.0.1:4000 (порт опубликован на loopback хоста).
   # Секреты: ../.env.bot-account — логин/пароль бота и id владельца (src/scripts/seedBotUser.ts),
@@ -266,6 +269,9 @@ services:
         required: false
     environment:
       BOT_API_URL: http://127.0.0.1:${BACKEND_PORT:-4000}
+      # Очередь обращений к боту (BullMQ `bot`, кладёт backend — src/lib/systemBot.ts): Redis стека,
+      # опубликованный только на loopback хоста. Бот — часть системы, сокет и членство в беседах не нужны.
+      BOT_REDIS_URL: redis://127.0.0.1:${REDIS_PORT:-6379}/0
       BOT_DATA_DIR: /data
       # Модуль Valheim (сервер Koban): bot/src/modules/valheim, переменные VALHEIM_* — bot/README.md.
       BOT_MODULES: valheim

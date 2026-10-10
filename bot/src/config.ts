@@ -6,15 +6,23 @@
  *       (пишет src/scripts/seedBotUser.ts, права 600);
  *   /DATA/eblusha-plus/.env.bot         — ANTHROPIC_API_KEY (кладёт владелец; без него бот
  *       работает, но вместо модели отвечает короткими шаблонами);
- *   environment в compose                — адрес backend, каталог данных.
+ *   environment в compose                — адрес backend и Redis (очередь обращений), каталог данных.
  * Секреты в журнал не попадают: describeConfig() печатает только их наличие.
  */
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface BotConfig {
-  /** Базовый адрес backend Еблуши (HTTP и socket.io), без завершающего «/». */
+  /** Базовый адрес backend Еблуши (HTTP: /api/bot/*, /api/upload, /api/files), без завершающего «/». */
   apiUrl: string;
+  /** Redis backend: очередь BullMQ с обращениями к боту (кладёт сервер, src/lib/systemBot.ts). */
+  redisUrl: string;
+  /** Имя очереди (на сервере — BOT_QUEUE_NAME в src/jobs/queue.ts). */
+  queueName: string;
+  /** Сколько обращений обрабатывать одновременно (одна беседа — всё равно по очереди). */
+  queueConcurrency: number;
+  /** Обращение старше этого (бот лежал) — не отвечаем: вопрос уже неактуален, а разрешение вот-вот истечёт. */
+  jobMaxAgeMs: number;
   username: string;
   password: string;
   /** userId владельца (ston): команды управления, расход, привязка чужих ников. */
@@ -53,8 +61,6 @@ export interface BotConfig {
   /** Параллельных обращений к модели на весь бот. */
   maxConcurrentLlm: number;
 
-  /** В личке отвечать и без «Еблуша,» (по умолчанию нет — правило владельца). */
-  dmWithoutPrefix: boolean;
   /**
    * Данные игроков (access "player": где кто, склады, карточка карты) в ГРУППАХ.
    * "all" (по умолчанию) — только если ВСЕ участники группы — игроки (привязаны или владелец):
@@ -102,6 +108,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
   if (groupPlayerData !== "all" && groupPlayerData !== "requester") throw new Error(`BOT_GROUP_PLAYER_DATA=${groupPlayerData}: ждём all или requester`);
   return {
     apiUrl: str(env, "BOT_API_URL", "http://127.0.0.1:4000").replace(/\/+$/, ""),
+    redisUrl: str(env, "BOT_REDIS_URL", "redis://127.0.0.1:6379/0"),
+    queueName: str(env, "BOT_QUEUE_NAME", "bot"),
+    queueConcurrency: Math.max(1, Math.floor(num(env, "BOT_QUEUE_CONCURRENCY", 6))),
+    jobMaxAgeMs: Math.max(30, num(env, "BOT_JOB_MAX_AGE_SEC", 600)) * 1000,
     username: str(env, "BOT_USERNAME"),
     password: str(env, "BOT_PASSWORD"),
     ownerUserId: optStr(env, "BOT_OWNER_USER_ID"),
@@ -121,7 +131,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     maxTokens: Math.floor(num(env, "BOT_MAX_TOKENS", 16000)),
     maxToolIterations: Math.max(1, Math.floor(num(env, "BOT_MAX_TOOL_ITERATIONS", 8))),
     maxConcurrentLlm: Math.max(1, Math.floor(num(env, "BOT_MAX_CONCURRENT_LLM", 3))),
-    dmWithoutPrefix: bool(env, "BOT_DM_WITHOUT_PREFIX", false),
     groupPlayerData,
     modules: (optStr(env, "BOT_MODULES") ?? "")
       .split(",")
@@ -136,6 +145,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
 export function describeConfig(c: BotConfig): Record<string, unknown> {
   return {
     apiUrl: c.apiUrl,
+    redis: c.redisUrl.replace(/\/\/[^@/]*@/, "//***@"),
+    queue: c.queueName,
     owner: c.ownerUserId ? "set" : "unset",
     anthropicKey: c.anthropicApiKey ? "set" : "unset",
     anthropicWorkspace: c.anthropicWorkspaceId ? "set" : "unset",
@@ -146,7 +157,6 @@ export function describeConfig(c: BotConfig): Record<string, unknown> {
     userDailyQuestions: c.userDailyQuestions,
     userDailyUsd: c.userDailyUsd,
     modules: c.modules,
-    dmWithoutPrefix: c.dmWithoutPrefix,
     groupPlayerData: c.groupPlayerData,
   };
 }

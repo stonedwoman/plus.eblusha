@@ -1,6 +1,6 @@
 /**
  * Команды владельца для сервера Valheim. Разбираются КОДОМ (регулярками), без модели.
- * Ядро пускает их только владельцу и только в его личке с ботом; всё, что меняет сервер,
+ * Ядро пускает их только владельцу и только в его личном «Чате с Еблушей»; всё, что меняет сервер,
  * спрашивает «да» ответом на вопрос (один раз, 2 минуты). Выполняет — помощник valheim-ops.
  *
  *   /eb сервер              — статус (без подтверждения)
@@ -71,7 +71,7 @@ export function createCommands(world: VhWorld, ops: OpsClientLike): ChatCommand<
   const status: ChatCommand<true> = {
     name: "valheim_status",
     access: "owner",
-    help: "`/eb сервер` — статус сервера Valheim (только владелец, в личке)",
+    help: "`/eb сервер` — статус сервера Valheim (только владелец, в «Чате с Еблушей»)",
     match: (t) => (STATUS_RE.test(t.trim()) ? true : null),
     async run() {
       const lines = ["**Сервер Valheim «Koban»**"];

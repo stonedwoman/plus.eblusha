@@ -246,7 +246,8 @@ export function makeWorld(server: FakeServer, opts: { wsFrame?: () => Promise<st
 export interface CtxOpts {
   characters?: string[];
   isOwner?: boolean;
-  kind?: "dm" | "group";
+  /** "bot" — личный «Чат с Еблушей» (по умолчанию), "dm" — личка двух людей, "group" — группа. */
+  kind?: "bot" | "dm" | "group";
   /** В группе: все ли участники — игроки (по умолчанию да). */
   playerDataOk?: boolean;
 }
@@ -256,7 +257,7 @@ export function makeCtx(o: CtxOpts = {}): ToolContext & { images: OutgoingImage[
   const characters = o.characters ?? [];
   return {
     requester: { userId: "u1", displayName: "Тест", isOwner: !!o.isOwner, characters, isPlayer: !!o.isOwner || characters.length > 0 },
-    chat: { conversationId: "c1", kind: o.kind ?? "dm", title: null, participantCount: 2, playerDataOk: o.playerDataOk ?? true },
+    chat: { conversationId: "c1", kind: o.kind ?? "bot", title: null, participantCount: 2, playerDataOk: o.playerDataOk ?? true },
     attachImage: (img) => images.push(img),
     signal: AbortSignal.timeout(30_000),
     log: silentLogger,

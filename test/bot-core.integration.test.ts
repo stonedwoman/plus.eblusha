@@ -1,16 +1,17 @@
 /**
- * Ядро бота (bot/) против НАСТОЯЩЕГО backend Еблуши в изолированной среде eb-secret-test.
+ * Бот «Еблуша» целиком: настоящий backend (app + Socket.IO в процессе, тестовые Postgres/Redis
+ * изолированной среды) + настоящий сервис бота (bot/src/main.ts startBot, потребитель очереди BullMQ
+ * `bot` в тестовом Redis) с поддельной моделью — без сети и без денег.
  * Файл лежит в корневом test/, а не в bot/: ts-node ищет tsconfig рядом со скриптом, а backend
  * собирается только с корневым (типы src/types).
  *
  *   test/secret-env/secret-test.sh run test/bot-core.integration.test.ts
  *
- * Поднимает app + Socket.IO в процессе (тестовые Postgres/Redis, см. test/secret-env), заводит
- * учётку бота тем же кодом, что и боевой сид (src/scripts/seedBotUser.ts), запускает бота тем же
- * startBot(), что и сервис, но с поддельной моделью (без сети и без денег), и проходит путь
- * сообщений по-настоящему: HTTP-отправка человеком → message:notify боту → ответ ботом через
- * /api/conversations/send (replyToId), реакции, вложения через /api/upload, отказ в секретном
- * треде, принятие контакта, отклонение звонка, команда владельца с «да».
+ * Путь сообщения по-настоящему: человек шлёт POST /api/conversations/send → сервер замечает обращение
+ * и ставит задачу → бот забирает её из очереди → отвечает через /api/bot/* по разрешению → сообщение
+ * с isBot в беседе, где бот НЕ участник. Плюс: продолжение ответом, 👍 на «спасибо», вложение через
+ * /api/upload, «Чат с Еблушей» (включение, привязка ника без обращения, уведомление владельцу),
+ * команда владельца с «да» только в его чате с ботом, typing бота, журнал без текста сообщений.
  * В конце — строка EB_PROOF для `secret-test.sh prod-proof` (в боевых БД/Redis этих id нет).
  */
 import { assertIsolatedBackends, describeUrl } from "./secret-env/guard";
@@ -28,6 +29,8 @@ import prisma from "../src/lib/prisma";
 import { getRedisClient } from "../src/lib/redis";
 import { initSocket } from "../src/realtime/socket";
 import { signAccessToken } from "../src/utils/jwt";
+import { getBotQueue } from "../src/jobs/queue";
+import { resetSystemBotCache } from "../src/lib/systemBot";
 import { ensureBotUser } from "../src/scripts/seedBotUser";
 import { loadConfig } from "../bot/src/config";
 import { createLogger } from "../bot/src/log";
@@ -36,8 +39,8 @@ import { ZERO_COST } from "../bot/src/core/budget";
 import type { AnswerRequest, AnswerResult, LlmEngine } from "../bot/src/llm/types";
 import type { BotModule } from "../bot/src/modules/api";
 
-const RUN = `ebbot_${Date.now().toString(36)}_${crypto.randomBytes(3).toString("hex")}`;
-const SECRET_WORDS = ["Как дела у паука", "подробнее про лапки", "ОтветМодели42", "покажи карточку"];
+const RUN = `ebst_bc_${Date.now().toString(36)}_${crypto.randomBytes(3).toString("hex")}`;
+const SECRET_WORDS = ["Как дела у паука", "подробнее про лапки", "ОтветМодели42", "покажи карточку", "рассуди нас"];
 
 function pngBuffer(w: number, h: number): Buffer {
   // минимальный валидный PNG w×h (серый), собранный вручную — без sharp
@@ -96,6 +99,8 @@ class ScriptedLlm implements LlmEngine {
       assert.equal(r.isError, false, r.content);
       text = "Вот карточка.";
     }
+    // чуть подержать «печатает…», чтобы событие успело дойти до сокета
+    await new Promise((r) => setTimeout(r, 150));
     return { text, sources: [], cost: { ...ZERO_COST, usd: 0.01, inputTokens: 100, outputTokens: 10, models: [this.model] }, stop: "end_turn", servedBy: this.model };
   }
   async matchCharacter() {
@@ -128,31 +133,35 @@ async function main() {
   const addr = server.address();
   if (!addr || typeof addr === "string") throw new Error("no address");
   const baseUrl = `http://127.0.0.1:${addr.port}`;
+  // Хвосты прошлых прогонов в очереди бота не нужны: новый бот ответил бы в чужие беседы.
+  await getBotQueue().drain(true);
 
   const logLines: string[] = [];
   let handle: Awaited<ReturnType<typeof startBot>> | null = null;
   let aliceSock: ReturnType<typeof ioClient> | null = null;
+  let botId = "";
   try {
     // ---------- учётки ----------
+    // Тестовая БД общая для прогонов: «системный бот» — только наш (getSystemBot берёт самого раннего).
+    await prisma.user.updateMany({ where: { isBot: true }, data: { isBot: false } });
     const botPassword = crypto.randomBytes(18).toString("base64url");
     const seeded = await ensureBotUser(prisma, { username: `${RUN}_bot`, password: botPassword, forcePassword: false });
     assert.equal(seeded.created, true);
     const again = await ensureBotUser(prisma, { username: `${RUN}_bot`, password: botPassword, forcePassword: false });
     assert.deepEqual(again, { id: seeded.id, created: false, passwordChanged: false }, "сид идемпотентен");
-    const botId = seeded.id;
+    botId = seeded.id;
+    resetSystemBotCache();
     const mk = (suffix: string, displayName: string) =>
       prisma.user.create({ data: { username: `${RUN}_${suffix}`, displayName, passwordHash: `x_${crypto.randomUUID()}` } });
     const alice = await mk("alice", "Алиса");
     const bob = await mk("bob", "Боб");
     const owner = await mk("owner", "Стон");
-    const carol = await mk("carol", "Кэрол");
     const tok = (id: string) => signAccessToken({ sub: id, tokenId: crypto.randomUUID() });
-    const [tA, tB, tO, tC] = [tok(alice.id), tok(bob.id), tok(owner.id), tok(carol.id)];
+    const [tA, tB, tO] = [tok(alice.id), tok(bob.id), tok(owner.id)];
     const conv = (isGroup: boolean, ids: string[], title?: string) =>
-      prisma.conversation.create({ data: { isGroup, ...(title ? { title } : {}), participants: { create: ids.map((userId) => ({ userId })) } } });
-    const dmAlice = await conv(false, [alice.id, botId]);
-    const dmOwner = await conv(false, [owner.id, botId]);
-    const group = await conv(true, [alice.id, bob.id, botId], `${RUN} группа`);
+      prisma.conversation.create({ data: { isGroup, ...(title ? { title } : {}), createdById: ids[0]!, participants: { create: ids.map((userId) => ({ userId })) } } });
+    const group = await conv(true, [alice.id, bob.id, owner.id], `${RUN} группа`);
+    const direct = await conv(false, [alice.id, bob.id]);
 
     // ---------- бот ----------
     let restarts = 0;
@@ -189,6 +198,7 @@ async function main() {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "eb-bot-it-"));
     const cfg = loadConfig({
       BOT_API_URL: baseUrl,
+      BOT_REDIS_URL: env.REDIS_URL,
       BOT_USERNAME: `${RUN}_bot`,
       BOT_PASSWORD: botPassword,
       BOT_OWNER_USER_ID: owner.id,
@@ -197,14 +207,25 @@ async function main() {
     const log = createLogger("debug", { svc: "eblusha-bot-it" }, (l) => logLines.push(l));
     handle = await startBot(cfg, log, { llm, extraModules: [itModule], assetsDir: path.resolve(__dirname, "../bot/assets") });
     const h = handle;
-    await waitFor("сокет бота подключён", async () => h.rt.connected);
 
-    // профиль: имя, описание, аватар из assets, EBLID
+    // профиль: имя, описание, аватар из assets, EBLID; бот — системный, не участник
     const botRow = await prisma.user.findUniqueOrThrow({ where: { id: botId } });
     assert.equal(botRow.displayName, "Еблуша");
+    assert.equal(botRow.isBot, true);
     assert.match(botRow.avatarUrl ?? "", /^\/api\/files\/.+/);
     assert.match(botRow.eblid ?? "", /^\d{4}$/);
-    console.log("[bot-it] ok: профиль бота (имя, аватар «Б», EBLID)");
+    console.log("[bot-it] ok: профиль бота (имя, аватар «Б», EBLID, isBot)");
+
+    aliceSock = ioClient(baseUrl, { path: "/socket.io/", transports: ["websocket"], auth: { token: tA } });
+    const sock = aliceSock;
+    const sockEvents: Array<{ event: string; payload: any }> = [];
+    sock.onAny((event: string, payload: any) => sockEvents.push({ event, payload }));
+    await new Promise<void>((res, rej) => {
+      sock.once("connect", () => res());
+      sock.once("connect_error", rej);
+    });
+    sock.emit("conversation:join", group.id);
+    await new Promise((r) => setTimeout(r, 200));
 
     const send = async (token: string, body: Record<string, unknown>) => {
       const r = await api<{ message: { id: string } }>(baseUrl, token, "POST", "/api/conversations/send", { type: "TEXT", ...body });
@@ -212,35 +233,41 @@ async function main() {
       return r.json.message.id;
     };
     const botReplyTo = (msgId: string) =>
-      waitFor(`ответ бота на ${msgId}`, () =>
-        prisma.message.findFirst({ where: { senderId: botId, replyToId: msgId }, include: { attachments: true } })
-      );
+      waitFor(`ответ бота на ${msgId}`, () => prisma.message.findFirst({ where: { senderId: botId, replyToId: msgId }, include: { attachments: true } }));
 
-    // ---------- вызов в личке ----------
-    const q1 = await send(tA, { conversationId: dmAlice.id, content: "Еблуша, Как дела у паука?" });
+    // ---------- группа: бот не участник, отвечает по обращению ----------
+    const q1 = await send(tA, { conversationId: group.id, content: "Еблуша, Как дела у паука?" });
     const a1 = await botReplyTo(q1);
     assert.equal(a1.content, "ОтветМодели42: **всё хорошо**.");
-    assert.equal(a1.conversationId, dmAlice.id);
+    assert.equal(a1.conversationId, group.id);
+    assert.equal(a1.isBot, true);
     assert.deepEqual(llm.calls[0]!.turns, [{ role: "user", text: "Алиса: Как дела у паука?" }]);
-    assert.match(llm.calls[0]!.contextNote, /личные сообщения/);
-    console.log("[bot-it] ok: «Еблуша, …» в личке → ответ ответом (replyToId)");
+    assert.match(llm.calls[0]!.contextNote, /группа «.+ группа», участников: 3/);
+    assert.equal(await prisma.conversationParticipant.count({ where: { conversationId: group.id, userId: botId } }), 0);
+    const typing = sockEvents.filter((e) => e.event === "conversation:typing_update" && e.payload?.userId === botId && e.payload?.conversationId === group.id);
+    assert.ok(typing.some((e) => e.payload.isTyping === true && e.payload.isBot === true), "«Еблуша печатает…» пришло в комнату беседы");
+    await waitFor("typing снят", async () =>
+      sockEvents.some((e) => e.event === "conversation:typing_update" && e.payload?.userId === botId && e.payload?.isTyping === false)
+    );
+    assert.ok(sockEvents.some((e) => e.event === "message:new" && e.payload?.message?.id === a1.id && e.payload.message.isBot === true));
+    console.log("[bot-it] ok: «Еблуша, …» в группе без бота-участника → ответ ответом (isBot), typing от бота");
 
     // ---------- продолжение ответом ----------
-    const q2 = await send(tA, { conversationId: dmAlice.id, content: "подробнее про лапки", replyToId: a1.id });
+    const q2 = await send(tB, { conversationId: group.id, content: "подробнее про лапки", replyToId: a1.id });
     await botReplyTo(q2);
-    assert.equal(llm.calls[1]!.turns.length, 3);
     assert.deepEqual(llm.calls[1]!.turns.map((t) => t.role), ["user", "assistant", "user"]);
+    assert.equal(llm.calls[1]!.turns[2]!.text, "Боб: подробнее про лапки");
     console.log("[bot-it] ok: продолжение ответом на сообщение бота — с историей цепочки");
 
     // ---------- «спасибо» → 👍 ----------
-    const thanks = await send(tA, { conversationId: dmAlice.id, content: "спасибо!", replyToId: a1.id });
+    const thanks = await send(tA, { conversationId: group.id, content: "спасибо!", replyToId: a1.id });
     await waitFor("реакция 👍", () => prisma.messageReaction.findFirst({ where: { messageId: thanks, userId: botId, emoji: "👍" } }));
     await new Promise((r) => setTimeout(r, 800));
     assert.equal(await prisma.message.count({ where: { senderId: botId, replyToId: thanks } }), 0);
     assert.equal(llm.calls.length, 2);
     console.log("[bot-it] ok: «спасибо» → реакция 👍 без текста и без модели");
 
-    // ---------- группа: не к боту — молчим; к боту — с картинкой ----------
+    // ---------- не к боту — молчим; к боту — с картинкой ----------
     const before = await prisma.message.count({ where: { senderId: botId, conversationId: group.id } });
     await send(tB, { conversationId: group.id, content: "просто болтаем, Еблуша тут ни при чём" });
     await new Promise((r) => setTimeout(r, 1500));
@@ -250,6 +277,7 @@ async function main() {
     const img = await waitFor("сообщение с картинкой", () =>
       prisma.message.findFirst({ where: { senderId: botId, conversationId: group.id, type: "IMAGE" }, include: { attachments: true } })
     );
+    assert.equal(img.isBot, true);
     const att = img.attachments[0]!;
     assert.equal(att.type, "IMAGE");
     const meta = att.metadata as Record<string, unknown>;
@@ -262,56 +290,48 @@ async function main() {
     assert.equal(bytes.subarray(0, 4).toString("hex"), "89504e47", "отдаётся расшифрованный PNG");
     console.log("[bot-it] ok: группа — молчит без обращения; /eb → текст + IMAGE через /api/upload");
 
-    // ---------- привязка ника ----------
-    const q4 = await send(tA, { conversationId: dmAlice.id, content: "Еблуша, мой ник в игре Парасюха" });
+    // ---------- личка двух людей ----------
+    const q4 = await send(tB, { conversationId: direct.id, content: "Еблуша, рассуди нас" });
     const a4 = await botReplyTo(q4);
-    assert.match(a4.content ?? "", /IiApaCiOxa/);
+    assert.equal(a4.conversationId, direct.id);
+    assert.match(llm.calls.at(-1)!.contextNote, /личная переписка двух людей/);
+    console.log("[bot-it] ok: личка двух людей — ответ туда же, бот не участник");
+
+    // ---------- «Чат с Еблушей»: включение, привязка без обращения, уведомление владельцу ----------
+    const onO = await api<{ conversationId: string }>(baseUrl, tO, "PUT", "/api/bot/settings", { botChatEnabled: true });
+    const onA = await api<{ conversationId: string }>(baseUrl, tA, "PUT", "/api/bot/settings", { botChatEnabled: true });
+    assert.equal(onO.status, 200);
+    const chatO = onO.json.conversationId;
+    const chatA = onA.json.conversationId;
+    const q5 = await send(tA, { conversationId: chatA, content: "мой ник в игре Парасюха" });
+    const a5 = await botReplyTo(q5);
+    assert.match(a5.content ?? "", /IiApaCiOxa/);
     assert.deepEqual(h.bot.coreServices().links.charactersOf(alice.id), ["IiApaCiOxa"]);
-    console.log("[bot-it] ok: привязка ника фразой (IiApaCiOxa = Парасюха)");
+    await waitFor("уведомление владельцу в его чат с ботом", () =>
+      prisma.message.findFirst({ where: { senderId: botId, conversationId: chatO, content: { contains: "Новая привязка" } } })
+    );
+    console.log("[bot-it] ok: «Чат с Еблушей» — без обращения; привязка ника; владельцу уведомление в его чат");
 
     // ---------- команда владельца с подтверждением ----------
-    const deny = await send(tA, { conversationId: dmAlice.id, content: "/eb ит-рестарт" });
+    const denyGroup = await send(tO, { conversationId: group.id, content: "/eb ит-рестарт" });
+    assert.match((await botReplyTo(denyGroup)).content ?? "", /только владелец/);
+    const deny = await send(tA, { conversationId: chatA, content: "/eb ит-рестарт" });
     assert.match((await botReplyTo(deny)).content ?? "", /только владелец/);
-    const c1 = await send(tO, { conversationId: dmOwner.id, content: "/eb ит-рестарт" });
+    const c1 = await send(tO, { conversationId: chatO, content: "ит-рестарт" });
     const question = await botReplyTo(c1);
     assert.match(question.content ?? "", /Точно перезапустить/);
     assert.equal(restarts, 0);
-    const yes1 = await send(tO, { conversationId: dmOwner.id, content: "да", replyToId: question.id });
+    const yes1 = await send(tO, { conversationId: chatO, content: "да", replyToId: question.id });
     assert.equal((await botReplyTo(yes1)).content, "Готово (ит).");
-    const yes2 = await send(tO, { conversationId: dmOwner.id, content: "да", replyToId: question.id });
+    const yes2 = await send(tO, { conversationId: chatO, content: "да", replyToId: question.id });
     assert.match((await botReplyTo(yes2)).content ?? "", /истёк или команда уже выполнена/);
     assert.equal(restarts, 1);
-    console.log("[bot-it] ok: команда владельца — только в его личке, «да» срабатывает один раз");
+    console.log("[bot-it] ok: команда владельца — только в его «Чате с Еблушей», «да» срабатывает один раз");
 
-    // ---------- секретный тред ----------
-    const st = await api<{ threadId: string }>(baseUrl, tA, "POST", "/api/threads/secret", { peerUserId: botId });
-    assert.ok(st.status === 201 || st.status === 200, JSON.stringify(st.json));
-    const threadId = st.json.threadId;
-    await waitFor("тред отклонён ботом", async () => (await prisma.conversation.findUnique({ where: { id: threadId } }))?.secretStatus === "CANCELLED");
-    await waitFor("записка в обычную личку", () =>
-      prisma.message.findFirst({ where: { senderId: botId, conversationId: dmAlice.id, content: { contains: "секретных чатах я не работаю" } } })
-    );
-    assert.equal(await prisma.message.count({ where: { conversationId: threadId } }), 0, "в секретный тред бот не писал");
-    console.log("[bot-it] ok: секретный тред отклонён, в него ни строки; объяснение — в обычной личке");
-
-    // ---------- контакт ----------
-    const add = await api<{ contact: { id: string } }>(baseUrl, tC, "POST", "/api/contacts/add", { userId: botId });
-    assert.equal(add.status, 201);
-    await waitFor("контакт принят", async () => (await prisma.contact.findUnique({ where: { id: add.json.contact.id } }))?.status === "ACCEPTED");
-    console.log("[bot-it] ok: запрос в контакты принят автоматически");
-
-    // ---------- звонок ----------
-    aliceSock = ioClient(baseUrl, { path: "/socket.io/", transports: ["websocket"], auth: { token: tA } });
-    const sock = aliceSock;
-    await new Promise<void>((res, rej) => {
-      sock.once("connect", () => res());
-      sock.once("connect_error", rej);
-    });
-    const declined = new Promise<{ conversationId: string; by: { id: string } }>((res) => sock.on("call:declined", res));
-    sock.emit("call:invite", { conversationId: dmAlice.id, video: false });
-    const d = await Promise.race([declined, new Promise<never>((_, rej) => setTimeout(() => rej(new Error("нет call:declined")), 8000))]);
-    assert.equal(d.by.id, botId);
-    console.log("[bot-it] ok: входящий звонок в личке отклонён ботом");
+    // ---------- бот нигде не участник, кроме личных чатов с ботом ----------
+    const memberships = await prisma.conversationParticipant.findMany({ where: { userId: botId }, select: { conversationId: true } });
+    assert.deepEqual(memberships.map((m) => m.conversationId).sort(), [chatA, chatO].sort());
+    console.log("[bot-it] ok: бот — участник только «Чатов с Еблушей»");
 
     // ---------- журнал без текста сообщений ----------
     assert.ok(logLines.some((l) => l.includes('"evt":"answer.sent"')), "ответы журналируются");
@@ -320,15 +340,12 @@ async function main() {
     }
     console.log(`[bot-it] ok: журнал (${logLines.length} строк) без текста сообщений`);
 
-    // ---------- в секретные беседы бот не пишет даже по прямой просьбе ядра ----------
-    assert.equal(await h.bot.sendReply(threadId, null, "тест"), null);
-
     const proof = {
       run: RUN,
-      userIds: [botId, alice.id, bob.id, owner.id, carol.id],
-      usernames: [`${RUN}_bot`, alice.username, bob.username, owner.username, carol.username],
+      userIds: [botId, alice.id, bob.id, owner.id],
+      usernames: [`${RUN}_bot`, alice.username, bob.username, owner.username],
       deviceIds: [`${RUN}-nodevice`],
-      threadId,
+      threadId: group.id,
       // prod-proof сверяет msgId с messages_secret (uuid); секретных сообщений тест не создаёт
       msgId: crypto.randomUUID(),
       redisKeys: [proofKey],
@@ -340,6 +357,8 @@ async function main() {
   } finally {
     aliceSock?.close();
     await handle?.stop().catch(() => undefined);
+    await getBotQueue().drain(true).catch(() => undefined);
+    if (botId) await prisma.user.update({ where: { id: botId }, data: { isBot: false, deletedAt: new Date() } }).catch(() => undefined);
     io.close();
     await new Promise<void>((r) => server.close(() => r()));
   }

@@ -2,13 +2,17 @@
  * Точка входа сервиса бота «Еблуша».
  *   node --disable-warning=ExperimentalWarning dist/src/main.js
  * Конфигурация — src/config.ts (переменные окружения), модули — src/modules/index.ts.
+ *
+ * Бот — часть системы мессенджера: обращения к нему сервер кладёт в очередь BullMQ `bot`
+ * (src/lib/systemBot.ts в корне репозитория), бот их забирает (api/queue.ts) и отвечает через
+ * /api/bot/* с разрешением из задачи. В беседах он не участник и сокет не держит.
  */
 import fs from "node:fs";
 import path from "node:path";
 import { describeConfig, loadConfig, type BotConfig } from "./config";
 import { createLogger, type Logger } from "./log";
 import { EblushaApi } from "./api/eblusha";
-import { Realtime } from "./api/realtime";
+import { BullJobSource, type JobSource } from "./api/queue";
 import { Bot } from "./core/bot";
 import { Registry } from "./core/registry";
 import { Store } from "./core/store";
@@ -19,7 +23,7 @@ import type { BotModule } from "./modules/api";
 import type { LlmEngine } from "./llm/types";
 
 const DISPLAY_NAME = "Еблуша";
-const BIO = "Бот. Позови: «Еблуша, …» или /eb. Продолжай ответом на моё сообщение.";
+const BIO = "Бот мессенджера. Позови в любой беседе: «Еблуша, …» или /eb. Продолжай ответом на моё сообщение.";
 
 /** Имя, описание и аватар (фирменная «Б») — один раз, если их ещё нет. */
 async function ensureProfile(api: EblushaApi, log: Logger, assetsDir: string): Promise<void> {
@@ -45,6 +49,8 @@ export interface StartOptions {
   /** Дополнительные модули (тесты); основные — из BOT_MODULES. */
   extraModules?: BotModule[];
   assetsDir?: string;
+  /** Источник задач (тесты); по умолчанию — очередь BullMQ из конфига. */
+  jobs?: JobSource;
 }
 
 export async function startBot(cfg: BotConfig, log: Logger, opts: StartOptions = {}) {
@@ -77,31 +83,20 @@ export async function startBot(cfg: BotConfig, log: Logger, opts: StartOptions =
     }
   }
 
-  let bot!: Bot;
-  const rt = new Realtime(
-    cfg.apiUrl,
-    () => api.accessToken(),
-    {
-      onMessage: (p) => bot.onMessage(p),
-      onConversationsChanged: (p) => bot.onConversationsChanged(p),
-      onSecretThread: (p) => bot.onSecretThread(p),
-      onContactRequest: (p) => bot.onContactRequest(p),
-      onIncomingCall: (p) => bot.onIncomingCall(p),
-      onConnect: () => bot.onConnect(),
-      onDisconnect: () => bot.onDisconnect(),
-    },
-    log.child({ c: "socket" })
-  );
-  bot = new Bot({ cfg, api, rt, store, llm: engine, registry, log: log.child({ c: "core" }) });
+  const bot = new Bot({ cfg, api, store, llm: engine, registry, log: log.child({ c: "core" }) });
   await bot.start();
-  rt.start();
+  const jobs =
+    opts.jobs ??
+    new BullJobSource({ redisUrl: cfg.redisUrl, queueName: cfg.queueName, concurrency: cfg.queueConcurrency }, log.child({ c: "queue" }));
+  jobs.start((job) => bot.handleJob(job));
 
   return {
     bot,
     api,
-    rt,
+    jobs,
     async stop() {
-      rt.stop();
+      await jobs.stop();
+      await bot.idle();
       await bot.stop();
       store.close();
     },

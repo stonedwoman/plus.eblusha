@@ -1,10 +1,13 @@
-/** Заглушки для юнит-тестов ядра: API Еблуши, сокет, модель. Ни одного сетевого вызова. */
-import type { ChatApi } from "../../src/api/eblusha";
-import type { RealtimeOut } from "../../src/api/realtime";
-import type { EbConversation, EbMessage, SendMessageInput } from "../../src/api/types";
+/**
+ * Заглушки для юнит-тестов ядра: API Еблуши (/api/bot/*), «сервер» (кто адресован боту, цепочка
+ * ответов, разрешения), модель. Ни одного сетевого вызова.
+ */
+import { ApiError, type ChatApi } from "../../src/api/eblusha";
+import type { BotConversationKind, BotJob, BotJobMessage, BotPostInput, EbMessage } from "../../src/api/types";
 import { loadConfig, type BotConfig } from "../../src/config";
 import { Bot } from "../../src/core/bot";
 import { ZERO_COST, type CostBreakdown } from "../../src/core/budget";
+import { stripCommandPrefix, stripNamePrefix } from "../../src/core/invoke";
 import { Registry } from "../../src/core/registry";
 import { Store } from "../../src/core/store";
 import type { AnswerRequest, AnswerResult, LlmEngine } from "../../src/llm/types";
@@ -15,10 +18,24 @@ export const BOT = "cbot0000000000000000000001";
 export const OWNER = "cowner00000000000000000001";
 export const ALICE = "calice00000000000000000001";
 export const BOB = "cbob0000000000000000000001";
+/** Личный «Чат с Еблушей» Алисы (kind "bot"). */
 export const DM_ALICE = "cdmalice000000000000000001";
+/** Личный «Чат с Еблушей» владельца (kind "bot"). */
 export const DM_OWNER = "cdmowner000000000000000001";
+/** Группа «Кобаны»: Алиса, Боб, владелец (бот — не участник). */
 export const GROUP = "cgroup00000000000000000001";
-export const SECRET = "csecret0000000000000000001";
+/** Личка Алисы и Боба (kind "dm"): ответ бота видят оба. */
+export const PAIR = "cpair000000000000000000001";
+
+export const NAMES: Record<string, string> = { [BOT]: "Еблуша", [OWNER]: "Стон", [ALICE]: "Алиса", [BOB]: "Боб" };
+
+export const CONVS: Record<string, { kind: BotConversationKind; title: string | null; participantIds: string[] }> = {
+  [DM_ALICE]: { kind: "bot", title: null, participantIds: [ALICE] },
+  [DM_OWNER]: { kind: "bot", title: null, participantIds: [OWNER] },
+  [GROUP]: { kind: "group", title: "Кобаны", participantIds: [ALICE, BOB, OWNER] },
+  [PAIR]: { kind: "dm", title: null, participantIds: [ALICE, BOB] },
+};
+const BOT_CHAT_OF: Record<string, string> = { [ALICE]: DM_ALICE, [OWNER]: DM_OWNER };
 
 let seq = 0;
 export function cuid(prefix = "cmsg"): string {
@@ -26,95 +43,67 @@ export function cuid(prefix = "cmsg"): string {
   return `${prefix}${String(seq).padStart(25 - prefix.length, "0")}`;
 }
 
-export function conversations(): EbConversation[] {
-  const u = (id: string, name: string) => ({ userId: id, user: { id, displayName: name } });
-  return [
-    { id: DM_ALICE, isGroup: false, isSecret: false, type: "CLOUD", participants: [u(BOT, "Еблуша"), u(ALICE, "Алиса")] },
-    { id: DM_OWNER, isGroup: false, isSecret: false, type: "CLOUD", participants: [u(BOT, "Еблуша"), u(OWNER, "Стон")] },
-    { id: GROUP, isGroup: true, isSecret: false, type: "CLOUD", title: "Кобаны", participants: [u(BOT, "Еблуша"), u(ALICE, "Алиса"), u(BOB, "Боб"), u(OWNER, "Стон")] },
-    { id: SECRET, isGroup: false, isSecret: true, type: "SECRET", secretStatus: "PENDING", participants: [u(BOT, "Еблуша"), u(ALICE, "Алиса")] },
-  ];
-}
+export type Sent = BotPostInput & { conversationId: string };
 
 export class FakeApi implements ChatApi {
   readonly baseUrl = "http://fake";
   readonly userId = BOT;
-  sent: SendMessageInput[] = [];
+  sent: Sent[] = [];
   sentMessages: EbMessage[] = [];
-  reactions: Array<{ messageId: string; emoji: string }> = [];
+  reactions: Array<{ conversationId: string; messageId: string; emoji: string }> = [];
+  typingEvents: string[] = [];
   uploads: Array<{ name: string; mime: string; size: number }> = [];
-  declined: string[] = [];
-  accepted: string[] = [];
-  history = new Map<string, EbMessage[]>();
-  convs = conversations();
+  /** grant → беседа (как Redis на сервере). */
+  grants = new Map<string, string>();
+  /** У кого включён «Чат с Еблушей». */
+  botChatOn = new Set<string>([ALICE, OWNER]);
+  history = new Map<string, EbMessage>();
 
   async me() {
     return { id: BOT, displayName: "Еблуша", avatarUrl: "/api/files/a.eblusha", bio: "бот" };
   }
   async updateMe() {}
-  async listConversations() {
-    return this.convs;
+  private convOf(grant: string): string {
+    const c = this.grants.get(grant);
+    if (!c) throw new ApiError(410, "/api/bot/messages", "BOT_GRANT_EXPIRED", "HTTP 410");
+    return c;
   }
-  async getMessages(conversationId: string) {
-    const all = [...(this.history.get(conversationId) ?? [])].reverse();
-    return { messages: all, nextCursor: null };
-  }
-  async sendMessage(input: SendMessageInput): Promise<EbMessage> {
-    if (this.convs.find((c) => c.id === input.conversationId)?.type === "SECRET") throw new Error("409 SECRET_E2EE_ONLY");
-    this.sent.push(input);
+  async postMessage(input: BotPostInput): Promise<EbMessage> {
+    let conversationId: string;
+    if (input.grant) conversationId = this.convOf(input.grant);
+    else {
+      const chat = input.userId ? BOT_CHAT_OF[input.userId] : undefined;
+      if (!chat || !this.botChatOn.has(input.userId!)) throw new ApiError(409, "/api/bot/messages", "BOT_CHAT_DISABLED", "HTTP 409 (BOT_CHAT_DISABLED)");
+      conversationId = chat;
+    }
+    this.sent.push({ ...input, conversationId });
     const m: EbMessage = {
       id: cuid("cbotmsg"),
-      conversationId: input.conversationId,
+      conversationId,
       senderId: BOT,
       type: input.type,
       content: input.content ?? null,
       createdAt: new Date().toISOString(),
       replyToId: input.replyToId ?? null,
       attachments: (input.attachments ?? []).map((a) => ({ ...a })),
+      isBot: true,
     };
     this.sentMessages.push(m);
-    this.addHistory(m);
+    this.history.set(m.id, m);
     return m;
   }
-  addHistory(m: EbMessage) {
-    const list = this.history.get(m.conversationId) ?? [];
-    list.push(m);
-    this.history.set(m.conversationId, list);
+  async typing(grant: string, typing: boolean) {
+    this.typingEvents.push(`${typing ? "on" : "off"}:${this.convOf(grant)}`);
   }
-  async react(messageId: string, emoji: string) {
-    this.reactions.push({ messageId, emoji });
+  async react(grant: string, messageId: string, emoji: string) {
+    this.reactions.push({ conversationId: this.convOf(grant), messageId, emoji });
   }
   async upload(data: Buffer, name: string, mime: string) {
     this.uploads.push({ name, mime, size: data.length });
     return { url: `/api/files/up${this.uploads.length}.eblusha`, path: `up${this.uploads.length}.eblusha` };
   }
-  async declineSecretThread(id: string) {
-    this.declined.push(id);
-  }
-  async acceptContact(id: string) {
-    this.accepted.push(id);
-  }
   async fetchFile() {
     return null;
-  }
-  async accessToken() {
-    return "token";
-  }
-}
-
-export class FakeRt implements RealtimeOut {
-  events: string[] = [];
-  typingStart(c: string) {
-    this.events.push(`start:${c}`);
-  }
-  typingPing(c: string) {
-    this.events.push(`ping:${c}`);
-  }
-  typingStop(c: string) {
-    this.events.push(`stop:${c}`);
-  }
-  declineCall(c: string) {
-    this.events.push(`decline:${c}`);
   }
 }
 
@@ -156,15 +145,32 @@ export function msg(p: Partial<EbMessage> & { conversationId: string; senderId: 
   } as EbMessage;
 }
 
+export function jobMessage(m: EbMessage): BotJobMessage {
+  return {
+    id: m.id,
+    senderId: m.senderId,
+    senderName: m.sender?.displayName ?? NAMES[m.senderId] ?? null,
+    isBot: m.isBot === true || m.senderId === BOT,
+    type: m.type === "SYSTEM" || m.type === "CALL" ? "TEXT" : m.type,
+    content: m.content,
+    createdAt: m.createdAt,
+    replyToId: m.replyToId ?? null,
+    attachments: (m.attachments ?? []).map((a) => ({ url: a.url, type: a.type, size: a.size ?? null, metadata: a.metadata ?? null })),
+  };
+}
+
 export interface Harness {
   bot: Bot;
   api: FakeApi;
-  rt: FakeRt;
   llm: FakeLlm;
   store: Store;
   images: OutgoingImage[];
-  /** Доставить сообщение боту (как message:notify) и дождаться обработки. */
-  deliver(m: EbMessage): Promise<void>;
+  /**
+   * «Отправить» сообщение в беседу, как это делает сервер: сохранить, решить, адресовано ли оно боту
+   * (те же правила, что detectBotAddress), и если да — отдать боту задачу с цепочкой и разрешением.
+   * Возвращает задачу (или null — боту не досталось) после того, как бот её обработал.
+   */
+  deliver(m: EbMessage, over?: Partial<BotJob>): Promise<BotJob | null>;
 }
 
 export const PNG_1x1 = Buffer.from(
@@ -174,16 +180,15 @@ export const PNG_1x1 = Buffer.from(
 
 export async function harness(opts: { cfg?: Partial<BotConfig>; modules?: BotModule[]; llm?: FakeLlm | null; now?: () => number } = {}): Promise<Harness> {
   const api = new FakeApi();
-  const rt = new FakeRt();
   const llm = opts.llm === undefined ? new FakeLlm() : opts.llm;
   const store = new Store(":memory:");
   const registry = new Registry();
   for (const m of opts.modules ?? []) registry.add(m);
   const images: OutgoingImage[] = [];
+  const now = opts.now ?? Date.now;
   const bot = new Bot({
     cfg: testConfig(opts.cfg),
     api,
-    rt,
     store,
     llm: llm ?? null,
     registry,
@@ -198,17 +203,57 @@ export async function harness(opts: { cfg?: Partial<BotConfig>; modules?: BotMod
     },
   });
   await bot.start();
+  let grantSeq = 0;
   return {
     bot,
     api,
-    rt,
     llm: llm ?? new FakeLlm(),
     store,
     images,
-    async deliver(m: EbMessage) {
-      api.addHistory(m);
-      bot.onMessage({ conversationId: m.conversationId, messageId: m.id, senderId: m.senderId, message: m });
+    async deliver(m: EbMessage, over: Partial<BotJob> = {}) {
+      api.history.set(m.id, m);
+      const conv = CONVS[m.conversationId];
+      if (!conv) return null;
+      const parent = m.replyToId ? api.history.get(m.replyToId) : undefined;
+      const text = m.content ?? "";
+      const via =
+        conv.kind === "bot"
+          ? "botchat"
+          : stripNamePrefix(text) !== null
+            ? "name"
+            : stripCommandPrefix(text) !== null
+              ? "command"
+              : parent && parent.conversationId === m.conversationId && (parent.isBot || parent.senderId === BOT)
+                ? "reply"
+                : null;
+      if (!via) return null;
+      const chain: BotJobMessage[] = [];
+      let pid = m.replyToId ?? null;
+      while (pid && chain.length < 11) {
+        const p = api.history.get(pid);
+        if (!p || p.conversationId !== m.conversationId) break;
+        chain.unshift(jobMessage(p));
+        pid = p.replyToId ?? null;
+      }
+      const grant = `grant_${++grantSeq}_xxxxxxxxxxxxxxxx`;
+      api.grants.set(grant, m.conversationId);
+      const t = now();
+      const job: BotJob = {
+        v: 1,
+        kind: "message",
+        enqueuedAt: t,
+        grant,
+        grantExpiresAt: t + 20 * 60_000,
+        via,
+        conversation: { id: m.conversationId, ...conv },
+        author: { id: m.senderId, displayName: m.sender?.displayName ?? NAMES[m.senderId] ?? null },
+        message: jobMessage(m),
+        chain,
+        ...over,
+      };
+      await bot.handleJob(job);
       await bot.idle();
+      return job;
     },
   };
 }
