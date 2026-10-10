@@ -8,8 +8,9 @@ import SwiftUI
 /// Сценарии: `header` (1:1, «14:30, Красноярск» под «В сети»), `header-offset` (пояс без города —
 /// «UTC+5:30»), `header-same` (пояс совпадает с моим — строки нет), `header-secret` (под чипом
 /// секретки), `header-typing` (под «печатает…»), `header-group` (группа — строки нет никогда),
-/// `header-long` (длинное имя и длинный город). Нужен, чтобы увидеть, помещаются ли три строки в
-/// системную панель навигации.
+/// `header-long` (длинное имя и длинный город), `header-muted` (группа «Без звука»: перечёркнутый
+/// колокольчик после названия; «…» — настоящее меню с «Включить звук до …»). Нужен, чтобы увидеть,
+/// помещаются ли три строки в системную панель навигации.
 struct ChatHeaderDemo: View {
     let scenarioId: String
 
@@ -38,7 +39,11 @@ struct ChatHeaderDemo: View {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Image(systemName: "video")
                     Image(systemName: "phone")
-                    Image(systemName: "ellipsis")
+                    Menu {
+                        MuteMenuItems(conversationId: "demo-conv")
+                    } label: {
+                        Label("Ещё", systemImage: "ellipsis")
+                    }
                 }
             }
             .toolbar {
@@ -55,19 +60,29 @@ struct ChatHeaderDemo: View {
     private var model: ChatHeaderModel {
         ChatHeaderModel(
             conversationId: "demo-conv",
-            title: scenarioId == "header-long" ? "Константин Константинопольский" : (scenarioId == "header-group" ? "Еблуши" : "Валентина"),
+            title: scenarioId == "header-long" ? "Константин Константинопольский" : (isGroup ? "Еблуши" : "Валентина"),
             avatarUrl: nil,
-            isGroup: scenarioId == "header-group",
-            peerUserId: scenarioId == "header-group" ? nil : "demo-peer",
+            isGroup: isGroup,
+            peerUserId: isGroup ? nil : "demo-peer",
             peerStatus: "ONLINE",
             peerLastSeen: nil,
             typingName: scenarioId == "header-typing" ? "Валентина" : nil,
-            groupSubtitle: scenarioId == "header-group" ? "Валентина, Костя, Саша" : nil,
+            groupSubtitle: isGroup ? "Валентина, Костя, Саша" : nil,
             secretState: scenarioId == "header-secret" ? .ready : nil
         )
     }
 
+    private var isGroup: Bool { scenarioId == "header-group" || scenarioId == "header-muted" }
+
     private func seed() {
+        // «Без звука» демо-беседы: на час — в header-muted, иначе звук включён.
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        ConversationMuteStore.shared.applyList(
+            owner: nil,
+            items: ["demo-conv": scenarioId == "header-muted" ? nowMs + 3_600_000 : nil],
+            serverNowMs: nowMs,
+            requestedAtMs: nowMs
+        )
         let info: LocalTimeInfo
         switch scenarioId {
         case "header-offset":

@@ -176,7 +176,7 @@ final class RealtimeClient: ObservableObject {
             .messageNew(conversationId: $0.conversationId, messageId: $0.messageId, senderId: $0.senderId, message: $0.message)
         }
         bind(socket, "message:notify", MessageEventPayload.self) {
-            .messageNotify(conversationId: $0.conversationId, messageId: $0.messageId, senderId: $0.senderId, message: $0.message)
+            .messageNotify(conversationId: $0.conversationId, messageId: $0.messageId, senderId: $0.senderId, message: $0.message, muted: $0.muted)
         }
         bind(socket, "message:update", MessageEventPayload.self) {
             .messageUpdate(conversationId: $0.conversationId, messageId: $0.messageId)
@@ -239,6 +239,20 @@ final class RealtimeClient: ObservableObject {
             guard let dict = data.first as? [String: Any],
                   let event = ReadSelfEvent.parse(dict) else { return }
             ReadSelfBanners.shared.enqueue(event)
+        }
+        // «Без звука» (ConversationMuteStore, docs/conversation-mute.md §3): заглушили или включили
+        // звук здесь или на другом своём устройстве — значок и серое непрочитанное сразу.
+        socket.on("conversation:mute") { data, _ in
+            guard let dict = data.first as? [String: Any],
+                  let event = ConversationMuteEvent.parse(dict) else { return }
+            ConversationMuteStore.shared.applyEvent(event)
+        }
+        // Снапшот при каждом подключении — замена целиком: так доходит «Включить звук», нажатый,
+        // пока телефон был без связи.
+        socket.on("conversation:mute:snapshot") { data, _ in
+            guard let dict = data.first as? [String: Any],
+                  let snapshot = ConversationMuteSnapshot.parse(dict) else { return }
+            ConversationMuteStore.shared.applySnapshot(snapshot)
         }
         // Местное время собеседника (LocalTime.swift): сменился его пояс или он скрыл/открыл
         // время; null — строку убрать.

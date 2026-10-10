@@ -46,6 +46,8 @@ targets:
         product: LiveKit
       - package: SocketIO
         product: SocketIO
+      # Встраивается в приложение (PlugIns/): «Без звука» и значок для alert-пушей.
+      - target: EblushaNotificationService
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.eblusha.plus
@@ -72,3 +74,30 @@ targets:
         Release:
           EBLUSHA_API_BASE_URL: https://eblusha.org/api/
           EBLUSHA_WS_BASE_URL: https://eblusha.org
+
+  # Notification Service Extension (docs/ios-handoff.md §16): через неё проходит каждый alert-пуш
+  # о сообщении (mutable-content). Глушит пуш, поставленный сервером за миг до «Без звука», и ставит
+  # число на значке. Из приложения — только два общих файла правил и состояния: у расширения свой
+  # процесс и лимит памяти ~24 МБ, LiveKit/SocketIO ему не нужны.
+  EblushaNotificationService:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: NotificationService
+        excludes:
+          - "**/.DS_Store"
+      - path: Eblusha/Core/Mute/ConversationMuteRules.swift
+      - path: Eblusha/Core/Mute/MuteSharedState.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.eblusha.plus.NotificationService
+        PRODUCT_NAME: EblushaNotificationService
+        INFOPLIST_FILE: NotificationService/Info.plist
+        CODE_SIGN_ENTITLEMENTS: NotificationService/NotificationService.entitlements
+        TARGETED_DEVICE_FAMILY: "1"
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+        # Версии обязаны совпадать с приложением (CURRENT_PROJECT_VERSION ios-release.sh передаёт
+        # в командной строке — он ложится на все таргеты).
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"

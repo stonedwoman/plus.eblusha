@@ -367,7 +367,7 @@ final class ChatViewModel: ObservableObject {
                 }
             }
 
-        case .messageNew(let cid, _, _, let message), .messageNotify(let cid, _, _, let message):
+        case .messageNew(let cid, _, _, let message), .messageNotify(let cid, _, _, let message, _):
             guard cid == conversationId, !secretMode else { return }
             appendRealtime(message)
 

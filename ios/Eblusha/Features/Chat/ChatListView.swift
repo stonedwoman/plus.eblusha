@@ -26,6 +26,11 @@ struct ChatListView: View {
     /// родитель, см. UserCardSheet). Из списка сейчас не вызывается — тап по аватару, как и по
     /// строке, открывает чат, а карточка доступна из шапки самого чата; точка входа сохранена.
     @State private var userCard: UserCardSeed?
+    /// «Без звука»: значок, серое непрочитанное, пункты меню. Наблюдаем стор целиком — его тик
+    /// (истечение срока, событие с другого устройства) перерисовывает плитки.
+    @ObservedObject private var mutes = ConversationMuteStore.shared
+    /// Плитка, для которой свайпом открыт лист «Без звука на…».
+    @State private var mutePickerTarget: Conversation?
     var body: some View {
         VStack(spacing: 0) {
             // Брендовая шапка вместо системной панели — как панель списка веба.
@@ -69,6 +74,7 @@ struct ChatListView: View {
         .alert(item: $confirmDelete) { target in
             deleteAlert(target)
         }
+        .mutePicker($mutePickerTarget)
         .sheet(item: $userCard) { seed in
             UserCardSheet(
                 seed: seed,
@@ -102,6 +108,9 @@ struct ChatListView: View {
 
                 // Идущий звонок в беседе: подсветка строки, подпись и кнопка входа.
                 let call = vm.callTile(for: conversation.id)
+                // «Без звука»: значок после названия, серое непрочитанное, рамка не горит от
+                // непрочитанного (от звонка — горит: это «тихая отметка» группового звонка).
+                let muted = mutes.isMuted(conversation.id)
 
                 ConversationRow(
                     c: conversation,
@@ -109,6 +118,8 @@ struct ChatListView: View {
                     botTyping: vm.ui.botTypingConversations.contains(conversation.id),
                     hasCloudSibling: hasCloudSibling,
                     call: call,
+                    muted: muted,
+                    muteTip: muted ? mutes.tip(conversation.id) : nil,
                     onTap: { onOpenChat(conversation) },
                     onJoinCall: { vm.joinCall(conversation) }
                 )
@@ -120,7 +131,7 @@ struct ChatListView: View {
                 .background(conversationCardFill(call), in: RoundedRectangle(cornerRadius: 12))
                 .overlay {
                     RoundedRectangle(cornerRadius: 12)
-                        .strokeBorder(cardBorderColor(conversation, call: call), lineWidth: 1.5)
+                        .strokeBorder(cardBorderColor(conversation, call: call, muted: muted), lineWidth: 1.5)
                 }
                 .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
                 // Поля от краёв экрана и вложенность секретки — как в вебе (16 и +14).
@@ -146,7 +157,27 @@ struct ChatListView: View {
                         .tint(Eb.brand)
                     }
                 }
+                // Свайп слева направо — «Без звука» (лист сроков) или «Звук» (сразу включить).
+                .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                    if muted {
+                        Button {
+                            mutes.setMute(conversation.id, preset: nil)
+                        } label: {
+                            Label(MuteText.unmuteShort, systemImage: "bell")
+                        }
+                        .tint(Eb.brand)
+                    } else {
+                        Button {
+                            mutePickerTarget = conversation
+                        } label: {
+                            Label(MuteText.mute, systemImage: "bell.slash")
+                        }
+                        .tint(Eb.offline)
+                    }
+                }
                 .contextMenu {
+                    // Первым пунктом, как на вебе, ПК и Android.
+                    MuteMenuItems(conversationId: conversation.id)
                     if canMarkRead {
                         Button {
                             vm.markConversationRead(conversation)
@@ -205,11 +236,12 @@ struct ChatListView: View {
     }
 
     /// Цвет канта карточки: звонок → бренд, секретка → зелёный, непрочитанные ярче
-    /// онлайна (порядок из веба), иначе обычный кант.
-    private func cardBorderColor(_ c: Conversation, call: CallTile?) -> Color {
+    /// онлайна (порядок из веба), иначе обычный кант. Непрочитанное заглушённой беседы канта
+    /// не зажигает — звонок зажигает.
+    private func cardBorderColor(_ c: Conversation, call: CallTile?, muted: Bool) -> Color {
         if let call, call.kind != .ended { return Eb.brand }
         if c.isSecretV2 { return secretGreen.opacity(0.45) }
-        if c.unreadCount > 0 { return Eb.brand600 }
+        if c.unreadCount > 0 && !muted { return Eb.brand600 }
         if c.online && !c.isGroup && !c.isBotChat { return Eb.brand }
         return Eb.borderStrong
     }
@@ -438,6 +470,10 @@ private struct ConversationRow: View {
     var hasCloudSibling = false
     /// Звонок в этой беседе (nil — звонка нет); считает ChatListViewModel.callTile.
     var call: CallTile?
+    /// «Без звука»: значок после названия, счётчик и время серые.
+    var muted = false
+    /// «Без звука до 18:30» — значение значка для VoiceOver.
+    var muteTip: String?
     let onTap: () -> Void
     var onJoinCall: () -> Void = {}
 
@@ -462,12 +498,17 @@ private struct ConversationRow: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    titleText
+                    HStack(alignment: .firstTextBaseline, spacing: 5) {
+                        titleText
+                        if muted {
+                            MutedBellIcon(size: 12, tip: muteTip)
+                        }
+                    }
                     Spacer(minLength: 4)
                     if let at = c.lastMessageAt {
                         Text(formatListTime(at))
                             .font(.caption)
-                            .foregroundStyle(c.unreadCount > 0 ? Eb.brand : Eb.textMuted)
+                            .foregroundStyle(c.unreadCount > 0 && !muted ? Eb.brand : Eb.textMuted)
                     }
                 }
                 HStack(spacing: 8) {
@@ -563,13 +604,15 @@ private struct ConversationRow: View {
         .lineLimit(1)
     }
 
+    /// Капсула непрочитанного. У заглушённой беседы — серая (как в Telegram): число видно,
+    /// но не зовёт.
     private var unreadBadge: some View {
         Text(c.unreadCount > 99 ? "99+" : "\(c.unreadCount)")
             .font(.caption2.weight(.bold))
             .foregroundStyle(.white)
             .padding(.horizontal, 6)
             .frame(minWidth: 22, minHeight: 22)
-            .background(Eb.brand, in: Capsule())
+            .background(muted ? Eb.offline : Eb.brand, in: Capsule())
     }
 
     /// Вторая строка плитки: статус беседы И превью последнего сообщения вместе.

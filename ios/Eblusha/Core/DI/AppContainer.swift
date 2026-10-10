@@ -62,6 +62,25 @@ final class AppContainer {
         }
         // Секретный чат из карточки контакта заводится через ContactsRepository.
         contactsRepository.secretRepository = secretRepository
+        // «Без звука» и значок приложения по списку бесед и по прочтению. Только замыкания: сами
+        // хранилища берут AppContainer.shared, и трогать их из этого init нельзя (рекурсия
+        // инициализации синглтона).
+        chatRepository.onListLoaded = { batch in
+            let mutes = ConversationMuteStore.shared
+            mutes.applyList(
+                owner: batch.owner, items: batch.mutes,
+                serverNowMs: batch.serverNowMs, requestedAtMs: batch.requestedAtMs
+            )
+            AppBadge.shared.listLoaded(
+                owner: batch.owner, unread: batch.unread,
+                atMs: batch.serverNowMs ?? (batch.requestedAtMs + mutes.state.serverOffsetMs)
+            )
+        }
+        chatRepository.onConversationRead = { conversationId in
+            // Всё, что пришло до «сейчас» (+ допуск на часы), прочитано.
+            let upTo = ConversationMuteStore.shared.nowMs + Int64(ReadPush.clockTolerance * 1000)
+            AppBadge.shared.conversationRead(conversationId, upToMs: upTo)
+        }
     }
 
     /// Порт container.clearLocalData(): при выходе стираем всё локальное.
@@ -87,6 +106,9 @@ final class AppContainer {
         LocalTimeService.shared.resetForLogout()
         // Настройка «Чат с Еблушей» принадлежала прошлой сессии (профиль бота — общий для сервера).
         SystemBotStore.shared.resetForLogout()
+        // «Без звука» и журнал значка — настройки прошлой сессии; значок гаснет.
+        ConversationMuteStore.shared.resetForLogout()
+        AppBadge.shared.reset()
     }
 
     /// Прогрев на старте: поднять сессию из Keychain (порт container.warmup()).
@@ -96,6 +118,9 @@ final class AppContainer {
         guard !warmedUp else { return }
         warmedUp = true
         sessionStore.load()
+        // Значок слушает «Без звука» с первой секунды: событие и истечение срока, случившиеся до
+        // первого списка бесед, тоже меняют число.
+        _ = AppBadge.shared
     }
 
     private var warmedUp = false

@@ -7,5 +7,12 @@
 	     подписи дистрибутива сам заменяет значение на production. -->
 	<key>aps-environment</key>
 	<string>development</string>
+	<!-- Общий домен с Notification Service Extension: «Без звука» и журнал значка
+	     (Core/Mute/MuteSharedState.swift). Ключи Keychain это не трогает: без
+	     keychain-access-groups группа доступа по умолчанию остаётся прежней. -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.org.eblusha.plus</string>
+	</array>
 </dict>
 </plist>

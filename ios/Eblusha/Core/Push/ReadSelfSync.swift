@@ -66,6 +66,10 @@ final class ReadSelfBanners {
         pending = [:]
         scheduled = false
         guard !batch.isEmpty else { return }
+        // Значок: прочитанные (где угодно) беседы выходят из общего счётчика.
+        for (conversationId, upTo) in batch {
+            AppBadge.shared.conversationRead(conversationId, upToMs: Int64(upTo.timeIntervalSince1970 * 1000))
+        }
         MessageNotifications.shared.clearDelivered(upTo: batch) { removed in
             if removed > 0 {
                 NSLog("ReadSelf: снято баннеров: %d (бесед: %d)", removed, batch.count)
