@@ -37,10 +37,13 @@ import { useChatSocketSubscriptions } from '../hooks/useChatSocketSubscriptions'
 import { useChatTyping } from '../hooks/useChatTyping'
 import { useChatsResponsive } from '../hooks/useChatsResponsive'
 import { isBotChatConversation } from '../../../../domain/bot/systemBot'
+import { MutedBellIcon } from '../components/ConversationMuteUi'
 
 export interface ConversationListPaneCtx {
   /** id системного бота «Еблуша» (null — бот не заведён). */
   botId: string | null
+  /** «Без звука» сейчас (domain/mute/muteSync.ts): непрочитанное серым, рамка от него не загорается. */
+  isConversationMuted: (conversationId: string) => boolean
   activeCalls: any
   activeId: any
   avatarPresenceForUser: any
@@ -73,7 +76,7 @@ export interface ConversationListPaneCtx {
 }
 
 export function renderConversationList(mobile: boolean, ctx: ConversationListPaneCtx) {
-  const { botId, activeCalls, activeId, avatarPresenceForUser, callConvId, callStore, contactsQuery, convHasBottomFade, convHasTopFade, convScrollRef, conversationsQuery, currentUserId, effectiveUserStatus, formatDuration, formatPresence, incomingContactsQuery, isSocketOnline, me, meInfoQuery, minimizedCallConvId, myPresence, openContactsOverlay, openUserCard, outgoingCall, presenceGameByUserId, selectConversation, setConvMenu, setMePopupOpen, setNewGroupOpen, typingByConversationId } = ctx
+  const { botId, isConversationMuted, activeCalls, activeId, avatarPresenceForUser, callConvId, callStore, contactsQuery, convHasBottomFade, convHasTopFade, convScrollRef, conversationsQuery, currentUserId, effectiveUserStatus, formatDuration, formatPresence, incomingContactsQuery, isSocketOnline, me, meInfoQuery, minimizedCallConvId, myPresence, openContactsOverlay, openUserCard, outgoingCall, presenceGameByUserId, selectConversation, setConvMenu, setMePopupOpen, setNewGroupOpen, typingByConversationId } = ctx
     const className = mobile ? 'conversations-list slider-panel' : 'conversations-list'
     return (
       <aside className={className}>
@@ -204,6 +207,9 @@ export function renderConversationList(mobile: boolean, ctx: ConversationListPan
               isLocalConnectedToCall ||
               (isGroup && isDialingThisConversation)
             const isConnectedToCall = callConvId === c.id
+            // «Без звука»: непрочитанное — серым и без брендовой рамки (число остаётся; рамку от звонка не трогаем).
+            const isMuted = isConversationMuted(c.id)
+            const hasLoudUnread = row.unreadCount > 0 && !isMuted
             return (
               <div
                 key={c.id}
@@ -216,6 +222,7 @@ export function renderConversationList(mobile: boolean, ctx: ConversationListPan
                   setConvMenu({ open: true, x: e.clientX, y: e.clientY, conversationId: c.id })
                 }}
                 onClick={() => selectConversation(c.id)}
+                data-conversation-id={c.id}
                 className="tile"
                 style={{
                   ...(sub === 'secret'
@@ -226,7 +233,7 @@ export function renderConversationList(mobile: boolean, ctx: ConversationListPan
                         borderColor: 'rgba(34,197,94,0.22)',
                       }
                     : {}),
-                  ...(row.unreadCount > 0 ? { borderColor: 'var(--brand-600)', boxShadow: '0 3px 10px rgba(227,139,10,0.15)' } : {}),
+                  ...(hasLoudUnread ? { borderColor: 'var(--brand-600)', boxShadow: '0 3px 10px rgba(227,139,10,0.15)' } : {}),
                   ...(isActive ? { borderColor: 'var(--brand-600)', boxShadow: '0 4px 12px rgba(227,139,10,0.14)' } : {}),
                   ...(isCallActive
                     ? {
@@ -310,8 +317,9 @@ export function renderConversationList(mobile: boolean, ctx: ConversationListPan
                         <Lock size={12} color="#22c55e" />
                       </span>
                     )}
+                    <MutedBellIcon conversationId={c.id} size={14} />
                   </div>
-                  <div style={{ fontSize: 12, color: row.unreadCount > 0 ? 'var(--brand-600)' : 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <div data-testid="conv-status-line" style={{ fontSize: 12, color: hasLoudUnread ? 'var(--brand-600)' : 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
                     {(() => {
                             // Secret tile: lock + caps label only — no status line at all.
                             if (sub === 'secret') return null

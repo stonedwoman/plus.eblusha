@@ -34,6 +34,7 @@ import { VideoMessageBubble } from '../../../components/VideoMessageBubble'
 import { LazyImage } from '../../../components/LazyImage'
 import { LinkDeviceModal } from '../../../components/LinkDeviceModal'
 import { PeerLocalTimeLine } from '../components/PeerLocalTimeLine'
+import { MutedBellIcon } from '../components/ConversationMuteUi'
 import LoadingSpinner from '../../../components/LoadingSpinner'
 import { systemConfirm, systemToast } from '../../../../domain/store/systemUiStore'
 import { canForwardFromConversation } from '../../../../domain/secret/secretInboxGuards'
@@ -343,7 +344,10 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                     </div>
                     <div style={{ flex: 1, minWidth: 0, order: isMobile ? 1 : 2 }}>
                       <div style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'space-between' }}>
-                        <span onClick={() => setGroupAvatarEditor(true)} style={{ cursor: 'pointer' }} title="Настройки группы">{title}</span>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                          <span onClick={() => setGroupAvatarEditor(true)} style={{ cursor: 'pointer' }} title="Настройки группы">{title}</span>
+                          <MutedBellIcon conversationId={activeConversation.id} size={14} />
+                        </span>
                         {isMobile && (
                           <button
                             className="btn btn-icon btn-ghost"
@@ -490,7 +494,10 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                         </div>
                         <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'space-between' }}>
-                          <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</span>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                            <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</span>
+                            <MutedBellIcon conversationId={activeConversation.id} size={14} />
+                          </span>
                             {isMobile && (
                               <button
                                 className="btn btn-icon btn-ghost"

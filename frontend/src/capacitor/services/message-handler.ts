@@ -63,8 +63,9 @@ export class MessageHandler {
 
       const isActive = this.callbacks.isConversationActive?.(payload.conversationId) ?? false
 
-      // Если беседа не активна или приложение в фоне - показываем уведомление
-      if (!isActive) {
+      // Если беседа не активна или приложение в фоне - показываем уведомление.
+      // «Без звука» (docs/conversation-mute.md §3): muted:true — сервер решил не будить этого получателя.
+      if (!isActive && payload.muted !== true) {
         await this.handleMessageNotification(payload)
       }
 

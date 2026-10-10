@@ -42,6 +42,7 @@ import { copyImageFromUrl, copyPlainText } from '../../../../utils/clipboard'
 
 import { VoiceMessagePlayer } from '../components/VoiceMessagePlayer'
 import { DeviceLinkInline } from '../components/DeviceLinkInline'
+import { MuteMenuSection } from '../components/ConversationMuteUi'
 import { useChatAudio } from '../hooks/useChatAudio'
 import { useChatSocketSubscriptions } from '../hooks/useChatSocketSubscriptions'
 import { useChatTyping } from '../hooks/useChatTyping'
@@ -3260,7 +3261,12 @@ export function renderChatModals(ctx: ChatModalsCtx) {
             }
 
             return (
-              <>
+              <MuteMenuSection
+                key={String(convMenu.conversationId)}
+                conversationId={String(convMenu.conversationId)}
+                mobile={!!isMobile}
+                onClose={() => setConvMenu({ open: false, x: 0, y: 0, conversationId: null })}
+              >
                 {canStartSecret && (
                   <button
                     onClick={async () => {
@@ -3290,7 +3296,7 @@ export function renderChatModals(ctx: ChatModalsCtx) {
                   {isGroup ? <LogOut size={16} /> : <Trash2 size={16} />}
                   {isGroup ? 'Выйти из беседы' : isSecretV2Row ? 'Закрыть секретный чат' : 'Удалить беседу'}
                 </button>
-              </>
+              </MuteMenuSection>
             )
           })()}
         </div>
@@ -3318,9 +3324,10 @@ export function renderChatModals(ctx: ChatModalsCtx) {
             const peer = !isGroup && activeConversation.participants?.find((p: any) => p.user.id !== currentUserId)?.user
             const isBotChatHere = !isGroup && isBotChatConversation(activeConversation, botId)
 
+            const closeHeaderMenu = () => setHeaderMenu({ open: false, anchor: null })
             if (isGroup) {
               return (
-                <>
+                <MuteMenuSection key={activeConversation.id} conversationId={activeConversation.id} mobile={!!isMobile} onClose={closeHeaderMenu}>
                   <button
                     onClick={() => {
                       setAddParticipantsSelectedIds([])
@@ -3355,11 +3362,11 @@ export function renderChatModals(ctx: ChatModalsCtx) {
                     <LogOut size={16} />
                     Выйти из беседы
                   </button>
-                </>
+                </MuteMenuSection>
               )
             } else {
               return (
-                <>
+                <MuteMenuSection key={activeConversation.id} conversationId={activeConversation.id} mobile={!!isMobile} onClose={closeHeaderMenu}>
                   {isBotChatHere ? (
                     // «Покинуть» чат с ботом = выключить «Чат с Еблушей» (история сохранится).
                     <button
@@ -3423,7 +3430,7 @@ export function renderChatModals(ctx: ChatModalsCtx) {
                     <Trash2 size={16} />
                     Удалить чат
                   </button>
-                </>
+                </MuteMenuSection>
               )
             }
           })()}
