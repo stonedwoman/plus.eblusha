@@ -57,6 +57,7 @@ import { DeviceLinkInline } from './chats/components/DeviceLinkInline'
 import { DIALING_TONE_PERIOD_MS, useChatAudio } from './chats/hooks/useChatAudio'
 import { useChatSocketSubscriptions } from './chats/hooks/useChatSocketSubscriptions'
 import { useReadSelfSync } from './chats/hooks/useReadSelfSync'
+import { callOverlayCoversChat, canReadNow, createInputPresence } from '../../domain/readSync/readGate'
 import { useChatTyping } from './chats/hooks/useChatTyping'
 import { useChatsResponsive } from './chats/hooks/useChatsResponsive'
 import { useChatUiStore } from '../../core/chat-sync/chatUiStore'
@@ -4301,10 +4302,42 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   // на телефоне и ПК (как CloudReadGate на Android, CanAutoMarkRead в нативе).
   const readOnScreenRef = useRef(true)
   readOnScreenRef.current = !isMobile || mobileView === 'conversation'
+  // …а ещё беседу не закрывает развёрнутый звонок и человек у экрана (ввод меньше минуты назад): окно, оставленное
+  // «на виду» ушедшим от компьютера человеком, иначе гасило бы уведомление на телефоне в его кармане.
+  // Правило — domain/readSync/readGate.ts (то же у натива ПК, iOS и Android).
+  const callCoversChat = callOverlayCoversChat({
+    callConvId,
+    minimizedCallConvId,
+    outgoingConversationId: outgoingCall?.conversationId ?? null,
+    outgoingIsGroup: (() => {
+      if (!outgoingCall) return false
+      const conv = getConversationFromCache(outgoingCall.conversationId)
+      return !!(conv?.isGroup || (conv?.participants?.length ?? 0) > 2)
+    })(),
+  })
+  const callCoversChatRef = useRef(callCoversChat)
+  callCoversChatRef.current = callCoversChat
+  // Вернулся к экрану после простоя — дочитать пришедшее без него (readNowRef ставится ниже, после markAllReadNow).
+  const readNowRef = useRef<() => void>(() => {})
+  const inputPresenceRef = useRef<ReturnType<typeof createInputPresence> | null>(null)
+  useEffect(() => {
+    const presence = createInputPresence({ onReturn: () => readNowRef.current() })
+    inputPresenceRef.current = presence
+    return () => {
+      presence.dispose()
+      if (inputPresenceRef.current === presence) inputPresenceRef.current = null
+    }
+  }, [])
 
   function canAutoMarkRead() {
     try {
-      return document.visibilityState === 'visible' && document.hasFocus() && readOnScreenRef.current
+      return canReadNow({
+        visible: document.visibilityState === 'visible',
+        focused: document.hasFocus(),
+        onScreen: readOnScreenRef.current,
+        callCovers: callCoversChatRef.current,
+        idleMs: inputPresenceRef.current?.idleMs() ?? 0,
+      })
     } catch {
       return false
     }
@@ -4402,6 +4435,17 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isMobile, mobileView])
+
+  // Беседу снова видят (вернулся ввод после простоя, свернули/закончили звонок) — дочитать то, что пришло без человека.
+  readNowRef.current = () => {
+    if (!canAutoMarkRead()) return
+    markAllReadNow()
+    markConversationReadNow()
+    signalSecretRead()
+  }
+  useEffect(() => {
+    if (!callCoversChat) readNowRef.current()
+  }, [callCoversChat])
 
   useEffect(() => {
     const onFocus = () => {
