@@ -165,6 +165,8 @@ struct ChatView: View {
     /// `conversation` приезжает сюда значением из списка и о правке не узнаёт, а
     /// пересоздавать экран ради двух полей нельзя — потеряются позиция ленты и черновик.
     @State private var groupOverride: Conversation?
+    /// Бот «Еблуша»: есть ли он на сервере (плашка «Спросить»), его профиль и отказ для секреток.
+    @ObservedObject private var botStore = SystemBotStore.shared
 
     init(conversation: Conversation, onBack: @escaping () -> Void) {
         self.conversation = conversation
@@ -196,11 +198,12 @@ struct ChatView: View {
                         openGallery(from: message, mediaIndex: index, sourceFrame: sourceFrame)
                     },
                     onOpenSender: { message in
-                        // Тап по аватару отправителя в группе — карточка пользователя.
+                        // Тап по аватару отправителя в группе (и по «Б» бота) — карточка.
                         userCard = UserCardSeed(
                             userId: message.senderId,
                             name: message.senderName,
-                            avatarUrl: message.senderAvatarUrl
+                            avatarUrl: message.senderAvatarUrl,
+                            isBot: message.isBot
                         )
                     },
                     onOpenAttachment: { openAttachment($0) },
@@ -343,19 +346,19 @@ struct ChatView: View {
                     onStageFiles: { vm.stageFiles($0) },
                     onError: { vm.setError($0) },
                     onDraftChanged: { vm.onInputChanged($0) },
-                    onSend: { text in
+                    onSend: { text, botAsk in
                         // Своё сообщение обязано оказаться на виду, даже если человек
                         // читал историю: лента получает право утянуться к низу.
                         sendToken += 1
-                        vm.send(text)
+                        vm.send(text, botAsk: botAsk)
                     },
-                    onSendStaged: { caption in
+                    onSendStaged: { caption, botAsk in
                         sendToken += 1
-                        vm.sendStaged(caption)
+                        vm.sendStaged(caption, botAsk: botAsk)
                     },
-                    onSendVoice: { data, duration, waveform in
+                    onSendVoice: { data, duration, waveform, botAsk in
                         sendToken += 1
-                        vm.sendVoice(data, durationSec: duration, waveform: waveform)
+                        vm.sendVoice(data, durationSec: duration, waveform: waveform, botAsk: botAsk)
                     },
                     onReplaceStaged: { index, file in vm.replaceStaged(at: index, with: file) },
                     onConsumeRestoredDraft: { vm.consumeRestoredDraft() },
@@ -376,7 +379,8 @@ struct ChatView: View {
                     editing: editing,
                     editSaving: editSaving,
                     onSaveEdit: { text in saveEdit(text) },
-                    onCancelEdit: { cancelEdit() }
+                    onCancelEdit: { cancelEdit() },
+                    bot: composerBot
                 )
             }
         }
@@ -497,7 +501,14 @@ struct ChatView: View {
         .sheet(item: $userCard) { seed in
             UserCardSheet(
                 seed: seed,
-                onOpenConversation: { _ in userCard = nil },
+                onOpenConversation: { ref in
+                    userCard = nil
+                    // «Открыть чат с Еблушей» (и «Написать» из карточки участника) ведут в ту
+                    // беседу — тем же запросом, что тап по уведомлению. Текущую не пересоздаём.
+                    if ref.id != conversation.id {
+                        AppLifecycle.shared.requestOpenConversation(conversationId: ref.id, title: ref.title)
+                    }
+                },
                 onDismiss: { userCard = nil }
             )
         }
@@ -749,22 +760,25 @@ struct ChatView: View {
                 // Видео и трубка. Когда в беседе УЖЕ идёт звонок, те же две кнопки
                 // означают «подключиться», а свой свёрнутый звонок — «развернуть»
                 // (ChatHeaderCallButtons). Разрешения CallManager добирает сам.
-                ChatHeaderCallButtons(
-                    conversationId: conversation.id,
-                    onStart: { video in
-                        AppContainer.shared.callManager.startOutgoing(
-                            conversationId: conversation.id, title: headerTitleText, video: video,
-                            isGroup: conversation.isGroup
-                        )
-                    },
-                    onJoin: { video in
-                        joinOrStartConversationCall(
-                            conversationId: conversation.id, title: headerTitleText, video: video,
-                            isGroup: conversation.isGroup
-                        )
-                    },
-                    onExpand: { AppContainer.shared.callManager.expand() }
-                )
+                // Боту не звонят: сервер всё равно сразу ответит call:declined.
+                if !vm.ui.isBotChat {
+                    ChatHeaderCallButtons(
+                        conversationId: conversation.id,
+                        onStart: { video in
+                            AppContainer.shared.callManager.startOutgoing(
+                                conversationId: conversation.id, title: headerTitleText, video: video,
+                                isGroup: conversation.isGroup
+                            )
+                        },
+                        onJoin: { video in
+                            joinOrStartConversationCall(
+                                conversationId: conversation.id, title: headerTitleText, video: video,
+                                isGroup: conversation.isGroup
+                            )
+                        },
+                        onExpand: { AppContainer.shared.callManager.expand() }
+                    )
+                }
                 Menu {
                     if vm.ui.isGroup {
                         // Веб-паритет меню шапки группы: добавить людей, сменить название
@@ -787,8 +801,9 @@ struct ChatView: View {
                     } label: {
                         Label(
                             vm.ui.isSecret ? "Закрыть секретный чат"
+                                : vm.ui.isBotChat ? "Выключить чат с Еблушей"
                                 : vm.ui.isGroup ? "Выйти из беседы" : "Удалить чат",
-                            systemImage: "trash"
+                            systemImage: vm.ui.isBotChat ? "power" : "trash"
                         )
                     }
                 } label: {
@@ -813,10 +828,17 @@ struct ChatView: View {
                 peerLastSeen: vm.ui.peerLastSeen,
                 typingName: vm.ui.typingName,
                 groupSubtitle: vm.ui.headerSubtitle,
-                secretState: vm.ui.isSecret ? secretProtectionState : nil
+                secretState: vm.ui.isSecret ? secretProtectionState : nil,
+                isBotChat: vm.ui.isBotChat,
+                botTyping: vm.ui.botTyping
             ),
             onTap: {
-                if vm.ui.isGroup {
+                if vm.ui.isBotChat, let peerId = vm.ui.peerUserId {
+                    // «Чат с Еблушей» — карточка бота.
+                    userCard = UserCardSeed(
+                        userId: peerId, name: headerTitleText, avatarUrl: nil, isBot: true
+                    )
+                } else if vm.ui.isGroup {
                     // Тап по шапке группы — «Настройки группы» веба (MessagesPane.tsx:305-318).
                     groupSheet = true
                 } else if let peerId = vm.ui.peerUserId {
@@ -838,7 +860,22 @@ struct ChatView: View {
     /// Заголовок, пояснение и подпись кнопки подтверждения — общие со списком чатов,
     /// чтобы одно и то же действие не описывалось в двух местах по-разному.
     private var removalPrompt: (title: String, message: String, action: String) {
-        ConversationRemovalPrompt.texts(isSecret: vm.ui.isSecret, isGroup: vm.ui.isGroup)
+        ConversationRemovalPrompt.texts(isSecret: vm.ui.isSecret, isGroup: vm.ui.isGroup, isBotChat: vm.ui.isBotChat)
+    }
+
+    /// Что композер знает о боте: можно ли «Спросить» (бот заведён на сервере; ответ боту — сам
+    /// по себе доказательство, что он есть), отказ для секретки, «Чат с Еблушей».
+    private var composerBot: ComposerBotContext {
+        if vm.ui.isSecret {
+            return botStore.isAvailable ? ComposerBotContext(secretRefusal: botStore.secretChatRefusal) : .off
+        }
+        if vm.ui.isBotChat { return ComposerBotContext(isBotChat: true) }
+        let replyToBot = vm.ui.replyingTo.last?.isBot == true
+        return ComposerBotContext(
+            askAvailable: botStore.isAvailable || replyToBot,
+            replyToBot: replyToBot,
+            clarifyToken: vm.ui.clarifyToken
+        )
     }
 
     /// Секретка ещё не шифрует, и ни одна карточка экран не перехватила: показываем, что
@@ -982,6 +1019,13 @@ struct MessageRow: View {
     var quickSlots: [String] = ReactionFavorites.defaults
     let onEdit: () -> Void
     let onDelete: () -> Void
+    /// «Уточнить» под ответом бота: показывается, только когда задан (лента ставит его одному
+    /// сообщению ответа — последнему, см. MessageRowModel.botClarifyTarget).
+    var onClarify: (() -> Void)? = nil
+    /// Быстрые «Да»/«Нет» под вопросом-подтверждением бота: текст уходит ответом на него.
+    var onBotQuickReply: ((String) -> Void)? = nil
+    /// Тап по карточке карты Valheim — живая карта вместо просмотрщика.
+    var onOpenBotMap: ((URL) -> Void)? = nil
 
     /// Ещё не отправленное вложение: прогресс с отменой или пометка сбоя с повтором.
     /// Через окружение (как превью цитат): ставит ячейка ленты, см. MessageListView.
@@ -1022,25 +1066,37 @@ struct MessageRow: View {
                     }
                     HStack(alignment: .bottom, spacing: 6) {
                         if m.isMine { Spacer(minLength: 40) }
-                        if isGroup && !m.isMine {
+                        // Бот не участник беседы: и в личке двух людей у его ответа есть «Б»,
+                        // иначе ответ бота читался бы как реплика собеседника.
+                        if (isGroup || isBotIncoming) && !m.isMine {
                             // Слот аватара: виден только у последнего в ране, место держат все.
                             Group {
                                 if isLastInRun {
-                                    AvatarView(name: m.senderName, avatarUrl: senderAvatarUrl, size: 28)
-                                        .onTapGesture { onOpenSender?() }
+                                    if isBotIncoming {
+                                        BotAvatar(size: 28)
+                                            .onTapGesture { onOpenSender?() }
+                                    } else {
+                                        AvatarView(name: m.senderName, avatarUrl: senderAvatarUrl, size: 28)
+                                            .onTapGesture { onOpenSender?() }
+                                    }
                                 } else {
                                     Color.clear.frame(width: 28, height: 28)
                                 }
                             }
                         }
-                        // Рамку пузыря (в раскладочных координатах, без сдвига жеста) знает
-                        // лента: по ней она решает, лёг ли палец на сообщение.
-                        bubble
-                            .onGeometryChange(for: CGRect.self) {
-                                $0.frame(in: .named("messageCell"))
-                            } action: {
-                                swipe.bubbleFrame = $0
+                        // Кнопки бота — столбиком под пузырём; у всех остальных строк пузырь
+                        // стоит в ряду сам, как и раньше.
+                        if hasBotActions {
+                            VStack(alignment: .leading, spacing: 4) {
+                                measuredBubble
+                                botActions
                             }
+                            // Ряд выравнивается по низу ПУЗЫРЯ, а не кнопок: «Б» стоит у
+                            // сообщения, кнопки висят под ним (высота ряда кнопок — 26 + 4).
+                            .alignmentGuide(.bottom) { $0[.bottom] - Self.botActionsRowHeight }
+                        } else {
+                            measuredBubble
+                        }
                         if !m.isMine { Spacer(minLength: 40) }
                     }
                     if selectionMode && m.isMine {
@@ -1068,7 +1124,51 @@ struct MessageRow: View {
     /// Имя автора цитаты из уже загруженной истории. Пусто — карточка сама подставит
     /// «Участник» (веб-паритет: безымянная серая полоска не объясняла, кому отвечают).
     private func replyAuthorName(_ reply: ReplyInfo) -> String {
-        senderNames[reply.senderId] ?? ""
+        if quotesBot(reply) { return SystemBotStore.displayName }
+        return senderNames[reply.senderId] ?? ""
+    }
+
+    /// Цитата — сообщение бота: его нет среди участников, поэтому и имя, и цвет — его, фирменные.
+    private func quotesBot(_ reply: ReplyInfo) -> Bool {
+        reply.isBot || SystemBotStore.shared.isBotUser(reply.senderId)
+    }
+
+    /// Входящее сообщение системного бота «Еблуша».
+    private var isBotIncoming: Bool { m.isBot && !m.isMine }
+
+    /// Ряд кнопок бота под пузырём вместе с зазором (BotActionButton — 26 pt).
+    private static let botActionsRowHeight: CGFloat = 30
+
+    /// Под пузырём есть кнопки бота («Уточнить» или «Да»/«Нет»).
+    private var hasBotActions: Bool {
+        isBotIncoming && !selectionMode && (onClarify != nil || (m.botIsConfirm && onBotQuickReply != nil))
+    }
+
+    /// Пузырь, сообщающий свою рамку: по ней лента решает, лёг ли палец на сообщение (рамка —
+    /// в раскладочных координатах, без сдвига жеста).
+    private var measuredBubble: some View {
+        bubble
+            .onGeometryChange(for: CGRect.self) {
+                $0.frame(in: .named("messageCell"))
+            } action: {
+                swipe.bubbleFrame = $0
+            }
+    }
+
+    /// Кнопки бота под пузырём: «Уточнить» у ответа, «Да»/«Нет» у вопроса-подтверждения.
+    @ViewBuilder
+    private var botActions: some View {
+        if isBotIncoming, !selectionMode {
+            if let onClarify {
+                BotActionButton(title: "Уточнить", icon: "arrowshape.turn.up.left.fill", action: onClarify)
+                    .accessibilityHint("Ответить Еблуше на это сообщение")
+            } else if m.botIsConfirm, let onBotQuickReply {
+                HStack(spacing: 6) {
+                    BotActionButton(title: "Да", icon: "checkmark") { onBotQuickReply("да") }
+                    BotActionButton(title: "Нет", icon: "xmark") { onBotQuickReply("нет") }
+                }
+            }
+        }
     }
 
     /// Время, пометка «изм.» и галочки квитанций — одной строкой.
@@ -1101,13 +1201,17 @@ struct MessageRow: View {
     // тонированы per-sender.
     private var bubbleColor: Color {
         if m.isMine { return Eb.bubbleOut }
+        if isBotIncoming { return botBubbleBackground }
         if isGroup { return groupIncomingBubbleBg(m.senderId, order: participantOrder) }
         return Eb.bubbleIn
     }
 
     private var bubble: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if isGroup && !m.isMine && isFirstInRun {
+            if isBotIncoming && isFirstInRun {
+                // «Еблуша» + «бот» — и в группе, и в личке: отправитель не участник беседы.
+                BotNameLine(name: m.senderName.isEmpty ? SystemBotStore.displayName : m.senderName)
+            } else if isGroup && !m.isMine && isFirstInRun {
                 Text(m.senderName)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(nameColorForUser(m.senderId, order: participantOrder))
@@ -1121,8 +1225,10 @@ struct MessageRow: View {
                 ReplyQuoteCard(
                     reply: reply,
                     authorName: replyAuthorName(reply),
-                    accent: nameColorForUser(reply.senderId, order: participantOrder),
-                    background: groupIncomingBubbleBg(reply.senderId, order: participantOrder),
+                    accent: quotesBot(reply) ? Eb.logoB : nameColorForUser(reply.senderId, order: participantOrder),
+                    background: quotesBot(reply)
+                        ? botBubbleBackground
+                        : groupIncomingBubbleBg(reply.senderId, order: participantOrder),
                     decryptSecretAttachment: decryptSecretAttachment,
                     onTap: { onQuoteTap?(reply.id) }
                 )
@@ -1188,9 +1294,20 @@ struct MessageRow: View {
                     .padding(.bottom, 8)
             }
         }
-        .background(bubbleColor, in: RoundedRectangle(cornerRadius: 14))
+        .background {
+            // У бота — оранжевая полоса по левому краю (как кант пузыря бота в вебе); фон и
+            // полоса обрезаются одной формой, чтобы полоса повторяла скругление.
+            ZStack(alignment: .leading) {
+                bubbleColor
+                if isBotIncoming {
+                    Eb.brand.frame(width: 3)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+        }
         .overlay(
-            RoundedRectangle(cornerRadius: 14).strokeBorder(Color.white.opacity(0.04))
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(isBotIncoming ? Eb.brand.opacity(0.22) : Color.white.opacity(0.04))
         )
         // Пока файл летит — затемнение с кольцом прогресса и крестиком отмены прямо на
         // пузыре (веб наливает прогресс поверх картинки, ChatMessageRow.tsx); упало —
@@ -1231,6 +1348,13 @@ struct MessageRow: View {
     /// Ширина, которую отъедает конверт пересылки. Плитки и мозаика считают размер от
     /// ширины экрана ЗАРАНЕЕ, поэтому поправку надо передать им: иначе медиа вылезает за
     /// янтарную рамку.
+    /// Ширина слота аватара (28 + зазор 6) слева от пузыря. Одиночная плитка считает себя от
+    /// «экран − 100», где места под аватар нет: в группе и у бота (его «Б» есть и в личке)
+    /// широкий кадр выталкивал строку за край экрана. Мозаика альбома этот слот уже учитывает.
+    private var avatarSlotInset: CGFloat {
+        (isGroup || isBotIncoming) && !m.isMine ? 34 : 0
+    }
+
     private var forwardContentInset: CGFloat {
         m.forwardFrom == nil ? 0 : ForwardEnvelopeMetrics.horizontalInset
     }
@@ -1249,15 +1373,26 @@ struct MessageRow: View {
         if images.count == 1, let att = images.first {
             // Одиночная картинка — точный размер из метаданных и вписывание (contain),
             // как в вебе: мозаика начинается только с двух кадров.
-            let size = att.displaySize(screen: screenSize, extraInset: forwardContentInset)
+            let size = att.displaySize(screen: screenSize, extraInset: forwardContentInset + avatarSlotInset)
+            // Карточка карты от бота ведёт на ЖИВУЮ карту: картинка — лишь снимок момента.
+            let mapCard = BotMapCard.isMapCard(att, fromBot: m.isBot) && onOpenBotMap != nil
             attachmentImage(att, width: size.width, height: size.height)
+                .overlay(alignment: .bottomLeading) {
+                    if mapCard { BotMapCardBadge().padding(8) }
+                }
                 // Плитка под открытым просмотрщиком невидима, но место держит: иначе
                 // высота пузыря изменилась бы и лента сдвинулась под галереей.
                 .opacity(swipe.hiddenTileIndex == 0 ? 0 : 1)
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("messageCell")) } action: {
                     swipe.tileFrames[0] = $0
                 }
-                .onTapGesture { onOpenImage(0, swipe.tileFrames[0]) }
+                .onTapGesture {
+                    if mapCard, let onOpenBotMap {
+                        onOpenBotMap(BotMapCard.liveMapURL)
+                    } else {
+                        onOpenImage(0, swipe.tileFrames[0])
+                    }
+                }
         } else if images.count > 1 {
             // Мозаика по пропорциям кадров (порт веб-renderImageGroup): вся геометрия
             // считается из метаданных ДО загрузки, поэтому высота ячейки не меняется.
@@ -1282,7 +1417,7 @@ struct MessageRow: View {
             let index = images.count + offset
             VideoAttachmentTile(
                 att: att,
-                size: att.videoDisplaySize(screen: screenSize, extraInset: forwardContentInset),
+                size: att.videoDisplaySize(screen: screenSize, extraInset: forwardContentInset + avatarSlotInset),
                 durationSec: att.durationSec,
                 onPlay: { onOpenImage(index, swipe.tileFrames[index]) }
             )
@@ -1491,5 +1626,53 @@ private struct LinkPreviewImage: View {
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 6))
         }
+    }
+}
+
+/// Кнопка под сообщением бота («Уточнить», «Да», «Нет»): оранжевая капсула, как кнопки бота
+/// в вебе. Маленькая, чтобы не спорить с самим ответом.
+struct BotActionButton: View {
+    let title: String
+    let icon: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: icon)
+                    .font(.system(size: 10, weight: .bold))
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(Eb.brand600)
+            .padding(.horizontal, 10)
+            .frame(height: 26)
+            .background(Eb.brand.opacity(0.14), in: Capsule())
+            .overlay(Capsule().strokeBorder(Eb.brand.opacity(0.35)))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Подпись поверх карточки карты: тап откроет живую карту, а не картинку.
+struct BotMapCardBadge: View {
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "map.fill")
+                .font(.system(size: 10, weight: .semibold))
+            Text("Живая карта")
+                .font(.system(size: 11, weight: .semibold))
+            Image(systemName: "arrow.up.right")
+                .font(.system(size: 9, weight: .bold))
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 8)
+        .frame(height: 22)
+        .background(Color.black.opacity(0.6), in: Capsule())
+        .overlay(Capsule().strokeBorder(Eb.brand.opacity(0.7)))
+        .allowsHitTesting(false)
+        .accessibilityLabel("Открыть живую карту")
     }
 }

@@ -65,14 +65,16 @@ extension ChatRepository {
         mime: String,
         caption: String? = nil,
         replyToId: String? = nil,
-        replyBundle: [ReplyInfo]? = nil
+        replyBundle: [ReplyInfo]? = nil,
+        botAsk: Bool? = nil
     ) async -> ApiResult<Message> {
         await sendAttachments(
             conversationId,
             files: [OutgoingFile(bytes: bytes, name: fileName, mime: mime)],
             caption: caption,
             replyToId: replyToId,
-            replyBundle: replyBundle
+            replyBundle: replyBundle,
+            botAsk: botAsk
         )
     }
 
@@ -90,6 +92,8 @@ extension ChatRepository {
         replyToId: String? = nil,
         /// ВСЕ цитаты мультиответа; в metadata уходят только при ≥2 — веб-паритет.
         replyBundle: [ReplyInfo]? = nil,
+        /// Режим «Спросить» (подпись к вложениям тоже может звать бота): см. composeSendMetadata.
+        botAsk: Bool? = nil,
         /// done/total байт по ВСЕМ файлам сообщения (для прогресса в композере).
         onProgress: ((Int64, Int64) -> Void)? = nil,
         /// true → аборт между частями (кнопка «отмена» у прогресса).
@@ -128,10 +132,7 @@ extension ChatRepository {
             let trimmedCaption = caption?.trimmed()
             // Бандл — только при мультиответе: одиночная цитата живёт чистым replyToId
             // (веб: buildReplyQuoteMetadataForSend отдаёт undefined при <2).
-            let bundle = (replyBundle?.count ?? 0) >= 2 ? replyBundle : nil
-            let replyMetadata: JSONValue? = bundle.map { quotes in
-                JSONValue.object(["replyQuoteBundle": replyQuoteBundleRows(quotes)])
-            }
+            let replyMetadata = composeSendMetadata(replyBundle: replyBundle, botAsk: botAsk)
             let response: SendMessageResponse = try await AppContainer.shared.api.post(
                 "conversations/send",
                 body: SendMessageRequest(
@@ -157,7 +158,8 @@ extension ChatRepository {
         durationSec: Int,
         waveform: [Int],
         replyToId: String? = nil,
-        replyBundle: [ReplyInfo]? = nil
+        replyBundle: [ReplyInfo]? = nil,
+        botAsk: Bool? = nil
     ) async -> ApiResult<Message> {
         await safeApiCall {
             let uploaded: UploadResponse = try await AppContainer.shared.api.uploadMultipart(
@@ -171,17 +173,17 @@ extension ChatRepository {
                     originalName: "voice-message.m4a", mime: "audio/mp4", objectKey: uploaded.path
                 )
             )
-            var metadataFields: [String: JSONValue] = [
-                "duration": .number(Double(durationSec)),
-                "waveform": .array(waveform.map { .number(Double($0)) }),
-            ]
             // Мультиответ кладётся РЯДОМ с duration/waveform в один объект metadata —
             // ровно как веб (`metadata: { duration, ...replyVoiceMeta }`), иначе цитаты
             // затёрли бы длительность и голосовое перестало бы рисоваться волной.
-            if let bundle = replyBundle, bundle.count >= 2 {
-                metadataFields["replyQuoteBundle"] = replyQuoteBundleRows(bundle)
-            }
-            let metadata = JSONValue.object(metadataFields)
+            let metadata = composeSendMetadata(
+                replyBundle: replyBundle,
+                botAsk: botAsk,
+                base: [
+                    "duration": .number(Double(durationSec)),
+                    "waveform": .array(waveform.map { .number(Double($0)) }),
+                ]
+            )
             let response: SendMessageResponse = try await AppContainer.shared.api.post(
                 "conversations/send",
                 body: SendMessageRequest(
@@ -274,25 +276,6 @@ extension ChatRepository {
         guard width > 0, height > 0 else { return nil }
         return (width, height)
     }
-}
-
-/// Ряды `metadata.replyQuoteBundle` для мультиответа у вложений. Формат байт-в-байт с
-/// текстовой отправкой (ChatRepositoryReplyBundle.buildReplyBundleMetadata) и вебом
-/// (chatsMessages.ts: buildReplyQuoteMetadataForSend): messageId / senderId (только
-/// непустой) / preview (обрезка до 420) / createdAt (ISO, только когда известен).
-/// Отдаём МАССИВ, а не готовый объект metadata: голосовому его нужно положить рядом с
-/// duration/waveform, а не вместо них.
-private func replyQuoteBundleRows(_ bundle: [ReplyInfo]) -> JSONValue {
-    JSONValue.array(bundle.map { (r: ReplyInfo) -> JSONValue in
-        var row: [String: JSONValue] = [
-            "messageId": .string(r.id),
-            // preview пишется всегда, даже пустой (веб/Kotlin: (content ?: "").take(420)).
-            "preview": .string(String((r.content ?? "").prefix(420))),
-        ]
-        if !r.senderId.isEmpty { row["senderId"] = .string(r.senderId) }
-        if let createdAt = r.createdAt { row["createdAt"] = .string(millisToIso(createdAt)) }
-        return .object(row)
-    })
 }
 
 // MARK: - Низкоуровневые запросы аплоада (недостающие режимы APIClient)

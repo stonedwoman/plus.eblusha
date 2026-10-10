@@ -85,6 +85,8 @@ final class AppContainer {
         // хранится по userId и чужому аккаунту не достаётся).
         PeerLocalTimeStore.shared.clear()
         LocalTimeService.shared.resetForLogout()
+        // Настройка «Чат с Еблушей» принадлежала прошлой сессии (профиль бота — общий для сервера).
+        SystemBotStore.shared.resetForLogout()
     }
 
     /// Прогрев на старте: поднять сессию из Keychain (порт container.warmup()).

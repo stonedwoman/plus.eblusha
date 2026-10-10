@@ -48,6 +48,8 @@ struct SettingsView: View {
     @AppStorage(VideoAutoplayMode.storageKey) private var videoAutoplayRaw = VideoAutoplayMode.wifi.rawValue
     /// Своя настройка местного времени (сервер + событие localtime:settings с других устройств).
     @ObservedObject private var localTime = LocalTimeService.shared
+    /// Бот «Еблуша»: есть ли он на сервере и включён ли «Чат с Еблушей».
+    @ObservedObject private var bot = SystemBotStore.shared
 
     init(onBack: (() -> Void)? = nil, onLogout: @escaping () -> Void) {
         self.onBack = onBack
@@ -104,6 +106,7 @@ struct SettingsView: View {
             profileSection
             statusSection
             localTimeSection
+            botSection
             mediaSection
             serverSection
             devicesSection
@@ -113,6 +116,8 @@ struct SettingsView: View {
         .scrollContentBackground(.hidden)
         .background(Eb.paper)
         .scrollDismissesKeyboard(.interactively)
+        // Настройку могли поменять на другом устройстве, а бота — завести на сервере.
+        .onAppear { bot.load(force: true) }
         // Смена источника — смена мира (токены, устройство, ключи секреток), поэтому
         // только через явное подтверждение с выходом из аккаунта.
         .confirmationDialog(
@@ -305,6 +310,47 @@ struct SettingsView: View {
             text += " Сейчас видно: \(place)."
         }
         return text
+    }
+
+    // MARK: - Бот «Еблуша»
+
+    /// «Чат с Еблушей» (по умолчанию выключен): личный чат с ботом, где ему можно писать без
+    /// обращения. Секция видна, только если бот на сервере есть (GET /api/bot).
+    @ViewBuilder
+    private var botSection: some View {
+        if bot.isAvailable {
+            Section {
+                Toggle(isOn: botChatBinding) {
+                    HStack(spacing: 10) {
+                        BotAvatar(size: 26)
+                        Text("Чат с Еблушей")
+                            .foregroundStyle(Eb.textPrimary)
+                    }
+                }
+                .tint(Eb.brand)
+                .disabled(bot.saving)
+                if bot.botChat.enabled, let id = bot.botChat.conversationId {
+                    Button {
+                        // Тем же путём, что тап по уведомлению: стек заменяется беседой.
+                        AppLifecycle.shared.requestOpenConversation(
+                            conversationId: id, title: SystemBotStore.displayName
+                        )
+                    } label: {
+                        Label("Открыть чат с Еблушей", systemImage: "bubble.left")
+                    }
+                }
+            } header: {
+                Text("Еблуша")
+            } footer: {
+                Text(bot.error ?? "Личный чат с ботом: там можно писать без обращения. В остальных беседах зовите «Еблуша, …» или /eb.")
+                    .foregroundStyle(bot.error == nil ? Eb.textMuted : Eb.error)
+            }
+            .ebRow()
+        }
+    }
+
+    private var botChatBinding: Binding<Bool> {
+        Binding(get: { bot.botChat.enabled }, set: { bot.setBotChatEnabled($0) })
     }
 
     // MARK: - Медиа

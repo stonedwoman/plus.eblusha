@@ -47,6 +47,9 @@ struct UserCardProfile: Equatable {
     let status: String?
     let lastSeenMs: Int64?
     let createdAtMs: Int64?
+    /// Системный бот «Еблуша» (user.isBot): у него своя карточка — без дружбы, «написать»,
+    /// звонка и секретного чата.
+    var isBot = false
 }
 
 /// Отношение просматриваемого пользователя к нам (управляет кнопкой дружбы карточки).

@@ -9,7 +9,8 @@ enum RealtimeEvent {
     case messageUpdate(conversationId: String, messageId: String)
     case messageReaction(conversationId: String, messageId: String)
     case receipts(conversationId: String, messageIds: [String], userId: String?, status: String?)
-    case typing(conversationId: String, userId: String, isTyping: Bool, displayName: String?)
+    /// `isBot` — печатает системный бот «Еблуша» (он не участник беседы).
+    case typing(conversationId: String, userId: String, isTyping: Bool, displayName: String?, isBot: Bool)
     case presence(userId: String, status: String, device: String?)
     case conversationsChanged(conversationId: String, kind: String)
 
@@ -99,14 +100,17 @@ struct TypingPayload: Decodable {
     let userId: String
     var isTyping: Bool = false
     var displayName: String?
+    /// «Еблуша печатает…» (сервер шлёт isBot: true вместе с displayName бота).
+    var isBot: Bool = false
 
-    private enum CodingKeys: String, CodingKey { case conversationId, userId, isTyping, displayName }
+    private enum CodingKeys: String, CodingKey { case conversationId, userId, isTyping, displayName, isBot }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         conversationId = try c.decode(String.self, forKey: .conversationId)
         userId = try c.decode(String.self, forKey: .userId)
         isTyping = try c.decodeIfPresent(Bool.self, forKey: .isTyping) ?? false
         displayName = try c.decodeIfPresent(String.self, forKey: .displayName)
+        isBot = (try? c.decodeIfPresent(Bool.self, forKey: .isBot)) ?? false
     }
 }
 

@@ -65,6 +65,15 @@ final class ChatViewModel: ObservableObject {
         var hasMore = false
         var nextCursor: String?
         var typingName: String?
+        /// «Еблуша печатает…»: бот не участник, и его typing живёт отдельно от людского — иначе
+        /// typing=false человека гасил бы бота и наоборот.
+        var botTyping = false
+        /// «Чат с Еблушей» (личный чат с ботом): без звонков, присутствия и местного времени;
+        /// «удалить» = выключить настройку.
+        var isBotChat = false
+        /// Нажатия «Уточнить» под ответом бота: композер по смене счётчика ставит фокус в поле и
+        /// возвращает плашку «Спросить», даже если её до этого убирали.
+        var clarifyToken = 0
         var error: String?
         /// Короткий положительный итог действия («Переслано в «…»»): показывается вместо
         /// молчания, когда сказать надо, но ошибки нет. Гаснет сам (см. showNotice).
@@ -177,6 +186,7 @@ final class ChatViewModel: ObservableObject {
     private var textSendChain: Task<Void, Never>?
     private var typingHeartbeat: Task<Void, Never>?
     private var typingExpiry: Task<Void, Never>?
+    private var botTypingExpiry: Task<Void, Never>?
     private var lastInputMs: TimeInterval = 0
     private var lastReload: TimeInterval = 0
     private var lastMarkReadMs: TimeInterval = 0
@@ -318,6 +328,7 @@ final class ChatViewModel: ObservableObject {
         visitUnreadCount = meta?.unreadCount ?? 0
         let group = meta?.isGroup ?? false
         ui.isGroup = group
+        ui.isBotChat = meta?.isBotChat ?? false
         if group {
             // Групповым пузырям нужны аватары отправителей (история их не несёт).
             ui.senderAvatars = await repo.conversationSenderAvatars(conversationId)
@@ -338,8 +349,14 @@ final class ChatViewModel: ObservableObject {
         // Секретный режим забирает свои события целиком (порт ранних return'ов Kotlin).
         if handleSecretEvent(event) { return }
         switch event {
-        case .typing(let cid, let userId, let isTyping, let displayName):
+        case .typing(let cid, let userId, let isTyping, let displayName, let isBot):
             guard cid == conversationId, userId != repo.currentUserId() else { return }
+            // Бот не участник беседы: искать его среди участников бессмысленно, узнаём по isBot
+            // события (или по известному id бота — на случай сервера без флага).
+            if isBot || SystemBotStore.shared.isBotUser(userId) {
+                setBotTyping(isTyping)
+                return
+            }
             ui.typingName = isTyping ? (displayName ?? "печатает") : nil
             // TTL: потерянный typing=false не должен вешать «печатает…» навсегда.
             typingExpiry?.cancel()
@@ -627,7 +644,12 @@ final class ChatViewModel: ObservableObject {
         // По порядку, а не просто в конец: сообщение из сокета может обогнать соседа по
         // времени, и следующий тихий релоад переставлял бы его на глазах.
         insertOrdered(message)
-        ui.typingName = nil
+        // Пришедший ответ гасит «печатает…» своего автора — бот не гасит людское и наоборот.
+        if message.isBot {
+            setBotTyping(false)
+        } else {
+            ui.typingName = nil
+        }
         // Своё же эхо квитировать не нужно — это был лишний запрос на каждое отправленное
         // сообщение и лишний повод серверу прислать нам наши же квитанции. Чужое — только
         // если беседа реально на экране: это проверяет сам markRead() (ChatReadGate), иначе
@@ -638,7 +660,9 @@ final class ChatViewModel: ObservableObject {
 
     // MARK: - Отправка
 
-    func send(_ text: String) {
+    /// `botAsk` — режим «Спросить» поля ввода (BotAskState): true — боту, false — плашку убрали,
+    /// nil — бот ни при чём. В секретку и в пересылку не уходит.
+    func send(_ text: String, botAsk: Bool? = nil) {
         // При живом черновике пересылки кнопка отправки отправляет ПЕРЕСЫЛКУ, а набранное
         // становится комментарием к ней — как в вебе (MessagesPane.tsx:3229-3258), где
         // composer-текст уходит в executeForwardPayloadDelivery(..., comment).
@@ -655,15 +679,34 @@ final class ChatViewModel: ObservableObject {
             return
         }
         let reply = ui.replyingTo
+        // Плашку цитаты гасим СИНХРОННО: композер свободен сразу, ещё до ответа сервера
+        // (в вебе submit тоже ничего не ждёт).
+        ui.error = nil
+        ui.replyingTo = []
+        sendCloudText(trimmed, reply: reply, botAsk: botAsk)
+    }
+
+    /// Быстрый ответ на вопрос-подтверждение бота («Да»/«Нет» под ним): уходит ответом именно на
+    /// это сообщение, не трогая набранное в поле и уже выбранную цитату.
+    func quickReply(_ text: String, to message: Message) {
+        guard !secretMode, !Self.isOutgoingId(message.id) else { return }
+        sendCloudText(text, reply: [message], botAsk: nil)
+    }
+
+    /// «Уточнить» под ответом бота: ответ на него в режиме «Спросить» и фокус в поле ввода.
+    func clarify(_ message: Message) {
+        guard !secretMode, message.isBot, !Self.isOutgoingId(message.id) else { return }
+        ui.replyingTo = [message]
+        ui.clarifyToken += 1
+    }
+
+    /// Облачная отправка текста: оптимистичный пузырь сразу, запрос — в очередь по порядку.
+    private func sendCloudText(_ trimmed: String, reply: [Message], botAsk: Bool?) {
         let replyId = reply.last?.id
         // Мультиответ: все цитаты уходят в metadata.replyQuoteBundle (≥2, как Kotlin/веб).
         let bundle: [ReplyInfo]? = reply.count >= 2
             ? reply.map { ReplyInfo(id: $0.id, senderId: $0.senderId, content: $0.content, createdAt: $0.createdAt) }
             : nil
-        // Плашку цитаты гасим СИНХРОННО: композер свободен сразу, ещё до ответа сервера
-        // (в вебе submit тоже ничего не ждёт).
-        ui.error = nil
-        ui.replyingTo = []
         // Пузырь встаёт в ленту В ТОТ ЖЕ КАДР, а не после оборота к серверу: на медленной
         // сети между нажатием и появлением проходили секунды, и сообщение отправляли
         // второй раз. Приём тот же, что у вложений (insertOutgoingBubble).
@@ -671,7 +714,7 @@ final class ChatViewModel: ObservableObject {
         enqueueTextSend { [weak self] in
             guard let self else { return }
             switch await self.repo.sendText(
-                self.conversationId, text: trimmed, replyToId: replyId, replyBundle: bundle
+                self.conversationId, text: trimmed, replyToId: replyId, replyBundle: bundle, botAsk: botAsk
             ) {
             case .success(let message):
                 // Подмена ровно одна: временный уходит, настоящий встаёт на его место.
@@ -755,7 +798,7 @@ final class ChatViewModel: ObservableObject {
     /// факту успеха (логика в ChatViewModelSecret).
     @discardableResult
     func sendAttachments(
-        _ files: [OutgoingFile], caption: String? = nil, onSuccess: (() -> Void)? = nil
+        _ files: [OutgoingFile], caption: String? = nil, botAsk: Bool? = nil, onSuccess: (() -> Void)? = nil
     ) -> Bool {
         guard !files.isEmpty else { return false }
         // Веб при живом черновике пересылки вложения из композера не пускает
@@ -795,7 +838,7 @@ final class ChatViewModel: ObservableObject {
         }
         ui.error = nil
         ui.replyingTo = []
-        runOutgoing(insertOutgoingBubble(limited, caption: caption, reply: reply))
+        runOutgoing(insertOutgoingBubble(limited, caption: caption, reply: reply, botAsk: botAsk))
         return true
     }
 
@@ -807,6 +850,8 @@ final class ChatViewModel: ObservableObject {
         let files: [OutgoingFile]
         let caption: String?
         let reply: [Message]
+        /// Режим «Спросить» на момент отправки — повтор уходит с тем же.
+        var botAsk: Bool?
     }
 
     /// Оптимистичный пузырь ТЕКСТОВОГО сообщения. В `ui.outgoing` он намеренно не
@@ -828,7 +873,7 @@ final class ChatViewModel: ObservableObject {
             isSystem: false,
             // Цитаты видны на пузыре сразу — отправляется он именно с ними.
             replyTo: reply.map {
-                ReplyInfo(id: $0.id, senderId: $0.senderId, content: $0.content, createdAt: $0.createdAt)
+                ReplyInfo(id: $0.id, senderId: $0.senderId, content: $0.content, createdAt: $0.createdAt, isBot: $0.isBot)
             }
         ))
         return id
@@ -837,7 +882,7 @@ final class ChatViewModel: ObservableObject {
     /// Ставит пузырь в ленту ДО аплоада и запоминает, чем его повторить.
     /// Возвращает id временного сообщения — ключ и к ui.outgoing, и к полезной нагрузке.
     private func insertOutgoingBubble(
-        _ files: [OutgoingFile], caption: String?, reply: [Message]
+        _ files: [OutgoingFile], caption: String?, reply: [Message], botAsk: Bool? = nil
     ) -> String {
         let id = Self.outgoingIdPrefix + UUID().uuidString.lowercased()
         let atts = files.map { Self.optimisticAttachment($0) }
@@ -859,10 +904,10 @@ final class ChatViewModel: ObservableObject {
             attachments: atts,
             // Цитаты видны на пузыре сразу — отправляется он именно с ними.
             replyTo: reply.map {
-                ReplyInfo(id: $0.id, senderId: $0.senderId, content: $0.content, createdAt: $0.createdAt)
+                ReplyInfo(id: $0.id, senderId: $0.senderId, content: $0.content, createdAt: $0.createdAt, isBot: $0.isBot)
             }
         )
-        outgoingPayloads[id] = OutgoingPayload(files: files, caption: caption, reply: reply)
+        outgoingPayloads[id] = OutgoingPayload(files: files, caption: caption, reply: reply, botAsk: botAsk)
         insertOrdered(message)
         attachLocalPreviews(to: id, files: files)
         return id
@@ -888,6 +933,7 @@ final class ChatViewModel: ObservableObject {
                 caption: payload.caption,
                 replyToId: replyId,
                 replyBundle: replyBundle,
+                botAsk: payload.botAsk,
                 onProgress: { [weak self] done, total in
                     guard total > 0 else { return }
                     let pct = min(max(Float(done) / Float(total), 0), 1)
@@ -1139,7 +1185,7 @@ final class ChatViewModel: ObservableObject {
     /// Отправка очереди с подписью. Чипы уходят СРАЗУ, как в вебе (MessagesPane.tsx:3262):
     /// собранное уже стоит пузырём в ленте, и человек может набирать следующее сообщение,
     /// пока это летит. Отказ на проверке (пересылка, размер) очередь не трогает.
-    func sendStaged(_ caption: String?) {
+    func sendStaged(_ caption: String?, botAsk: Bool? = nil) {
         let files = ui.staged
         guard !files.isEmpty else { return }
         if secretMode {
@@ -1147,7 +1193,7 @@ final class ChatViewModel: ObservableObject {
             sendAttachments(files, caption: caption, onSuccess: { [weak self] in self?.ui.staged = [] })
             return
         }
-        if sendAttachments(files, caption: caption) {
+        if sendAttachments(files, caption: caption, botAsk: botAsk) {
             ui.staged = []
         } else {
             // Отправку не приняли (живая пересылка, негабарит) — композер уже очистил поле,
@@ -1158,7 +1204,7 @@ final class ChatViewModel: ObservableObject {
 
     /// Отправляет записанный голосовой клип (data — AAC/MP4 из VoiceRecorder) как
     /// AUDIO-сообщение с длительностью и волной.
-    func sendVoice(_ data: Data, durationSec: Int, waveform: [Int]) {
+    func sendVoice(_ data: Data, durationSec: Int, waveform: [Int], botAsk: Bool? = nil) {
         // Гейта «идёт отправка» нет и здесь: в вебе микрофон гаснет только на правке и
         // пересылке (MessagesPane.tsx:3501), а не на время загрузки.
         // Тот же запрет, что у вложений: пока висит черновик пересылки, композер занят ею.
@@ -1186,7 +1232,8 @@ final class ChatViewModel: ObservableObject {
                 durationSec: durationSec,
                 waveform: waveform,
                 replyToId: replyId,
-                replyBundle: replyBundle
+                replyBundle: replyBundle,
+                botAsk: botAsk
             ) {
             case .success(let message):
                 if !ui.messages.contains(where: { $0.id == message.id }) {
@@ -1209,6 +1256,18 @@ final class ChatViewModel: ObservableObject {
 
     /// Меню шапки: удалить (1:1) / выйти (группа) / закрыть (секретный) — затем уйти с экрана.
     func deleteOrLeave(onDone: @escaping () -> Void) {
+        // «Чат с Еблушей» не удаляется, а выключается: история остаётся и вернётся при повторном
+        // включении (DELETE стёр бы её насовсем, а «покинуть» = выключить — docs/bot-system.md §5).
+        if ui.isBotChat && !secretMode {
+            SystemBotStore.shared.setBotChatEnabled(false) { [weak self] state in
+                if state != nil {
+                    onDone()
+                } else {
+                    self?.ui.error = SystemBotStore.shared.error ?? "Не удалось выключить чат с Еблушей"
+                }
+            }
+            return
+        }
         Task {
             // Жёсткое удаление секретки осиротило бы её E2EE-транспортные строки —
             // штатный демонтаж это decline → CANCELLED (скрыт на всех устройствах).
@@ -1684,7 +1743,8 @@ final class ChatViewModel: ObservableObject {
     /// Местное время собеседника 1:1 (LocalTime.swift): при открытии и после переподключения.
     /// В группах строки нет — и запроса тоже.
     func refreshPeerLocalTime() { // internal: зовёт и секретная ветка
-        guard !ui.isGroup, let peer = ui.peerUserId else { return }
+        // У бота местного времени нет (и в его чате строки нет).
+        guard !ui.isGroup, !ui.isBotChat, let peer = ui.peerUserId else { return }
         // Момент начала запроса: событие, пришедшее, пока запрос летел, новее ответа (PeerLocalTimeStore.asOf).
         let requestedAt = Date()
         Task {
@@ -1697,6 +1757,19 @@ final class ChatViewModel: ObservableObject {
     }
 
     // MARK: - Набор текста
+
+    /// «Еблуша печатает…». Бот повторяет typing раз в ~3 с, сервер сам гасит через 10 с; свой
+    /// срок чуть длиннее серверного — на случай потерянного isTyping:false.
+    private func setBotTyping(_ typing: Bool) {
+        botTypingExpiry?.cancel()
+        botTypingExpiry = nil
+        if ui.botTyping != typing { ui.botTyping = typing }
+        guard typing else { return }
+        botTypingExpiry = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(12))
+            if !Task.isCancelled { self?.ui.botTyping = false }
+        }
+    }
 
     func onInputChanged(_ text: String) {
         lastInputMs = Date().timeIntervalSince1970

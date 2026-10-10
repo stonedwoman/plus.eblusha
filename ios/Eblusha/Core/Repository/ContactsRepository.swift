@@ -46,7 +46,8 @@ final class ContactsRepository {
                 avatars: avatars,
                 status: u.status,
                 lastSeenMs: parseIsoToMillis(u.lastSeenAt),
-                createdAtMs: parseIsoToMillis(u.createdAt)
+                createdAtMs: parseIsoToMillis(u.createdAt),
+                isBot: u.isBot
             )
         }
     }

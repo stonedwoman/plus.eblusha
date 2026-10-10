@@ -39,11 +39,13 @@ struct ConversationDto: Decodable, Identifiable {
     var createdById: String?
     var participants: [ParticipantDto] = []
     var messages: [MessageDto] = []
+    /// «Чат с Еблушей» — личный чат с ботом (docs/bot-system.md §5). Старый сервер поля не шлёт.
+    var isBotChat = false
 
     private enum CodingKeys: String, CodingKey {
         case id, title, avatarUrl, isGroup, isSecret, type, secretStatus
         case secretInitiatorDeviceId, secretPeerDeviceId, lastMessageAt, createdAt, createdById
-        case participants, messages
+        case participants, messages, isBotChat
     }
 
     init(from decoder: Decoder) throws {
@@ -62,6 +64,7 @@ struct ConversationDto: Decodable, Identifiable {
         createdById = try c.decodeIfPresent(String.self, forKey: .createdById)
         participants = try c.decodeIfPresent([ParticipantDto].self, forKey: .participants) ?? []
         messages = try c.decodeIfPresent([MessageDto].self, forKey: .messages) ?? []
+        isBotChat = (try? c.decodeIfPresent(Bool.self, forKey: .isBotChat)) ?? false
     }
 }
 
@@ -84,9 +87,11 @@ struct UserBriefDto: Decodable, Equatable {
     /// Поле `localTime` вообще было в ответе. Нужно отличать «сервер сказал null» (строку убрать)
     /// от «сервер о поле не знает» (старая версия, группа, сам я — ничего не трогать).
     var hasLocalTime = false
+    /// Системный бот «Еблуша» (столбец БД, не metadata). У людей и на старом сервере — false.
+    var isBot = false
 
     private enum CodingKeys: String, CodingKey {
-        case id, username, displayName, avatarUrl, status, lastSeenAt, localTime
+        case id, username, displayName, avatarUrl, status, lastSeenAt, localTime, isBot
     }
 
     init(from decoder: Decoder) throws {
@@ -100,6 +105,7 @@ struct UserBriefDto: Decodable, Equatable {
         hasLocalTime = c.contains(.localTime)
         // Битый пояс не должен ронять весь список бесед — считаем его «неизвестен».
         localTime = hasLocalTime ? ((try? c.decodeIfPresent(LocalTimeInfo.self, forKey: .localTime)) ?? nil) : nil
+        isBot = (try? c.decodeIfPresent(Bool.self, forKey: .isBot)) ?? false
     }
 }
 
@@ -121,11 +127,14 @@ struct MessageDto: Decodable, Identifiable {
     var reactions: [ReactionDto] = []
     var receipts: [ReceiptDto] = []
     var replyTo: ReplyToDto?
+    /// Сообщение системного бота (верхний уровень, из БД). Верить только ему и sender.isBot —
+    /// metadata.bot лишь подсказка (docs/bot-system.md §1).
+    var isBot = false
 
     private enum CodingKeys: String, CodingKey {
         case id, conversationId, senderId, type, content, contentEncV, metadata
         case replyToId, deletedAt, expiresAt, createdAt, updatedAt, sender
-        case attachments, reactions, receipts, replyTo
+        case attachments, reactions, receipts, replyTo, isBot
     }
 
     init(from decoder: Decoder) throws {
@@ -147,6 +156,7 @@ struct MessageDto: Decodable, Identifiable {
         reactions = try c.decodeIfPresent([ReactionDto].self, forKey: .reactions) ?? []
         receipts = try c.decodeIfPresent([ReceiptDto].self, forKey: .receipts) ?? []
         replyTo = try c.decodeIfPresent(ReplyToDto.self, forKey: .replyTo)
+        isBot = (try? c.decodeIfPresent(Bool.self, forKey: .isBot)) ?? false
     }
 }
 
@@ -185,6 +195,8 @@ struct ReplyToDto: Decodable {
     var content: String?
     let senderId: String
     var createdAt: String?
+    /// Цитата — сообщение бота: автор «Еблуша» (он не участник, имени в беседе не найти).
+    var isBot: Bool?
 }
 
 struct MessagesResponse: Decodable {

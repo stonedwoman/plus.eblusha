@@ -14,6 +14,8 @@ struct UserCardSeed: Identifiable, Equatable {
     let userId: String
     let name: String
     let avatarUrl: String?
+    /// Это бот «Еблуша» (известно заранее — по сообщению или «Чату с Еблушей»).
+    var isBot = false
 
     var id: String { userId }
 }
@@ -46,7 +48,29 @@ struct UserCardSheet: View {
         var id: Int { index }
     }
 
+    /// Бот «Еблуша»: своя карточка (docs/bot-system.md §6). Узнаём по семени, по профилю с
+    /// сервера или по известному id бота.
+    private var isBot: Bool {
+        seed.isBot || profile?.isBot == true || SystemBotStore.shared.isBotUser(seed.userId)
+    }
+
     var body: some View {
+        if isBot {
+            BotCardContent(
+                profile: profile,
+                onOpenConversation: onOpenConversation,
+                onDismiss: onDismiss
+            )
+            .task(id: seed.userId) {
+                if case .success(let p) = await contactsRepo.userCard(seed.userId) { profile = p }
+            }
+        } else {
+            personCard
+        }
+    }
+
+    @ViewBuilder
+    private var personCard: some View {
         let name = profile?.name ?? seed.name
         let avatars: [String] = (profile?.avatars.isEmpty == false)
             ? profile!.avatars
@@ -127,6 +151,11 @@ struct UserCardSheet: View {
 
     private func loadAll() async {
         isSelf = chatRepo.currentUserId() == seed.userId
+        // Бот не друг и не собеседник: дружба, общие беседы и личка ему не положены.
+        if isBot {
+            if case .success(let p) = await contactsRepo.userCard(seed.userId) { profile = p }
+            return
+        }
         async let profileResult = contactsRepo.userCard(seed.userId)
         if !isSelf {
             async let relationResult = contactsRepo.relationWith(seed.userId)
@@ -699,4 +728,122 @@ private func rgbToHSL(_ r: Double, _ g: Double, _ b: Double) -> (Double, Double,
     h *= 60
     if h < 0 { h += 360 }
     return (h, min(1, max(0, s)), l)
+}
+
+// MARK: - Карточка бота «Еблуша»
+
+/// Карточка системного бота (docs/bot-system.md §6): «Б», «бот», описание и EBLID; без дружбы,
+/// «написать», звонка и секретного чата. Вместо них — «Открыть чат с Еблушей»: включает
+/// настройку (личный чат с ботом) и ведёт туда.
+private struct BotCardContent: View {
+    let profile: UserCardProfile?
+    let onOpenConversation: (ConversationRef) -> Void
+    let onDismiss: () -> Void
+
+    @ObservedObject private var bot = SystemBotStore.shared
+    @State private var notice: String?
+
+    var body: some View {
+        let name = profile?.name ?? bot.profile?.displayName ?? SystemBotStore.displayName
+        let bio = profile?.bio ?? bot.profile?.bio
+        let eblid = profile?.eblid ?? bot.profile?.eblid
+
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                ZStack(alignment: .topLeading) {
+                    LinearGradient(
+                        colors: [Color(hex: 0x7A3A14), Color(hex: 0x3B2312), Eb.paper],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    .frame(height: 104)
+                    .frame(maxWidth: .infinity)
+
+                    HStack {
+                        Spacer()
+                        Button(action: onDismiss) {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .frame(width: 32, height: 32)
+                                .background(Color.black.opacity(0.28), in: Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Закрыть")
+                        .padding(8)
+                    }
+
+                    BotAvatar(size: 82)
+                        .padding(4)
+                        .background(Eb.surface200, in: Circle())
+                        .padding(.leading, 20)
+                        .padding(.top, 62)
+                }
+                .frame(height: 152, alignment: .top)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Text(name)
+                            .font(.system(size: 20, weight: .bold))
+                            .foregroundStyle(Eb.textPrimary)
+                            .lineLimit(1)
+                        BotTag()
+                    }
+                    if let bio, !bio.trimmed().isEmpty {
+                        Text(bio)
+                            .font(.system(size: 14))
+                            .foregroundStyle(Eb.textPrimary.opacity(0.92))
+                            .lineSpacing(3)
+                            .padding(.top, 4)
+                    }
+                }
+                .padding(EdgeInsets(top: 6, leading: 20, bottom: 10, trailing: 20))
+
+                VStack(alignment: .leading, spacing: 8) {
+                    if let eblid {
+                        InfoRow(label: "EBLID", value: eblid, copyable: true)
+                    }
+                    InfoRow(label: "Как позвать", value: "«Еблуша, …» или /eb в любой беседе", copyable: false)
+                    if bot.isAvailable {
+                        CardActionButton(
+                            icon: "bubble.left.fill",
+                            label: bot.botChat.enabled ? "К ЧАТУ С ЕБЛУШЕЙ" : "ОТКРЫТЬ ЧАТ С ЕБЛУШЕЙ",
+                            filled: true,
+                            enabled: !bot.saving
+                        ) { openBotChat() }
+                    }
+                    if let notice {
+                        Text(notice)
+                            .font(.system(size: 13))
+                            .foregroundStyle(Eb.brand)
+                            .padding(.top, 2)
+                    }
+                }
+                .padding(.horizontal, 16)
+
+                Spacer().frame(height: 16)
+            }
+        }
+        .background(Eb.surface200)
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.hidden)
+    }
+
+    /// Чат уже включён — просто перейти; иначе включить настройку и перейти в созданный чат.
+    private func openBotChat() {
+        notice = nil
+        if bot.botChat.enabled, let id = bot.botChat.conversationId {
+            onOpenConversation(ConversationRef(id: id, title: SystemBotStore.displayName))
+            onDismiss()
+            return
+        }
+        bot.setBotChatEnabled(true) { state in
+            if let id = state?.conversationId {
+                onOpenConversation(ConversationRef(id: id, title: SystemBotStore.displayName))
+                onDismiss()
+            } else {
+                notice = bot.error ?? "Не удалось открыть чат с Еблушей"
+            }
+        }
+    }
 }

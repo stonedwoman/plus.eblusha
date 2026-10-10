@@ -21,6 +21,9 @@ struct ReplyInfo: Equatable {
     let senderId: String
     let content: String?
     var createdAt: Int64?
+    /// Цитируется сообщение бота «Еблуша» (replyTo.isBot): его нет среди участников, и имя
+    /// автора цитаты берётся отсюда, а не из истории беседы.
+    var isBot = false
 }
 
 /// Происхождение пересылки из `metadata.forwardFrom` (совместимо с вебом по проводу).
@@ -180,6 +183,9 @@ struct Conversation: Identifiable, Equatable, Hashable {
     /// сортируется по ней, иначе новая строка тонет под перепиской годичной давности.
     /// Объявлен последним и с дефолтом — чтобы memberwise-init оставался совместимым.
     var createdAt: Int64? = nil
+    /// «Чат с Еблушей» — личный чат с ботом (conversation.isBotChat). Там нет звонков, секретного
+    /// чата и присутствия, а «удалить» означает «выключить» (история сохраняется).
+    var isBotChat = false
 
     /// Свежесть беседы для сортировки — порт веб-`tsOf` (ConversationListPane.tsx:107-112).
     var sortTs: Int64 { lastMessageAt ?? createdAt ?? 0 }
@@ -218,4 +224,14 @@ struct Message: Identifiable, Equatable {
     var waveform: [Int]?
     /// Open Graph-превью первой ссылки, когда сервер его разрешил.
     var linkPreview: LinkPreview?
+    /// Сообщение системного бота «Еблуша» (серверный isBot, не metadata). Отправитель — не
+    /// участник беседы: имя и вид берутся отсюда, а не из списка участников.
+    var isBot = false
+    /// `metadata.bot.kind`: answer | command | notice | confirm | welcome (nil — не бот).
+    var botKind: String?
+    /// `metadata.bot.triggerMessageId`: на какое обращение ответ. Длинный ответ бот шлёт
+    /// частями — у всех частей одно обращение, по нему части собираются в один ответ.
+    var botTriggerId: String?
+    /// Сервер пометил сообщение как обращение к боту (`metadata.botAsk`).
+    var botAsk = false
 }

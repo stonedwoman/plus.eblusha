@@ -50,9 +50,10 @@ struct ChatComposer: View {
     let onStageFiles: ([OutgoingFile]) -> Void
     let onError: (String) -> Void
     let onDraftChanged: (String) -> Void
-    let onSend: (String) -> Void
-    let onSendStaged: (String?) -> Void
-    let onSendVoice: (Data, Int, [Int]) -> Void
+    /// Текст и metadata.botAsk режима «Спросить» (nil — бот ни при чём, см. BotAskState).
+    let onSend: (String, Bool?) -> Void
+    let onSendStaged: (String?, Bool?) -> Void
+    let onSendVoice: (Data, Int, [Int], Bool?) -> Void
     /// Кадр из очереди отредактирован — подменить на месте.
     let onReplaceStaged: (Int, OutgoingFile) -> Void
     let onConsumeRestoredDraft: () -> Void
@@ -74,7 +75,18 @@ struct ChatComposer: View {
     /// Крестик на плашке либо уход с беседы.
     var onCancelEdit: () -> Void = {}
 
+    // --- Бот «Еблуша» (docs/bot-system.md §4) ---
+    /// Что композер знает о боте в этой беседе: можно ли «Спросить», ответ ли это боту, отказ в
+    /// секретке, «Чат с Еблушей».
+    var bot: ComposerBotContext = .off
+
     @State private var draft = ""
+    /// Плашку «Еблуша» убрали (Backspace в начале поля или тап по ней): сообщение уйдёт обычным,
+    /// с botAsk:false. Сбрасывается, когда повод для плашки пропадает (стёрли «Еблуша,», сняли
+    /// цитату, отправили) и по «Уточнить».
+    @State private var askDismissed = false
+    /// Ширина плашки — под неё вырезается место в первой строке поля.
+    @State private var askChipWidth: CGFloat = 0
     /// Черновик, отложенный на время правки: в поле лежит текст правимого сообщения.
     /// Вместе с беседой, которой он принадлежит, — переезд на другой чат посреди правки
     /// не должен вернуть в поле чужой текст.
@@ -106,6 +118,11 @@ struct ChatComposer: View {
     private var isEmpty: Bool { draft.trimmed().isEmpty && staged.isEmpty }
 
     private var isEditing: Bool { editing != nil }
+
+    /// Режим «Спросить» сейчас: плашка, что уйдёт в botAsk, отказ в секретке.
+    private var askState: BotAskState {
+        BotAskState.resolve(context: bot, text: draft, dismissed: askDismissed, editing: isEditing)
+    }
 
     /// На сколько панель без клавиатуры опускается в зону home indicator: чуть больше
     /// трети системного отступа (на Face ID-телефонах — 12 pt), на кнопочных — ноль.
@@ -166,6 +183,13 @@ struct ChatComposer: View {
                 ReplyDraftPreview(messages: replyingTo, onClear: onClearReply)
             }
 
+            // Секретка: бот сюда не ходит. На «Еблуша, …» честно говорим это здесь же —
+            // строка локальная, никуда не отправляется (текст секретки сервер не видит).
+            if askState.showRefusal {
+                BotSecretRefusalBar(text: bot.secretRefusal ?? SystemBotStore.fallbackRefusal)
+                    .transition(.opacity)
+            }
+
             // На время правки голосовая строка уступает место полю: записать новое
             // голосовое нельзя (микрофон погашен), а уже записанный черновик никуда не
             // девается — он вернётся, как только правка закроется.
@@ -177,7 +201,7 @@ struct ChatComposer: View {
                     recorder: voiceRecorder,
                     state: voiceState,
                     sending: sending,
-                    onSend: onSendVoice
+                    onSend: sendVoice
                 )
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
@@ -224,9 +248,20 @@ struct ChatComposer: View {
             }
             draft = DraftStore.get(current)
             suppressTypingOnce = true
+            askDismissed = false
             // Начатая запись и записанный черновик принадлежат ПРЕЖНЕЙ беседе — иначе
             // голосовое ушло бы в чужую переписку.
             voiceState.cancelAll(recorder: voiceRecorder)
+        }
+        // Повод для плашки пропал (стёрли «Еблуша,», сняли цитату бота) — отказ от неё забыт:
+        // следующее «Еблуша, …» снова подсветится.
+        .onChange(of: askState.triggered) { _, triggered in
+            if !triggered { askDismissed = false }
+        }
+        // «Уточнить» под ответом бота: плашка возвращается, даже если её убирали, и поле в фокусе.
+        .onChange(of: bot.clarifyToken) { _, _ in
+            askDismissed = false
+            focused = true
         }
         .onDisappear {
             // В поле может лежать текст правимого сообщения — черновиком беседы он не
@@ -374,23 +409,51 @@ struct ChatComposer: View {
                 text: $draft,
                 focused: $focused,
                 controller: textController,
-                onPasteImages: { files in stagePasted(files) }
+                onPasteImages: { files in stagePasted(files) },
+                // Плашка «Еблуша» стоит в начале первой строки: место под неё вырезается в
+                // самом тексте (лишь в первой строке), а не отступом всего поля.
+                leadingExclusion: askState.active ? max(0, askChipWidth + Self.askChipGap - Self.textInsetLeading + Self.askChipLeading) : 0,
+                onBackspaceAtStart: {
+                    // Backspace в начале поля при видимой плашке убирает её — сообщение уйдёт
+                    // обычным (botAsk:false); сам текст, включая «Еблуша,», не трогаем.
+                    guard askState.active else { return false }
+                    dismissAsk()
+                    return true
+                }
             )
             .frame(maxWidth: .infinity)
             .background(Eb.surface100, in: RoundedRectangle(cornerRadius: 20))
-            .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(Eb.border))
+            // Режим «Спросить» подсвечивает всё поле — видно и без плашки на глаз.
+            .overlay(
+                RoundedRectangle(cornerRadius: 20)
+                    .strokeBorder(askState.active ? Eb.brand : Eb.border, lineWidth: askState.active ? 1.5 : 1)
+            )
             // Подсказка рисуется поверх: у UITextView своего placeholder нет. Отступы
             // совпадают с textContainerInset поля, иначе текст «прыгнул» бы с первого
             // символа. Тапы сквозь неё проходят в поле.
             .overlay(alignment: .topLeading) {
                 if draft.isEmpty {
-                    Text("Сообщение")
+                    // С плашкой «Еблуша» в начале поля хватает «Вопрос…» — длинная подсказка
+                    // не влезала и обрезалась многоточием.
+                    Text(askState.active ? "Вопрос…" : (bot.isBotChat ? "Вопрос Еблуше…" : "Сообщение"))
                         .foregroundStyle(Eb.textMuted)
-                        .padding(.horizontal, 14)
+                        .lineLimit(1)
+                        .padding(.leading, askState.active ? Self.askChipLeading + askChipWidth + Self.askChipGap : 14)
+                        .padding(.trailing, 14)
                         .padding(.vertical, 9)
                         .allowsHitTesting(false)
                 }
             }
+            .overlay(alignment: .topLeading) {
+                if askState.active {
+                    BotAskChip(onDismiss: dismissAsk)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { askChipWidth = $0 }
+                        .padding(.leading, Self.askChipLeading)
+                        .padding(.top, Self.askChipTop)
+                        .transition(.scale(scale: 0.6, anchor: .leading).combined(with: .opacity))
+                }
+            }
+            .animation(.easeOut(duration: 0.15), value: askState.active)
             .onChange(of: draft) { _, text in
                 // Восстановленный черновик — не набор текста: без этого собеседник
                 // видел «печатает…» просто оттого, что человек открыл чат.
@@ -418,13 +481,16 @@ struct ChatComposer: View {
                         recorder: voiceRecorder,
                         state: voiceState,
                         sending: sending,
-                        onSend: onSendVoice
+                        onSend: sendVoice
                     )
+                } else if askState.active {
+                    askButton
                 } else {
                     sendButton
                 }
             }
-            .frame(width: 38, height: 38)
+            // «Спросить» — капсула шире круглой кнопки; остальные кнопки этого места — 38×38.
+            .frame(width: !isEditing && !isEmpty && askState.active ? nil : 38, height: 38)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -525,17 +591,60 @@ struct ChatComposer: View {
         onStageFiles(files)
     }
 
+    /// Отправка набранного (или очереди вложений с подписью) вместе с решением плашки «Спросить».
+    private func submit() {
+        let text = draft
+        let botAsk = askState.botAsk
+        draft = ""
+        askDismissed = false
+        DraftStore.set(conversationId, "")
+        // С очередью вложений текст уходит их подписью; иначе — обычное сообщение.
+        if !staged.isEmpty {
+            onSendStaged(text.trimmed().isEmpty ? nil : text, botAsk)
+        } else {
+            onSend(text, botAsk)
+        }
+    }
+
+    /// Голосовое отвечает на цитату так же, как текст: ответ боту при плашке уходит ему.
+    private func sendVoice(_ data: Data, _ duration: Int, _ waveform: [Int]) {
+        let botAsk = askState.botAsk
+        askDismissed = false
+        onSendVoice(data, duration, waveform, botAsk)
+    }
+
+    /// Плашку «Еблуша» убрали — сообщение уйдёт обычным.
+    private func dismissAsk() {
+        withAnimation(.easeOut(duration: 0.15)) { askDismissed = true }
+    }
+
+    // Геометрия плашки в поле: textContainerInset поля — 14 слева и 9 сверху.
+    private static let textInsetLeading: CGFloat = 14
+    private static let askChipLeading: CGFloat = 8
+    private static let askChipTop: CGFloat = 8
+    private static let askChipGap: CGFloat = 6
+
+    /// «Спросить» на месте стрелки: сообщение уйдёт Еблуше.
+    private var askButton: some View {
+        Button(action: submit) {
+            // Без «Б»: она уже есть на плашке в поле, а каждая точка ширины здесь — у текста.
+            Text("Спросить")
+                .font(.system(size: 14, weight: .semibold))
+                .lineLimit(1)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 12)
+                .frame(height: 38)
+                .background(sending ? Eb.surface300 : Eb.brand, in: Capsule())
+                .dynamicTypeSize(.large)
+        }
+        .disabled(sending)
+        .accessibilityLabel("Спросить")
+        .accessibilityHint("Сообщение уйдёт Еблуше")
+    }
+
     private var sendButton: some View {
         Button {
-            let text = draft
-            draft = ""
-            DraftStore.set(conversationId, "")
-            // С очередью вложений текст уходит их подписью; иначе — обычное сообщение.
-            if !staged.isEmpty {
-                onSendStaged(text.trimmed().isEmpty ? nil : text)
-            } else {
-                onSend(text)
-            }
+            submit()
         } label: {
             Image(systemName: "arrow.up")
                 .font(.system(size: 17, weight: .bold))
@@ -729,3 +838,24 @@ private let cameraNameStamp: DateFormatter = {
     formatter.dateFormat = "yyyyMMdd-HHmmss"
     return formatter
 }()
+
+/// Строка отказа бота в секретном чате: показывается ТОЛЬКО на этом устройстве, когда человек
+/// начал «Еблуша, …» или «/eb». Никуда не уходит — сообщение секретки бот не увидит в принципе.
+private struct BotSecretRefusalBar: View {
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            BotAvatar(size: 22)
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(Eb.textMuted)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Eb.surface200)
+        .accessibilityElement(children: .combine)
+    }
+}
