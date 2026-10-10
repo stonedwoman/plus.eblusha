@@ -44,7 +44,11 @@ describe('createInputPresence — возврат к экрану после пр
     const onReturn = vi.fn()
     const target = { addEventListener: vi.fn(), removeEventListener: vi.fn() }
     const p = createInputPresence({ onReturn, now: () => t, target: target as any })
-    expect(target.addEventListener).toHaveBeenCalledTimes(5)
+    expect(target.addEventListener).toHaveBeenCalledTimes(6)
+    const focusCall = target.addEventListener.mock.calls.find((c: unknown[]) => c[0] === 'focus')
+    expect(focusCall?.[2]).toEqual({ passive: true }) // только фокус самого окна, не полей (без перехвата)
+    const keyCall = target.addEventListener.mock.calls.find((c: unknown[]) => c[0] === 'keydown')
+    expect(keyCall?.[2]).toEqual({ passive: true, capture: true })
     t += 10_000
     p._input()
     expect(onReturn).not.toHaveBeenCalled()
@@ -57,6 +61,6 @@ describe('createInputPresence — возврат к экрану после пр
     p._input()
     expect(onReturn).toHaveBeenCalledTimes(1)
     p.dispose()
-    expect(target.removeEventListener).toHaveBeenCalledTimes(5)
+    expect(target.removeEventListener).toHaveBeenCalledTimes(6)
   })
 })

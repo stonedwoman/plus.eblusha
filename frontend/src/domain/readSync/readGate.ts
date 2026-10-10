@@ -44,8 +44,12 @@ export function callOverlayCoversChat(opts: {
   return !opts.outgoingIsGroup
 }
 
-/** События, которые считаются «человек у экрана». */
-export const READ_PRESENCE_EVENTS = ['pointerdown', 'pointermove', 'keydown', 'wheel', 'touchstart'] as const
+/**
+ * События, которые считаются «человек у экрана». Ввод видно только внутри страницы, поэтому и фокус окна: Alt+Tab
+ * или щелчок из другого приложения — тоже действие человека (иначе после работы в другой программе вернувшийся
+ * человек считался бы «отошедшим», пока не тронет мышь).
+ */
+export const READ_PRESENCE_EVENTS = ['pointerdown', 'pointermove', 'keydown', 'wheel', 'touchstart', 'focus'] as const
 
 /**
  * Следит за вводом: lastInputAt() — момент последнего ввода; onReturn — человек вернулся после простоя
@@ -71,15 +75,17 @@ export function createInputPresence(opts: {
     }
   }
   const target = opts.target ?? (typeof window !== 'undefined' ? window : null)
-  const listenerOpts: AddEventListenerOptions = { passive: true, capture: true }
-  if (target) for (const ev of READ_PRESENCE_EVENTS) target.addEventListener(ev, onInput, listenerOpts)
+  // Ввод — в фазе перехвата (до обработчиков страницы); фокус — только самого окна: в фазе перехвата окно ловило бы
+  // и программный focus() полей ввода, а это не действие человека.
+  const optsFor = (ev: string): AddEventListenerOptions => (ev === 'focus' ? { passive: true } : { passive: true, capture: true })
+  if (target) for (const ev of READ_PRESENCE_EVENTS) target.addEventListener(ev, onInput, optsFor(ev))
   return {
     lastInputAt: () => last,
     idleMs: () => now() - last,
     /** Для тестов: как будто пришёл ввод. */
     _input: onInput,
     dispose(): void {
-      if (target) for (const ev of READ_PRESENCE_EVENTS) target.removeEventListener(ev, onInput, listenerOpts)
+      if (target) for (const ev of READ_PRESENCE_EVENTS) target.removeEventListener(ev, onInput, optsFor(ev))
     },
   }
 }
