@@ -220,7 +220,7 @@ struct PhotoViewerView: View {
                 Button { dismissThen { callbacks.onShowInChat(item) } } label: {
                     Label("Показать в чате", systemImage: "text.bubble")
                 }
-                if item.isMine && callbacks.canDelete {
+                if item.canDelete && callbacks.canDelete {
                     Button(role: .destructive) { confirmDelete = true } label: {
                         Label("Удалить", systemImage: "trash")
                     }
@@ -372,7 +372,7 @@ struct PhotoViewerView: View {
             if !item.isVideo {
                 actionButton("square.and.arrow.down", label: "Сохранить") { save(item) }
             }
-            if item.isMine && callbacks.canDelete {
+            if item.canDelete && callbacks.canDelete {
                 actionButton("trash", label: "Удалить") { confirmDelete = true }
             }
         }
