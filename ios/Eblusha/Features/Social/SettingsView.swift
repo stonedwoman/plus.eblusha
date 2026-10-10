@@ -342,7 +342,7 @@ struct SettingsView: View {
             } header: {
                 Text("Еблуша")
             } footer: {
-                Text(bot.error ?? "Личный чат с ботом: там можно писать без обращения. В остальных беседах зовите «Еблуша, …» или /eb.")
+                Text(bot.error ?? "Личный чат с ботом: там можно писать без обращения. В остальных беседах зовите «Еблуша, …».")
                     .foregroundStyle(bot.error == nil ? Eb.textMuted : Eb.error)
             }
             .ebRow()

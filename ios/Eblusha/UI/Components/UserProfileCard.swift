@@ -803,7 +803,7 @@ private struct BotCardContent: View {
                     if let eblid {
                         InfoRow(label: "EBLID", value: eblid, copyable: true)
                     }
-                    InfoRow(label: "Как позвать", value: "«Еблуша, …» или /eb в любой беседе", copyable: false)
+                    InfoRow(label: "Как позвать", value: "«Еблуша, …» в любой беседе", copyable: false)
                     if bot.isAvailable {
                         CardActionButton(
                             icon: "bubble.left.fill",
