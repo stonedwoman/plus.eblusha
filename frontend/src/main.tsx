@@ -353,9 +353,17 @@ function AppRoot() {
                   ? participants.find((p: any) => p.user.id !== currentUserId)
                   : undefined
 
+              // Отправитель может быть не участником беседы (бот «Еблуша» отвечает в любой беседе) —
+              // тогда имя из последнего сообщения, а не собеседника/названия беседы.
+              const latestSender = conversation?.messages?.[0]?.sender
+              const nonParticipantSenderName =
+                !senderParticipant && context?.senderId && latestSender?.id === context.senderId
+                  ? latestSender?.displayName
+                  : undefined
               const senderName =
                 senderParticipant?.user?.displayName ||
                 senderParticipant?.user?.username ||
+                nonParticipantSenderName ||
                 counterpart?.user?.displayName ||
                 counterpart?.user?.username ||
                 conversation.title ||

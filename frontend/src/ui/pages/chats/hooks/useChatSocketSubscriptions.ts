@@ -32,6 +32,13 @@ export function useChatSocketSubscriptions(opts: {
       const conversationId = payload.conversationId
       const isActive = conversationId === activeId
 
+      // Ответ бота «Еблуша» пришёл — его «печатает…» гасим сразу, не дожидаясь isTyping:false
+      // (сервер гасит сам только через 10 с). Если бот пишет следующую часть, он снова пингнёт.
+      const incomingAny = payload?.message
+      if (incomingAny && incomingAny.senderId && (incomingAny.isBot === true || incomingAny.sender?.isBot === true)) {
+        onIncomingTyping({ conversationId, userId: incomingAny.senderId, isTyping: false })
+      }
+
       // Для неактивных чатов: инвалидируем список бесед, чтобы получить актуальный unreadCount с сервера
       if (!isActive) {
         client.invalidateQueries({ queryKey: ['conversations'] })
@@ -80,7 +87,8 @@ export function useChatSocketSubscriptions(opts: {
       onIncomingTyping(p)
     }
     const onTypingUpdate = (p: any) => {
-      onIncomingTyping({ conversationId: p.conversationId, userId: p.userId, isTyping: p.isTyping })
+      // displayName/isBot — у бота «Еблуша», который не участник беседы (docs/bot-system.md §3).
+      onIncomingTyping({ conversationId: p.conversationId, userId: p.userId, isTyping: p.isTyping, displayName: p.displayName, isBot: p.isBot })
     }
 
     const onReaction = (payload: { conversationId: string; messageId: string; message?: any }) => {

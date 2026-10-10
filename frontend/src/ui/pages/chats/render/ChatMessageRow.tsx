@@ -12,7 +12,7 @@ import { lazy, Fragment } from 'react'
 import { api } from '../../../../utils/api'
 import type { AxiosError } from 'axios'
 
-import { Quote, Check } from 'lucide-react'
+import { Quote, Check, Reply, ExternalLink } from 'lucide-react'
 import { AvailabilityButton } from '../../../../features/availability/AvailabilityButton'
 import { AvailabilityOverlay } from '../../../../features/availability/AvailabilityOverlay'
 
@@ -36,6 +36,22 @@ import { convertToProxyUrl, extractObjectKeyFromUrl, gridThumbUrl } from '../../
 import { extractFirstPreviewableUrl } from '../../../../js/link-detect'
 
 import { renderMessageText } from '../chatsTextRender'
+import { openUrlSystemBrowser } from '../chatsEmbeds'
+import { BotTag } from '../../../components/bot/BotUi'
+import {
+  BOT_BRAND_ORANGE,
+  botClarifyTarget,
+  botDisplayName,
+  botMapCardLink,
+  botMessageInfo,
+  isBotConfirmAnswered,
+  isBotMessage,
+  stripMarkdownForPreview,
+  type SystemBotProfile,
+} from '../../../../domain/bot/systemBot'
+
+/** Тёплый тёмный фон пузыря бота «Еблуша» (+ оранжевая полоса слева — botUi.css). */
+const BOT_BUBBLE_BG = '#221c19'
 
 import { LinkPreviewCard } from '../components/LinkPreviewCard'
 import { MessageReactionRail } from '../components/MessageReactionRail'
@@ -52,6 +68,16 @@ import { formatMessageClockLabel, formatRuRelativeSendDay, formatSmallBubbleTime
 import { formatSenderReplyActionPhrase, formatSenderReplySingleActionPhrase, parseMessageMetadata, parseReplyQuoteBundleEntries, coerceParsedMessageInstant, normalizeForwardFromRecord, extractOriginalForwardedInstantFromMessage } from '../chatsMessages'
 
 export interface ChatMessageRowCtx {
+  // ── Бот «Еблуша» (docs/bot-system.md): пишет в беседы, участником которых не является ──
+  botId: string | null
+  botProfile: SystemBotProfile | null
+  /** Открыт «Чат с Еблушей» (там имя бота над каждым ответом не нужно). */
+  activeIsBotChat: boolean
+  /** «Уточнить»: ответ на сообщение бота в режиме «Спросить». */
+  startBotClarify: (msg: any) => void
+  /** Быстрые «Да»/«Нет» под вопросом-подтверждением бота. */
+  sendBotConfirmAnswer: (msg: any, answer: 'да' | 'нет') => void
+  botConfirmBusyId: string | null
   activeConversation: any
   activeId: any
   attachmentDecryptMap: any
@@ -98,6 +124,7 @@ export function renderChatMessageAtIndex(
                   forwardBundleSuppressMetaFooter?: boolean,
   ctx: ChatMessageRowCtx = {} as any,
 ) {
+  const { botId, botProfile, activeIsBotChat, startBotClarify, sendBotConfirmAnswer, botConfirmBusyId } = ctx
   const { activeConversation, activeId, attachmentDecryptMap, attachmentHeadInfoMap, client, currentUserId, failedImages, fullList, groupIncomingBubbleBg, hashToGray, isMobile, leftAlignAll, loadedImages, me, messagesRef, multiSelectMode, nameColorForUser, nearBottomRef, nodesByMessageId, openUserCard, replyQuoteVisual, resolveAttachmentUrl, selectedMessageIds, setContextMenu, setFailedImages, setLightbox, setLoadedImages, setVideoViewer, toggleMessageMultiSelect, usersById, virtuosoRef, visibleObserver } = ctx
                   const i = rowIndex
                   const m = fullList[i]
@@ -120,6 +147,8 @@ export function renderChatMessageAtIndex(
                       return false
                     }
                   })()
+                  // Сообщение бота «Еблуша»: верим только isBot сервера (Message.isBot / sender.isBot).
+                  const botMsg = isBotMessage(m, botId)
                   const canSelectForMulti = !isPendingMessage && m.type !== 'SYSTEM'
                   const multiSelectAnchorId =
                     forwardBundleInner && forwardBundleRepresentativeMessageId
@@ -137,7 +166,10 @@ export function renderChatMessageAtIndex(
                     multiSelectMode && canSelectForMulti && leftAlignAll ? ' msg--multiselect-wide' : ''
                   }`
                   const baseBubble = leftAlignAll ? 'msg-bubble left' : (isMe ? 'msg-bubble me' : 'msg-bubble them')
-                  const firstUrl = typeof m.content === 'string' ? extractFirstPreviewableUrl(m.content) : null
+                  // Бот кладёт карточку ссылки сам (metadata.linkPreview) или не кладёт вовсе — воркер превью
+                  // его ответы не разворачивает, поэтому без карточки не рисуем вечный «скелет» превью.
+                  const botNoPreview = botMsg && !(m as any)?.metadata?.linkPreview
+                  const firstUrl = typeof m.content === 'string' && !botNoPreview ? extractFirstPreviewableUrl(m.content) : null
                   const hasAnyLink = !!firstUrl
                   const previewMedia = (() => {
                     const p = (m as any)?.metadata?.linkPreview
@@ -150,7 +182,15 @@ export function renderChatMessageAtIndex(
                       return false
                     }
                   })()
-                  const senderUser = usersById[m.senderId]
+                  // Отправитель может быть НЕ участником беседы (бот «Еблуша», вышедший из группы человек):
+                  // тогда имя — из профиля бота / message.sender (только displayName: username — логин, он секрет).
+                  const senderUser =
+                    usersById[m.senderId] ??
+                    (botMsg
+                      ? { ...(botProfile ?? {}), id: m.senderId, displayName: botDisplayName(m, botProfile), isBot: true }
+                      : m.sender && typeof m.sender === 'object' && m.sender.id && typeof m.sender.displayName === 'string' && m.sender.displayName.trim()
+                        ? { id: m.sender.id, displayName: m.sender.displayName }
+                        : undefined)
                   const avatarName = senderUser?.displayName ?? senderUser?.username ?? (isMe ? (me?.displayName ?? me?.username ?? 'Me') : 'User')
                   const avatarId = senderUser?.id ?? (isMe ? (me?.id ?? 'me') : 'user')
                   const isGroupConv = !!(activeConversation?.isGroup || (activeConversation?.participants?.length ?? 0) > 2)
@@ -172,7 +212,9 @@ export function renderChatMessageAtIndex(
                   const bgBase =
                     forwardHueKey != null
                       ? groupIncomingBubbleBg(forwardHueKey)
-                      : isMe
+                      : botMsg
+                        ? BOT_BUBBLE_BG
+                        : isMe
                         ? '#303845'
                         : isGroupConv
                           ? groupIncomingBubbleBg(m.senderId)
@@ -210,22 +252,30 @@ export function renderChatMessageAtIndex(
                     multiSelectMode && canSelectForMulti && selectedMessageIds.includes(multiSelectAnchorId)
                   const isSelectedInMulti = multiSelectAnchorSelected && !forwardBundleInner
                   const bubbleFg = isSelectedInMulti ? '#0a0a0a' : fg
-                  const senderAccentColor = nameColorForUser(m.senderId)
-                  const showGroupSenderName = isGroupConv && !isPrevSame
-                  const replyPayload = m.replyTo as { id?: string; content?: string | null; senderId?: string } | undefined
+                  const senderAccentColor = botMsg ? BOT_BRAND_ORANGE : nameColorForUser(m.senderId)
+                  // Бот — третий в любой беседе: его имя и «бот» видны и в личке двух людей.
+                  const showGroupSenderName = (isGroupConv || (botMsg && !activeIsBotChat)) && !isPrevSame
+                  const replyPayload = m.replyTo as { id?: string; content?: string | null; senderId?: string; isBot?: boolean } | undefined
                   const quotedSenderId = replyPayload?.senderId
                   const quotedUserForReply = quotedSenderId ? usersById[quotedSenderId] : undefined
+                  // Цитата ответа боту (replyTo.isBot): автор — «Еблуша», хоть он и не участник беседы.
+                  const quotedIsBot = replyPayload?.isBot === true || (!!botId && !!quotedSenderId && String(quotedSenderId) === botId)
                   const quotedAuthorLabel =
+                    (quotedIsBot ? botDisplayName(null, botProfile) : '') ||
                     quotedUserForReply?.displayName?.trim() ||
                     quotedUserForReply?.username?.trim() ||
                     'Участник'
-                  const quoteBarColor = quotedSenderId ? nameColorForUser(quotedSenderId) : '#8e8e93'
+                  const quoteBarColor = quotedIsBot ? BOT_BRAND_ORANGE : quotedSenderId ? nameColorForUser(quotedSenderId) : '#8e8e93'
                   const quotedMessageForSingleReply =
                     replyPayload?.id ? fullList.find((x: any) => x && String(x.id) === String(replyPayload.id)) : undefined
-                  const singleReplyQV = replyQuoteVisual(
-                    quotedMessageForSingleReply,
-                    typeof replyPayload?.content === 'string' ? replyPayload.content : '',
-                  )
+                  const singleReplyQV = (() => {
+                    const qv = replyQuoteVisual(
+                      quotedMessageForSingleReply,
+                      typeof replyPayload?.content === 'string' ? replyPayload.content : '',
+                    )
+                    // Цитата ответа бота — без маркеров разметки (его ответы всегда размечены).
+                    return quotedIsBot && qv.line ? { ...qv, line: stripMarkdownForPreview(qv.line) } : qv
+                  })()
                   const singleReplyQuotedAt = quotedMessageForSingleReply?.createdAt
                     ? coerceParsedMessageInstant(quotedMessageForSingleReply.createdAt)
                     : null
@@ -258,7 +308,8 @@ export function renderChatMessageAtIndex(
                   // In wide mode all rows are left-aligned and the avatar is always on the left.
                   // In narrow mode for group chats we still want to show who sent the message,
                   // so we render the avatar on the appropriate side of the row (left for them, right for me).
-                  const showAvatarBlock = leftAlignAll || isGroupConv
+                  // Бот «Еблуша» — третий даже в личке двух людей: его «Б» видна и там (в «Чате с Еблушей» не нужна).
+                  const showAvatarBlock = leftAlignAll || isGroupConv || (botMsg && !activeIsBotChat)
                   /** Аватар пересылающего у пачки — снаружи конверта на хосте, не внутри .msg-forward-bundle-outer */
                   const showAvatar =
                     showAvatarBlock && isLastOfRun && !forwardBundleInner
@@ -266,7 +317,7 @@ export function renderChatMessageAtIndex(
                   const avatarOnLeft = showAvatarBlock && !avatarOnRight
                   const renderAvatarOrSpacer = () => (
                     showAvatar ? (
-                      <Avatar name={avatarName} id={avatarId} onClick={usersById[m.senderId] ? () => openUserCard(usersById[m.senderId]) : undefined} avatarUrl={(() => {
+                      <Avatar isBot={botMsg} name={avatarName} id={avatarId} onClick={usersById[m.senderId] ? () => openUserCard(usersById[m.senderId]) : botMsg && senderUser ? () => openUserCard(senderUser) : undefined} avatarUrl={(() => {
                         const userAvatar = usersById[m.senderId]?.avatarUrl
                         return userAvatar && userAvatar.trim() ? userAvatar : undefined
                       })()} />
@@ -417,6 +468,7 @@ export function renderChatMessageAtIndex(
                         className={
                           (hasAnyLink ? `${bubbleClass} has-link-preview${previewMedia ? ' has-link-preview-media' : ''}` : bubbleClass) +
                           forwardBubbleMods +
+                          (botMsg && !isForwardedBubble ? ' msg-bubble--bot' : '') +
                           (isSelectedInMulti ? ' msg-bubble--selected' : '') +
                           ' msg-bubble--reactions-inline' +
                           (leftAlignAll ? ' msg-bubble--reactions-wide' : '')
@@ -488,6 +540,7 @@ export function renderChatMessageAtIndex(
                                 ? `${String(avatarName).trim()} ${replySenderActionPhrase}`
                                 : avatarName}
                             </span>
+                            {botMsg ? <BotTag /> : null}
                             {replySenderActionPhrase ? (
                               <Quote
                                 size={14}
@@ -506,11 +559,14 @@ export function renderChatMessageAtIndex(
                           <div className="msg-reply-quote-bundle">
                             {replyBundleEntries.map((entry) => {
                               const uid = entry.senderId
+                              const entryIsBot = !!botId && !!uid && String(uid) === botId
                               const label =
-                                uid && usersById[uid]
-                                  ? usersById[uid].displayName?.trim() || usersById[uid].username?.trim() || 'Участник'
-                                  : 'Участник'
-                              const barColor = uid ? nameColorForUser(uid) : '#8e8e93'
+                                entryIsBot
+                                  ? botDisplayName(null, botProfile)
+                                  : uid && usersById[uid]
+                                    ? usersById[uid].displayName?.trim() || usersById[uid].username?.trim() || 'Участник'
+                                    : 'Участник'
+                              const barColor = entryIsBot ? BOT_BRAND_ORANGE : uid ? nameColorForUser(uid) : '#8e8e93'
                               const innerBubbleBg = groupIncomingBubbleBg(uid || entry.id)
                               const quotedEntryMsg = fullList.find((x: any) => x && String(x.id) === String(entry.id))
                               const innerQuotedAt =
@@ -641,9 +697,9 @@ export function renderChatMessageAtIndex(
                                 tabIndex={0}
                                 className="msg-bubble msg-bubble--forward msg-bubble--forward-quote msg-reply-quote-bundle__bubble"
                                 style={{
-                                  ['--bubble-bg' as string]: groupIncomingBubbleBg(
-                                    quotedSenderId || replyPayload?.id || m.id || 'q',
-                                  ),
+                                  ['--bubble-bg' as string]: quotedIsBot
+                                    ? BOT_BUBBLE_BG
+                                    : groupIncomingBubbleBg(quotedSenderId || replyPayload?.id || m.id || 'q'),
                                   ['--bubble-fg' as string]: fg,
                                   cursor: 'pointer',
                                   textAlign: 'left',
@@ -746,9 +802,10 @@ export function renderChatMessageAtIndex(
                         ) : null}
                         <>
                           <div style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                            {renderMessageText(m.content)}
+                            {renderMessageText(m.content, botMsg ? { forceMarkdown: true } : undefined)}
                           </div>
                           {(() => {
+                            if (botNoPreview) return null
                             const firstUrl = extractFirstPreviewableUrl(m.content)
                             if (!firstUrl) return null
                             const preview = (m as any)?.metadata?.linkPreview
@@ -861,6 +918,8 @@ export function renderChatMessageAtIndex(
                                 // Только загрузка/дешифр — обычная догрузка картинки идёт локально в LazyImage
                                 // (fade), без ре-рендера строки; заглушку на время даёт фон бокса (--surface-100).
                                 const showPending = att.__pending || decryptPending
+                                // Карточка карты Valheim от бота: щелчок — живая карта, а не просмотрщик.
+                                const mapCardLink = botMapCardLink(att, m, botId)
 
                                 return (
                                   <div
@@ -989,7 +1048,7 @@ export function renderChatMessageAtIndex(
                                           height: '100%',
                                           objectFit: 'contain',
                                           borderRadius: 10,
-                                          cursor: m.id?.startsWith('tmp-') ? 'default' : 'zoom-in',
+                                          cursor: m.id?.startsWith('tmp-') ? 'default' : mapCardLink ? 'pointer' : 'zoom-in',
                                           // Целевая opacity; проявление (0→) делает LazyImage локально по onLoad,
                                           // без ре-рендера строки. att.__pending → чуть приглушаем во время отправки.
                                           opacity: att.__pending ? 0.85 : 1,
@@ -1007,12 +1066,21 @@ export function renderChatMessageAtIndex(
                                           setFailedImages((prev: any) => ({ ...prev, [placeholderKey]: true }))
                                         }}
                                         onClick={() => {
+                                          if (mapCardLink && !(multiSelectMode && canSelectForMulti)) {
+                                            void openUrlSystemBrowser(mapCardLink)
+                                            return
+                                          }
                                           if (!att.__pending && !decryptPending && resolvedUrl) {
                                             openLightbox(resolvedUrl)
                                           }
                                         }}
                                       />
                                     )}
+                                    {mapCardLink && resolvedUrl && !decryptError ? (
+                                      <span className="eb-bot-mapcard-chip" aria-hidden>
+                                        Живая карта <ExternalLink size={12} strokeWidth={2.4} />
+                                      </span>
+                                    ) : null}
                                     {att.__pending && !decryptPending && typeof att.progress === 'number' && att.progress < 100 && (
                                       <div
                                         style={{
@@ -1105,6 +1173,7 @@ export function renderChatMessageAtIndex(
                                 const showPending = att.__pending || decryptPending
                                 const disabled = att.__pending || decryptPending || decryptError || !resolvedUrl
                                 const ratio = getRatio(att, tileIdx) // h/w
+                                const tileMapLink = botMapCardLink(att, m, botId)
 
                                 return (
                                   <button
@@ -1113,10 +1182,20 @@ export function renderChatMessageAtIndex(
                                     className="msg-media-tile"
                                     style={{ aspectRatio: 1 / ratio, background: 'var(--surface-100)' }}
                                     disabled={disabled}
+                                    title={tileMapLink ? 'Открыть живую карту' : undefined}
                                     onClick={() => {
+                                      if (tileMapLink && !(multiSelectMode && canSelectForMulti)) {
+                                        void openUrlSystemBrowser(tileMapLink)
+                                        return
+                                      }
                                       if (!disabled && resolvedUrl) openLightbox(resolvedUrl)
                                     }}
                                   >
+                                    {tileMapLink && resolvedUrl ? (
+                                      <span className="eb-bot-mapcard-chip" aria-hidden>
+                                        Живая карта <ExternalLink size={12} strokeWidth={2.4} />
+                                      </span>
+                                    ) : null}
                                     {resolvedUrl && (
                                       <LazyImage
                                         src={gridThumbUrl(resolvedUrl)}
@@ -1438,6 +1517,49 @@ export function renderChatMessageAtIndex(
                           })()}
                         </>
                         {(() => {
+                          // Под ответом бота: «Уточнить» (ответ на него в режиме «Спросить»), под вопросом-
+                          // подтверждением — «Да» / «Нет» (уходят ответом на него). docs/bot-system.md §2.
+                          if (!botMsg || forwardBundleInner || multiSelectMode || isPendingMessage) return null
+                          const clarifyTarget = botClarifyTarget(fullList, i, botId)
+                          const isConfirm = botMessageInfo(m).kind === 'confirm' && !isBotConfirmAnswered(fullList, i, currentUserId)
+                          if (!clarifyTarget && !isConfirm) return null
+                          const confirmBusy = botConfirmBusyId != null && String(botConfirmBusyId) === String(m.id)
+                          return (
+                            <div className="eb-bot-actions">
+                              {isConfirm ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    className="eb-bot-action eb-bot-action--yes"
+                                    disabled={confirmBusy}
+                                    onClick={(e) => { e.stopPropagation(); sendBotConfirmAnswer(m, 'да') }}
+                                  >
+                                    Да
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="eb-bot-action"
+                                    disabled={confirmBusy}
+                                    onClick={(e) => { e.stopPropagation(); sendBotConfirmAnswer(m, 'нет') }}
+                                  >
+                                    Нет
+                                  </button>
+                                </>
+                              ) : null}
+                              {clarifyTarget ? (
+                                <button
+                                  type="button"
+                                  className="eb-bot-action"
+                                  title="Задать Еблуше уточняющий вопрос — ответом на его сообщение"
+                                  onClick={(e) => { e.stopPropagation(); startBotClarify(clarifyTarget) }}
+                                >
+                                  <Reply size={13} strokeWidth={2.4} /> Уточнить
+                                </button>
+                              ) : null}
+                            </div>
+                          )
+                        })()}
+                        {(() => {
                           if (suppressFwdComposeMetaFooter) return null
                           return (
                             <div className="msg-meta" style={{ color: isSelectedInMulti ? '#27272a' : '#9aa0a8' }}>
@@ -1455,6 +1577,10 @@ export function renderChatMessageAtIndex(
                                   if (activeId) client.invalidateQueries({ queryKey: ['messages', activeId] })
                                 }}
                               />
+                              {/* Сервер пометил вопрос боту (metadata.botAsk) — видно всем участникам беседы. */}
+                              {!botMsg && !activeIsBotChat && (m as any)?.metadata?.botAsk === true ? (
+                                <span style={{ fontSize: 11, fontWeight: 700, color: isSelectedInMulti ? '#9a3412' : '#f08a5d' }} title="Вопрос боту «Еблуша»">→ Еблуше</span>
+                              ) : null}
                               {isForwardedBubble ? null : <span>{timeAndRecencyLabel}</span>}
                               {isEdited && <span style={{ fontSize: 11, opacity: 0.9 }}>изменено</span>}
                               {renderTicks({ withLeftMargin: false })}

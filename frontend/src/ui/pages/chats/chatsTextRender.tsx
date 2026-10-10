@@ -78,11 +78,14 @@ export function isMarkdownLike(text: string): boolean {
   return looksLikeMarkdown(text || '')
 }
 
-export function renderMessageText(value: unknown) {
+export function renderMessageText(value: unknown, opts?: { forceMarkdown?: boolean }) {
   if (typeof value !== 'string') return value as any
   const s = value || ''
   if (!s) return s
-  if (!isMarkdownLike(s)) return renderLinkifiedText(s)
+  // Ответы бота «Еблуша» всегда размечены (безопасное подмножество: **жирный**, _курсив_, `код`,
+  // блок кода, списки «- », цитаты «> », заголовки, ссылки https) — «ворота» эвристики им не нужны:
+  // иначе ответ только с _курсивом_ или ~~зачёркнутым~~ показался бы сырым. DOMPurify — тот же.
+  if (!opts?.forceMarkdown && !isMarkdownLike(s)) return renderLinkifiedText(s)
   const html = renderChatMarkdownToHtml(s)
   // eslint-disable-next-line react/no-danger
   return <div className="chat-md" dangerouslySetInnerHTML={{ __html: html }} />

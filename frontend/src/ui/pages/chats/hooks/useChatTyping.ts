@@ -14,6 +14,8 @@ export function useChatTyping(opts: {
 
   const [typingByConversationId, setTypingByConversationId] = useState<TypingByConversationId>({})
   const [typingDots, setTypingDots] = useState(1)
+  // Имя из события «печатает» — для тех, кого нет среди участников (бот «Еблуша»: docs/bot-system.md §3).
+  const typingNamesRef = useRef<Record<string, string>>({})
 
   const TYPING_STOP_IDLE_MS = 1100
   const TYPING_PING_INTERVAL_MS = 2000
@@ -41,6 +43,9 @@ export function useChatTyping(opts: {
     if (!convId || !uid) return
     if (uid === meId) return
     const isTyping = p.isTyping === true || (p.typing === true && p.isTyping !== false)
+    if (typeof p.displayName === 'string' && p.displayName.trim()) {
+      typingNamesRef.current[uid] = p.displayName.trim()
+    }
     setTypingByConversationId((prev) => {
       const conv = { ...(prev[convId] ?? {}) }
       if (!isTyping) {
@@ -197,10 +202,13 @@ export function useChatTyping(opts: {
     }
   }, [])
 
+  const typingNameFor = useCallback((userId: string): string | null => typingNamesRef.current[userId] ?? null, [])
+
   return {
     typingByUserId,
     typingByConversationId,
     typingDots,
+    typingNameFor,
     onIncomingTyping,
     notifyTyping,
     stopTyping,

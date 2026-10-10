@@ -3,9 +3,14 @@ import { type FormEvent, useState } from 'react'
 import { api } from '../../utils/api'
 import { LinkDeviceModal } from '../components/LinkDeviceModal'
 import { LocalTimeSettingsSection } from '../components/LocalTimeSettingsSection'
+import { BotChatSettingsSection } from '../components/bot/BotUi'
+import { useLocation, useNavigate } from 'react-router-dom'
+import { withAppRoutePrefix } from '../../core/navigation/routes'
 import { systemConfirm } from '../../domain/store/systemUiStore'
 
 export default function SettingsPage() {
+  const navigate = useNavigate()
+  const location = useLocation()
   const meQuery = useQuery({
     queryKey: ['me'],
     queryFn: async () => {
@@ -76,6 +81,7 @@ export default function SettingsPage() {
 
       <div style={{ height: 24 }} />
       <LocalTimeSettingsSection />
+      <BotChatSettingsSection onOpenChat={(conversationId) => navigate(withAppRoutePrefix(location.pathname, `/chats/${conversationId}`))} />
 
       <h2>Устройства</h2>
       <div style={{ display: 'grid', gap: 10 }}>

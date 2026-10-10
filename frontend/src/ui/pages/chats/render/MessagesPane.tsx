@@ -63,8 +63,26 @@ import { formatMessageClockLabel, formatRuRelativeSendDay } from '../chatsTime'
 import { formatReplyBundleHeader, formatForwardSourcePhraseAfterName, renderSystemMessageContent, previewTextForReplyDraft, replySnippetIsGenericRu, buildReplyDraftFromMessages, buildReplyQuoteMetadataForSend, hasForwardFromMeta, computeMultiSourceForwardBundles, extractForwardComposerCaption, parseReplyQuoteBundleEntries } from '../chatsMessages'
 
 import { renderChatMessageAtIndex as extractedRenderChatMessageAtIndex } from './ChatMessageRow'
+import { BotAskChip, isCaretAtEditorStart } from '../../../components/bot/BotUi'
+import { botClarifyTarget, isBotConfirmAnswered, isBotMessage, isBotUser, withBotAskMeta, type BotAskState, type SystemBotInfo } from '../../../../domain/bot/systemBot'
 
 export interface MessagesPaneCtx {
+  // ── Бот «Еблуша» (docs/bot-system.md) ──
+  /** id системного бота (null — бот не заведён: всё «ботовое» спрятано). */
+  botId: string | null
+  systemBot: SystemBotInfo | null
+  /** Режим «Спросить» в поле ввода (computeBotAsk). */
+  botAsk: BotAskState
+  setBotAskDismissed: (v: boolean) => void
+  syncBotAskPrefix: (text: string) => void
+  getBotAskSendMeta: () => { botAsk: boolean } | null
+  /** Открыт «Чат с Еблушей». */
+  activeIsBotChat: boolean
+  botSecretRefusalText: string
+  startBotClarify: (msg: any) => void
+  sendBotConfirmAnswer: (msg: any, answer: 'да' | 'нет') => void
+  botConfirmBusyId: string | null
+  typingNameFor: (userId: string) => string | null
   acceptSecretInvite: any
   activeCalls: any
   activeConversation: any
@@ -253,6 +271,7 @@ function sortedActiveMessages(displayedMessages: any): any[] {
 }
 
 export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
+  const { botId, systemBot, botAsk, setBotAskDismissed, syncBotAskPrefix, getBotAskSendMeta, activeIsBotChat, botSecretRefusalText, startBotClarify, sendBotConfirmAnswer, botConfirmBusyId, typingNameFor } = ctx
   const { acceptSecretInvite, activeCalls, activeConversation, activeId, activePendingMessages, activeSecretQueuedCount, activeSecretUiState, addComposerFile, addComposerImage, applyComposerImageEdit, applyComposerSelectionFormat, applyWysiwygFormat, attachCanceling, attachDragDepthRef, attachDragOver, attachInputRef, attachProcessingMessageIndex, attachProgress, attachUploadSpeed, attachUploadState, attachUploading, attachmentDecryptMap, attachmentHeadInfoMap, avatarPresenceForUser, backToList, beginOutgoingCallGuard, callConvId, callPermissionError, callStore, cancelActiveAttachUpload, cancelEdit, cancelSecretInviteAsCreator, cancelVoiceRecording, clearMessageMultiSelect, client, closeComposerSelectionToolbar, composerBarRef, composerEditorRef, composerEmpty, composerFocused, composerSelectionAnchor, composerSelectionFmt, composerSelectionToolbarRef, composerSelectionToolbarStyle, contactsQuery, conversationsQuery, creatorAwaitPeerAccept, currentUserId, declineSecretInvite, deviceLinkInviteOpen, displayedMessages, editBusy, editState, editingImage, editingImageId, effectiveUserStatus, endSecretModalOpen, eventHasFiles, executeForwardPayloadDelivery, failedImages, formatDuration, formatPresence, forwardComposerDraft, getComposerValue, getSelectedMessagesOrdered, groupIncomingBubbleBg, handleChatDropFiles, hasAnySecretThreadKeys, hasOtherTrustedDevice, hashToGray, insertPlainTextIntoComposer, insertMarkdownIntoComposer, isMobile, isNarrowHeaderButtons, leftAlignAll, loadedImages, loadOlderMessages, me, messagesContentRef, messagesRef, virtuosoRef, virtuosoBaseRef, virtuosoRowsRef, minimizedCallConvId, multiSelectMode, nameColorForUser, nearBottomRef, nodesByMessageId, notifyTyping, olderLoading, openUserCard, outgoingCall, outgoingCallTimerRef, pendingFiles, pendingImages, playEndCallSound, presenceGameByUserId, releasePreviewUrl, removeComposerFile, removeComposerImage, replyTo, requireMediaAccess, resizeComposer, resolveAttachmentUrl, resolveFirstImageAttachmentUrl, secretBootDonePulse, secretComposerInlineError, secretEngineV2Enabled, secretInviteBusy, secretInviteForMe, secretWaitingAsCreator, selectedMessageIds, sendMessageToConversation, setActiveCalls, setActiveId, setAttachDragOver, setAvailabilityContext, setCallConvId, setCallPermissionError, setComposerEmpty, setComposerFocused, setComposerValue, setContextMenu, setDeviceLinkInviteOpen, setEditBusy, setEditState, setEditingImageId, setEndSecretModalOpen, setFailedImages, setForwardComposerDraft, setForwardModal, setGroupAvatarEditor, setHeaderMenu, setLightbox, setLinkDeviceModalOpen, setLoadedImages, setMinimizedCallConvId, setOutgoingCall, setPendingFiles, setPendingImages, setReplyTo, setShowJump, setVideoViewer, showJump, startDialingSound, startEdit, startVoiceRecording, stopDialingSound, stopTyping, stopVoiceRecording, toggleMessageMultiSelect, typingByUserId, updateComposerSelectionToolbar, uploadAndSendAttachments, userStickyScrollRef, usersById, visibleObserver, voiceDuration, voiceRecording, voiceWaveform, waveformContainerRef, waveformMaxBars } = ctx
     const sectionClass = mobile ? 'messages-pane slider-panel' : 'messages-pane'
     return (
@@ -450,10 +469,13 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                 ) : (
                   (() => {
                     const peer: any = othersArr[0]
+                    // «Чат с Еблушей»: «Б», «бот» вместо статуса, без звонков и местного времени.
+                    const peerIsBot = activeIsBotChat || isBotUser(peer, botId)
                     return (
                       <div style={{ display: 'flex', alignItems: 'center', width: '100%' }}>
                         <div style={{ marginRight: 10 }}>
                           <Avatar
+                            isBot={peerIsBot}
                             name={peer?.displayName ?? peer?.username ?? 'D'}
                             id={peer?.id ?? activeConversation.id}
                             avatarUrl={peer?.avatarUrl && peer.avatarUrl.trim() ? peer.avatarUrl : undefined}
@@ -533,6 +555,7 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                             )}
                             {/* "Добавить устройство" button removed (replaced by header SVG action). */}
                             {(() => {
+                              if (peerIsBot) return <span>бот</span>
                               const isMinimized = minimizedCallConvId === activeId
 
                               // Если звонок завершен (и не минимизирован), показываем время завершения
@@ -605,7 +628,7 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                               return <span>{formatPresence(peer)}</span>
                             })()}
                             {/* Местное время собеседника — только в 1:1 (эта ветка) и только если у него не моё время. */}
-                            {peer?.id ? <PeerLocalTimeLine peerId={peer.id} listLocalTime={peer.localTime} /> : null}
+                            {peer?.id && !peerIsBot ? <PeerLocalTimeLine peerId={peer.id} listLocalTime={peer.localTime} /> : null}
                           </div>
                         </div>
                       </div>
@@ -827,7 +850,7 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                 const fallbackTimeZone = getFallbackTimeZone()
                 const peerTimeZone = (peerUser as any)?.timezone ?? (peerUser as any)?.timeZone ?? fallbackTimeZone
                 const peerName = peerUser?.displayName ?? peerUser?.username ?? 'Собеседник'
-                const canShowAvailability = !isGroup && !!peerUser?.id
+                const canShowAvailability = !isGroup && !!peerUser?.id && !activeIsBotChat
                 const isSecretV2Chat = String(activeConversation?.type ?? '').toUpperCase() === 'SECRET'
                 const canShowAddDeviceInHeader = isSecretV2Chat && hasAnySecretThreadKeys
                 const hasHeaderGame = (() => {
@@ -1043,6 +1066,21 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                 }
 
                 const renderCallControls = () => {
+                  // «Чат с Еблушей»: боту не звонят (сервер всё равно сразу отклонит) — только меню.
+                  if (activeIsBotChat) {
+                    return !isMobile ? (
+                      <button
+                        className="btn btn-icon btn-ghost"
+                        title="Меню"
+                        onClick={(e) => {
+                          setHeaderMenu({ open: true, anchor: e.currentTarget })
+                        }}
+                        style={menuButtonStyle}
+                      >
+                        <MoreVertical size={22} />
+                      </button>
+                    ) : null
+                  }
                   // Если звонок активен ИЛИ минимизирован (минимизированный звонок все еще активен, просто скрыт)
                   if (isActive || isMinimized) {
                     if (!isParticipating) {
@@ -1906,7 +1944,7 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                     </div>
                   )
                 }
-                const chatMessageRowCtx = { activeConversation, activeId, attachmentDecryptMap, attachmentHeadInfoMap, client, currentUserId, failedImages, fullList, groupIncomingBubbleBg, hashToGray, isMobile, leftAlignAll, loadedImages, me, messagesRef, multiSelectMode, nameColorForUser, nearBottomRef, nodesByMessageId, openUserCard, replyQuoteVisual, resolveAttachmentUrl, selectedMessageIds, setContextMenu, setFailedImages, setLightbox, setLoadedImages, setVideoViewer, toggleMessageMultiSelect, usersById, virtuosoRef, visibleObserver }
+                const chatMessageRowCtx = { botId, botProfile: systemBot?.bot ?? null, activeIsBotChat, startBotClarify, sendBotConfirmAnswer, botConfirmBusyId, activeConversation, activeId, attachmentDecryptMap, attachmentHeadInfoMap, client, currentUserId, failedImages, fullList, groupIncomingBubbleBg, hashToGray, isMobile, leftAlignAll, loadedImages, me, messagesRef, multiSelectMode, nameColorForUser, nearBottomRef, nodesByMessageId, openUserCard, replyQuoteVisual, resolveAttachmentUrl, selectedMessageIds, setContextMenu, setFailedImages, setLightbox, setLoadedImages, setVideoViewer, toggleMessageMultiSelect, usersById, virtuosoRef, visibleObserver }
                 const renderChatMessageAtIndex = (
                   rowIndex: number,
                   forwardBundleInner?: boolean,
@@ -2539,6 +2577,14 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                   }
                   return s
                 })()
+                // Кнопки под сообщением бота зависят от СОСЕДНИХ сообщений: «Уточнить» — только под
+                // последней частью ответа (и указывает на первую), «Да/Нет» — пока на вопрос не ответили.
+                const __botRowSig = (mi: number): string => {
+                  const m = fullList[mi]
+                  if (!isBotMessage(m, botId)) return ''
+                  const target = botClarifyTarget(fullList, mi, botId)
+                  return `${target?.id ?? '-'}|${isBotConfirmAnswered(fullList, mi, currentUserId) ? 1 : 0}|${botConfirmBusyId === String(m?.id) ? 1 : 0}`
+                }
                 const buildRowDeps = (mi: number): unknown[] | null => {
                   const m = fullList[mi]
                   const key = rowKeyByIndex.get(mi)
@@ -2568,6 +2614,7 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                     multiSelectMode, leftAlignAll, isMobile,
                     activeConversation?.id, activeConversation?.isGroup,
                     __participantsSig, currentUserId, me?.id, me?.avatarUrl, me?.displayName,
+                    botId, activeIsBotChat, __botRowSig(mi),
                   ]
                 }
                 // Дешёвый список строк (только ключи, O(M) без аллокаций deps). Окно и ленивые
@@ -2679,7 +2726,8 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                 .filter((uid) => uid !== me?.id)
                 .map((uid) => {
                   const u = usersById[uid]
-                  return (u?.displayName ?? u?.username ?? 'Пользователь') as string
+                  // Бот «Еблуша» не участник беседы: имя приходит в самом событии «печатает».
+                  return (u?.displayName ?? u?.username ?? typingNameFor(uid) ?? 'Пользователь') as string
                 })
                 .filter(Boolean)
               const label =
@@ -3173,6 +3221,16 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
               </div>
             ) : (
               <>
+            {botAsk.secretRefusal && (
+              // Секретный чат + «Еблуша,»/«/eb»: честный ЛОКАЛЬНЫЙ отказ. Никуда не отправляется — текст
+              // секретки сервер не видит, боту он не уходит (docs/bot-system.md §4).
+              <div className="eb-bot-secret-refusal" role="note">
+                <span className="eb-bot-avatar" style={{ width: 18, height: 18, fontSize: 11, marginTop: 1 }} aria-hidden>
+                  <span>Б</span>
+                </span>
+                <span>{botSecretRefusalText}</span>
+              </div>
+            )}
             {editState && (
               <div
                 style={{
@@ -3278,11 +3336,12 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                 setPendingFiles([])
                 setEditingImageId(null)
                 imagesSnapshot.forEach((entry: any) => releasePreviewUrl(entry.previewUrl))
-                await uploadAndSendAttachments([...imagesSnapshot.map((entry: any) => entry.file), ...filesSnapshot], value || '', replyTo)
+                await uploadAndSendAttachments([...imagesSnapshot.map((entry: any) => entry.file), ...filesSnapshot], value || '', replyTo, getBotAskSendMeta())
                 setComposerValue('')
                 setReplyTo(null)
               } else if (value) {
-                    const replyMeta = buildReplyQuoteMetadataForSend(replyTo)
+                    // Режим «Спросить Еблушу»: botAsk:true при видимой плашке, false — если её убрали.
+                    const replyMeta = withBotAskMeta(buildReplyQuoteMetadataForSend(replyTo), getBotAskSendMeta())
                     const r = await sendMessageToConversation(activeConversation, {
                       type: 'TEXT',
                       content: value,
@@ -3325,7 +3384,7 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                     aria-hidden
                     style={{
                       position: 'absolute',
-                      left: 16,
+                      left: botAsk.active ? 'calc(var(--eb-ask-chip-w, 98px) + 18px)' : 16,
                       top: 12,
                       right: 16,
                       pointerEvents: 'none',
@@ -3338,8 +3397,21 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                       ? 'Добавьте подпись к вложениям...'
                       : forwardComposerDraft
                         ? 'Комментарий к пересылке (необязательно)…'
-                        : 'Напишите сообщение...'}
+                        : botAsk.active
+                          ? 'Вопрос для Еблуши…'
+                          : activeIsBotChat
+                            ? 'Напишите Еблуше — без обращения…'
+                            : 'Напишите сообщение...'}
                   </div>
+                )}
+                {botAsk.active && (
+                  <BotAskChip
+                    name={systemBot?.bot.displayName}
+                    onDismiss={() => {
+                      setBotAskDismissed(true)
+                      try { composerEditorRef.current?.focus() } catch {}
+                    }}
+                  />
                 )}
                 <div
                   ref={composerEditorRef}
@@ -3351,7 +3423,9 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                       ? 'Добавьте подпись к вложениям...'
                       : forwardComposerDraft
                         ? 'Комментарий к пересылке (необязательно)…'
-                        : 'Напишите сообщение...'}
+                        : activeIsBotChat
+                          ? 'Напишите Еблуше — без обращения…'
+                          : 'Напишите сообщение...'}
                   onContextMenu={(e) => {
                     e.stopPropagation()
                   }}
@@ -3365,11 +3439,25 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                     const el = composerEditorRef.current
                     const empty = !el || !el.innerText?.trim()
                     setComposerEmpty(empty)
+                    syncBotAskPrefix(el?.innerText ?? '')
                     notifyTyping()
                     resizeComposer()
                     requestAnimationFrame(() => updateComposerSelectionToolbar())
                   }}
                   onKeyDown={(e) => {
+                    // Backspace в самом начале поля при видимой плашке «Спросить» — убрать плашку:
+                    // сообщение уйдёт обычным (metadata.botAsk:false), текст не трогаем.
+                    if (
+                      e.key === 'Backspace' &&
+                      botAsk.active &&
+                      !e.nativeEvent.isComposing &&
+                      !e.ctrlKey && !e.metaKey && !e.altKey &&
+                      isCaretAtEditorStart(composerEditorRef.current)
+                    ) {
+                      e.preventDefault()
+                      setBotAskDismissed(true)
+                      return
+                    }
                     if (e.key === 'Escape') {
                       if (editState) {
                         e.preventDefault()
@@ -3482,6 +3570,8 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                       if (insertMarkdownIntoComposer(text) || insertPlainTextIntoComposer(text)) {
                         e.preventDefault()
                         setComposerEmpty(false)
+                        // Вставили «Еблуша, …» — плашка «Спросить» должна появиться сразу.
+                        syncBotAskPrefix(composerEditorRef.current?.innerText ?? '')
                         notifyTyping()
                         resizeComposer()
                       }
@@ -3491,10 +3581,13 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                   style={{
                     flex: 1,
                     minWidth: 0,
-                    padding: '12px 16px',
+                    // Место слева под плашку «Спросить Еблушу» (она стоит поверх поля).
+                    padding: botAsk.active ? '12px 16px 12px calc(var(--eb-ask-chip-w, 98px) + 18px)' : '12px 16px',
                     borderRadius: 'var(--radius-sm)',
-                    border: `1px solid ${composerFocused ? 'var(--brand-600)' : 'var(--surface-border)'}`,
-                    boxShadow: composerFocused ? '0 0 0 3px rgba(217,119,6,0.15)' : 'none',
+                    border: `1px solid ${botAsk.active ? 'rgba(226,92,42,0.85)' : composerFocused ? 'var(--brand-600)' : 'var(--surface-border)'}`,
+                    boxShadow: botAsk.active
+                      ? (composerFocused ? '0 0 0 3px rgba(226,92,42,0.18)' : 'none')
+                      : composerFocused ? '0 0 0 3px rgba(217,119,6,0.15)' : 'none',
                     background: 'var(--surface-100)',
                     color: 'var(--text-primary)',
                     fontSize: 16,
@@ -3531,9 +3624,10 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
               </button>
               <button
                 type="submit"
-                className="btn btn-primary"
+                className={botAsk.active && !editState ? 'btn btn-primary eb-send-ask' : 'btn btn-primary'}
                 disabled={editBusy}
-                aria-label={editState ? (editBusy ? 'Сохраняем…' : 'Сохранить') : 'Отправить'}
+                title={botAsk.active && !editState ? 'Отправить вопрос Еблуше' : undefined}
+                aria-label={editState ? (editBusy ? 'Сохраняем…' : 'Сохранить') : botAsk.active ? 'Спросить Еблушу' : 'Отправить'}
                 style={{
                   flexShrink: 0,
                   whiteSpace: 'nowrap',
@@ -3547,7 +3641,7 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                 }}
               >
                 <Send size={16} />
-                {!isMobile && <span>{editState ? (editBusy ? 'Сохраняем...' : 'Сохранить') : 'Отправить'}</span>}
+                {!isMobile && <span>{editState ? (editBusy ? 'Сохраняем...' : 'Сохранить') : botAsk.active ? 'Спросить' : 'Отправить'}</span>}
               </button>
             </form>
               </>

@@ -282,15 +282,19 @@ export function UserProfileHero(props: {
   compact?: boolean
   /** Groups have no presence — hide the coloured status dot, keep the text. */
   hideStatusDot?: boolean
+  /** Системный бот «Еблуша»: фирменная «Б», оранжевый баннер, без точки присутствия и просмотра аватара. */
+  isBot?: boolean
 }) {
-  const { user, statusText, presence, inCall, eblid, avatars, canManageAvatars, onDeleteAvatar, onClose, compact, hideStatusDot } = props
-  const heroSrc = useMemo(() => resolveAvatarSrc(user.avatarUrl), [user.avatarUrl])
+  const { user, statusText, presence, inCall, eblid, avatars, canManageAvatars, onDeleteAvatar, onClose, compact, isBot } = props
+  const hideStatusDot = props.hideStatusDot || isBot
+  const heroSrc = useMemo(() => (isBot ? null : resolveAvatarSrc(user.avatarUrl)), [user.avatarUrl, isBot])
   // Устройство собеседника: вместо цветной точки рисуем иконку телефона/ПК/браузера.
   const presenceDevice = usePresenceDevice(user.id)
   const palette = useAvatarPalette(heroSrc)
   // Banner colours: from the avatar if we could sample it, else the stable identity hue.
-  const hue = palette ? palette.h : hashHue(String(user.id ?? 'u'))
-  const sat = palette ? Math.round(palette.s * 100) : 58
+  // Бот — фирменный оранжевый (#E25C2A ≈ hsl 16°).
+  const hue = isBot ? 16 : palette ? palette.h : hashHue(String(user.id ?? 'u'))
+  const sat = isBot ? 72 : palette ? Math.round(palette.s * 100) : 58
   const name = (user.displayName && String(user.displayName).trim()) || 'Без имени'
   const [copied, setCopied] = useState<string | null>(null)
   const [viewerAt, setViewerAt] = useState<number | null>(null)
@@ -317,6 +321,7 @@ export function UserProfileHero(props: {
 
   // Resolve the avatar history (current first). Falls back to the single current avatar.
   const viewerItems = useMemo(() => {
+    if (isBot) return []
     const raws = (avatars && avatars.length ? avatars : [user.avatarUrl]).filter(
       (u): u is string => typeof u === 'string' && u.length > 0,
     )
@@ -330,7 +335,7 @@ export function UserProfileHero(props: {
       if (src) out.push({ raw, src, isCurrent: i === 0 })
     })
     return out
-  }, [avatars, user.avatarUrl])
+  }, [avatars, user.avatarUrl, isBot])
   const canOpenViewer = viewerItems.length > 0
 
   const eblidValue = eblid != null && String(eblid).trim() ? String(eblid).trim() : null
@@ -368,6 +373,7 @@ export function UserProfileHero(props: {
           title={canOpenViewer ? 'Открыть аватар' : undefined}
         >
           <Avatar
+            isBot={isBot}
             name={name}
             id={user.id}
             size={compact ? 68 : 82}
@@ -472,8 +478,10 @@ export function UserProfileCard(props: {
   onClose: () => void
   isMobile?: boolean
   children?: ReactNode
+  /** Карточка системного бота «Еблуша». */
+  isBot?: boolean
 }) {
-  const { user, statusText, presence, inCall, eblid, avatars, actions, onClose, isMobile, children } = props
+  const { user, statusText, presence, inCall, eblid, avatars, actions, onClose, isMobile, children, isBot } = props
   return (
     <div
       role="dialog"
@@ -500,6 +508,7 @@ export function UserProfileCard(props: {
           eblid={eblid}
           avatars={avatars}
           onClose={onClose}
+          isBot={isBot}
         />
 
         {actions && actions.length > 0 && (

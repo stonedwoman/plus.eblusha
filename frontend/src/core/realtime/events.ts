@@ -63,7 +63,12 @@ export type ConversationTypingUpdatePayload = {
   userId: string
   isTyping: boolean
   displayName?: string | null
+  /** «Еблуша печатает…»: бот не участник беседы — имя берём из события (docs/bot-system.md §3). */
+  isBot?: boolean
 }
+
+/** «Чат с Еблушей» включили/выключили (в том числе на другом устройстве) — docs/bot-system.md §5. */
+export type BotSettingsPayload = { botChatEnabled: boolean; conversationId: string | null }
 
 export type ContactRejectedPayload = {
   contactId: string
@@ -159,6 +164,7 @@ export type RealtimeInboundEventMap = {
   'conversation:read-self': ConversationReadSelfPayload
   'localtime:update': LocalTimeUpdatePayload
   'localtime:settings': LocalTimeSettingsPayload
+  'bot:settings': BotSettingsPayload
 }
 
 export type RealtimeOutboundEventMap = {

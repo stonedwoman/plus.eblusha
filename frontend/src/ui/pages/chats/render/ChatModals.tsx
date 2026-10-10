@@ -24,6 +24,8 @@ import { VideoMessageBubble } from '../../../components/VideoMessageBubble'
 import { LazyImage } from '../../../components/LazyImage'
 import { LinkDeviceModal } from '../../../components/LinkDeviceModal'
 import { LocalTimeSettingsSection } from '../../../components/LocalTimeSettingsSection'
+import { BotChatSettingsSection } from '../../../components/bot/BotUi'
+import { isBotChatConversation, isBotUser, type BotChatState, type SystemBotInfo } from '../../../../domain/bot/systemBot'
 import LoadingSpinner from '../../../components/LoadingSpinner'
 import { systemConfirm, systemToast } from '../../../../domain/store/systemUiStore'
 import { canForwardFromConversation } from '../../../../domain/secret/secretInboxGuards'
@@ -48,6 +50,11 @@ import { useChatsResponsive } from '../hooks/useChatsResponsive'
 import { buildMessageCopyText, previewTextForReplyDraft, firstImageAttachmentStubForQuote, buildReplyDraftFromMessages, buildForwardSourceContextForSend, recencyTimestampForConversationRow, buildForwardSendPayload } from '../chatsMessages'
 
 export interface ChatModalsCtx {
+  // ── Бот «Еблуша» (docs/bot-system.md) ──
+  botId: string | null
+  systemBot: SystemBotInfo | null
+  /** Включить/выключить «Чат с Еблушей»; open — сразу открыть беседу. */
+  toggleBotChat: (enabled: boolean, opts?: { open?: boolean }) => Promise<BotChatState | null>
   activeConversation: any
   activeId: any
   activePendingMessages: any
@@ -347,6 +354,7 @@ function ChangePasswordSection({ username }: { username?: string }) {
 }
 
 export function renderChatModals(ctx: ChatModalsCtx) {
+  const { botId, systemBot, toggleBotChat } = ctx
   const { activeConversation, activeId, activePendingMessages, addParticipantsEblDigits, addParticipantsEblRefs, addParticipantsFoundUser, addParticipantsFoundUserStatus, addParticipantsLoading, addParticipantsModal, addParticipantsMode, addParticipantsSearchError, addParticipantsSearching, addParticipantsSelectedIds, applyEblidPaste, availabilityContext, avatarPresenceForUser, avatarPresenceForUserIdAndStatus, avatarPreviewUrl, clearEblidSearch, clearMessageMultiSelect, client, closeAddParticipantsModal, closeNewGroupModal, composerEditorRef, contactsInviteCode, contactsInviteCopied, contactsInviteRefreshing, contactsInviteRemainingLabel, contactsOpen, contactsQuery, contextMenu, convMenu, convMenuRef, conversationsQuery, copyContactsInviteCode, copyMyEblid, creatingGroup, crop, cropCanvasRef, currentUserId, devicesQuery, displayOutgoingWithRejected, displayedMessages, eblDigits, eblRefs, editorRef, effectiveUserStatus, eligibleContactsForAdd, fileInputRef, formatPresence, formattedContactsInviteCode, forwardModal, foundUser, getSelectedMessagesOrdered, groupAvatarEditor, groupAvatarPreviewUrl, groupCrop, groupCropCanvasRef, groupEditorRef, groupFileInputRef, groupImageRef, groupSelectedAvatarFile, groupTitle, groupTitleEditValue, handleAddParticipantByEbl, handleAddParticipants, headerMenu, headerMenuRef, identityBottomRowStyle, identityBubbleStyle, identityDividerStyle, identityHelperTextStyle, identityIconButtonStyle, identityInputsRowStyle, identitySectionHeaderStyle, identitySectionTitleStyle, imageRef, incomingContactsQuery, initiateSecretChat, isMobile, lightbox, linkDeviceModalOpen, localDeviceIdForLinking, me, meInfoQuery, mePopupOpen, menuRef, multiSelectMode, myEblid, myEblidCopied, myEblidMiniCardStyle, myPresence, newGroupAvatarBlob, newGroupAvatarEditorOpen, newGroupAvatarFile, newGroupAvatarHover, newGroupAvatarPreviewUrl, newGroupAvatarSourceUrl, newGroupCrop, newGroupCropCanvasRef, newGroupDragOver, newGroupEditorRef, newGroupFileInputRef, newGroupImageRef, newGroupOpen, onChangeAddParticipantsDigit, onChangeDigit, onKeyDownAddParticipantsDigit, onKeyDownDigit, openUserCard, outgoingContactsQuery, presenceGameByUserId, refreshContactsInviteCode, registrationInviteCodeQuery, registrationMiniCardStyle, resolveFirstImageAttachmentUrl, savingGroupTitle, secretHistoryGate, secretRequestLoading, selectConversation, selectedAvatarFile, selectedIds, selectedMessageIds, sendInvite, sendMessageToConversation, sendingInvite, setActiveId, setAddParticipantsEblDigits, setAddParticipantsFoundUser, setAddParticipantsModal, setAddParticipantsMode, setAddParticipantsSearchError, setAddParticipantsSearching, setAddParticipantsSelectedIds, setAvailabilityContext, setAvatarPreviewUrl, setContactsOpen, setContextMenu, setConvMenu, setCreatingGroup, setCrop, setEndSecretModalOpen, setForwardComposerDraft, setForwardModal, setGroupAvatarEditor, setGroupAvatarPreviewUrl, setGroupCrop, setGroupSelectedAvatarFile, setGroupTitle, setGroupTitleEditValue, setHeaderMenu, setLightbox, setLinkDeviceModalOpen, setMePopupOpen, setMobileView, setMultiSelectMode, setNewGroupAvatarBlob, setNewGroupAvatarEditorOpen, setNewGroupAvatarFile, setNewGroupAvatarHover, setNewGroupAvatarPreviewUrl, setNewGroupAvatarSourceUrl, setNewGroupCrop, setNewGroupDragOver, setRejectedOutgoing, setReplyTo, setSavingGroupTitle, setSecretHistoryGate, setSelectedAvatarFile, setSelectedIds, setSelectedMessageIds, setUploadMessage, setUploadProgress, setUploadingAvatar, setUserCardUser, setVideoViewer, sortedAcceptedContacts, startEdit, uploadMessage, uploadProgress, uploadingAvatar, userCardUser, usersById, videoViewer } = ctx
   return (
     <>
@@ -368,7 +376,44 @@ export function renderChatModals(ctx: ChatModalsCtx) {
         onClick={() => setUserCardUser(null)}
       >
         <div onClick={(e) => e.stopPropagation()} style={{ animation: 'ebCardPop .18s ease' }}>
-          {(() => {
+          {isBotUser(userCardUser, botId) ? (() => {
+            // Карточка бота «Еблуша»: «Б», «бот», описание. Без «в контакты», «написать», «позвонить»,
+            // «секретный чат» и EBLID (бота не добавляют и не находят поиском) — docs/bot-system.md §6.
+            const closeAll = () => { setUserCardUser(null); setContactsOpen(false) }
+            const botChat = systemBot?.botChat
+            const actions = systemBot
+              ? [{
+                  key: 'botchat',
+                  icon: <MessageCircle size={20} />,
+                  label: botChat?.botChatEnabled ? 'К ЧАТУ С ЕБЛУШЕЙ' : 'ОТКРЫТЬ ЧАТ С ЕБЛУШЕЙ',
+                  onClick: async () => {
+                    closeAll()
+                    if (botChat?.botChatEnabled && botChat.conversationId) {
+                      selectConversation(String(botChat.conversationId))
+                      return
+                    }
+                    await toggleBotChat(true, { open: true })
+                  },
+                }]
+              : []
+            return (
+              <UserProfileCard
+                user={{ ...userCardUser, displayName: userCardUser.displayName || systemBot?.bot.displayName || 'Еблуша', bio: userCardUser.bio || systemBot?.bot.bio || null }}
+                isBot
+                statusText="бот"
+                eblid={null}
+                isMobile={isMobile}
+                onClose={() => setUserCardUser(null)}
+                actions={actions}
+              >
+                <div style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                  Бот живёт в каждой обычной беседе — добавлять его не нужно. Начните сообщение с «Еблуша,»
+                  или ответьте на его сообщение, и он ответит прямо там. Остальную переписку он не читает,
+                  в секретных чатах не работает.
+                </div>
+              </UserProfileCard>
+            )
+          })() : (() => {
             const peerId = String(userCardUser.id)
             const rows = (conversationsQuery.data || []) as any[]
             const existingDm = rows.find((r: any) => {
@@ -1214,6 +1259,13 @@ export function renderChatModals(ctx: ChatModalsCtx) {
           )}
 
           <LocalTimeSettingsSection />
+
+          <BotChatSettingsSection
+            onOpenChat={(conversationId) => {
+              setMePopupOpen(false)
+              selectConversation(String(conversationId))
+            }}
+          />
 
           <CallRoutingSection />
 
@@ -3169,7 +3221,9 @@ export function renderChatModals(ctx: ChatModalsCtx) {
 
             const isSecretV2Row = String(c?.type ?? '').toUpperCase() === 'SECRET'
             const peer = !isGroup ? (c?.participants || []).find((p: any) => p?.user?.id && p.user.id !== currentUserId)?.user : null
-            const canStartSecret = !isGroup && !!c && !c.isSecret && !!peer?.id
+            // «Чат с Еблушей»: секретного чата с ботом нет; «покинуть» = выключить настройку.
+            const isBotChatRow = !isGroup && isBotChatConversation(c, botId)
+            const canStartSecret = !isGroup && !!c && !c.isSecret && !!peer?.id && !isBotChatRow
 
             const handleClick = async () => {
               try {
@@ -3208,6 +3262,18 @@ export function renderChatModals(ctx: ChatModalsCtx) {
                     Секретный чат
                   </button>
                 )}
+                {isBotChatRow && (
+                  <button
+                    onClick={async () => {
+                      setConvMenu({ open: false, x: 0, y: 0, conversationId: null })
+                      await toggleBotChat(false)
+                    }}
+                    style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+                  >
+                    <LogOut size={16} />
+                    Выключить чат с Еблушей
+                  </button>
+                )}
                 <button onClick={handleClick} style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#ef4444' }}>
                   {isGroup ? <LogOut size={16} /> : <Trash2 size={16} />}
                   {isGroup ? 'Выйти из беседы' : isSecretV2Row ? 'Закрыть секретный чат' : 'Удалить беседу'}
@@ -3238,6 +3304,7 @@ export function renderChatModals(ctx: ChatModalsCtx) {
             const isGroup = activeConversation.isGroup || (activeConversation.participants?.length ?? 0) > 2
             const isSecret = !!activeConversation.isSecret && !isGroup
             const peer = !isGroup && activeConversation.participants?.find((p: any) => p.user.id !== currentUserId)?.user
+            const isBotChatHere = !isGroup && isBotChatConversation(activeConversation, botId)
 
             if (isGroup) {
               return (
@@ -3281,7 +3348,19 @@ export function renderChatModals(ctx: ChatModalsCtx) {
             } else {
               return (
                 <>
-                  {!isSecret ? (
+                  {isBotChatHere ? (
+                    // «Покинуть» чат с ботом = выключить «Чат с Еблушей» (история сохранится).
+                    <button
+                      onClick={async () => {
+                        setHeaderMenu({ open: false, anchor: null })
+                        await toggleBotChat(false)
+                      }}
+                      style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+                    >
+                      <LogOut size={16} />
+                      Выключить чат с Еблушей
+                    </button>
+                  ) : !isSecret ? (
                     <button
                       onClick={async () => {
                         if (peer?.id) {

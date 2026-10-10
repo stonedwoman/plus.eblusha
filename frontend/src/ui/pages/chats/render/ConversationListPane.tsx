@@ -36,8 +36,11 @@ import { useChatAudio } from '../hooks/useChatAudio'
 import { useChatSocketSubscriptions } from '../hooks/useChatSocketSubscriptions'
 import { useChatTyping } from '../hooks/useChatTyping'
 import { useChatsResponsive } from '../hooks/useChatsResponsive'
+import { isBotChatConversation } from '../../../../domain/bot/systemBot'
 
 export interface ConversationListPaneCtx {
+  /** id системного бота «Еблуша» (null — бот не заведён). */
+  botId: string | null
   activeCalls: any
   activeId: any
   avatarPresenceForUser: any
@@ -70,7 +73,7 @@ export interface ConversationListPaneCtx {
 }
 
 export function renderConversationList(mobile: boolean, ctx: ConversationListPaneCtx) {
-  const { activeCalls, activeId, avatarPresenceForUser, callConvId, callStore, contactsQuery, convHasBottomFade, convHasTopFade, convScrollRef, conversationsQuery, currentUserId, effectiveUserStatus, formatDuration, formatPresence, incomingContactsQuery, isSocketOnline, me, meInfoQuery, minimizedCallConvId, myPresence, openContactsOverlay, openUserCard, outgoingCall, presenceGameByUserId, selectConversation, setConvMenu, setMePopupOpen, setNewGroupOpen, typingByConversationId } = ctx
+  const { botId, activeCalls, activeId, avatarPresenceForUser, callConvId, callStore, contactsQuery, convHasBottomFade, convHasTopFade, convScrollRef, conversationsQuery, currentUserId, effectiveUserStatus, formatDuration, formatPresence, incomingContactsQuery, isSocketOnline, me, meInfoQuery, minimizedCallConvId, myPresence, openContactsOverlay, openUserCard, outgoingCall, presenceGameByUserId, selectConversation, setConvMenu, setMePopupOpen, setNewGroupOpen, typingByConversationId } = ctx
     const className = mobile ? 'conversations-list slider-panel' : 'conversations-list'
     return (
       <aside className={className}>
@@ -183,6 +186,8 @@ export function renderConversationList(mobile: boolean, ctx: ConversationListPan
             const fallbackName = othersArr.map((u: any) => u.displayName ?? u.username).join(', ') || 'Диалог'
             const title = c.title ?? fallbackName
             const isGroup = c.isGroup || c.participants.length > 2
+            // «Чат с Еблушей»: собеседник — бот (фирменная «Б», «бот» вместо «в сети/был»).
+            const isBotChat = !isGroup && isBotChatConversation(c, botId)
             const isSecret = !!c.isSecret
             const isSecretV2 = String(c?.type ?? '').toUpperCase() === 'SECRET'
             const participantsText = othersArr.map((u: any) => u.displayName ?? u.username).join(', ')
@@ -276,6 +281,7 @@ export function renderConversationList(mobile: boolean, ctx: ConversationListPan
                     // Otherwise simply opening "звонок" UI would paint the peer red while we're only ringing.
                     return (
                       <Avatar
+                        isBot={isBotChat}
                         name={peerUser?.displayName ?? peerUser?.username ?? 'D'}
                         id={peerUser?.id ?? c.id}
                         presence={avatarPresenceForUser(peerUser)}
@@ -314,7 +320,7 @@ export function renderConversationList(mobile: boolean, ctx: ConversationListPan
                             if (typingCount > 0) {
                               return (
                                 <span className="chat-list-typing" style={isActive ? { opacity: 0.85 } : undefined}>
-                                  {typingCount === 1 ? 'печатает' : 'печатают'}
+                                  {typingCount === 1 ? (botId && typingIds[0] === botId ? 'Еблуша печатает' : 'печатает') : 'печатают'}
                                   <span className="chat-typing-bubble chat-typing-bubble--list" aria-hidden>
                                     <span className="chat-typing-bubble__dot" />
                                     <span className="chat-typing-bubble__dot" />

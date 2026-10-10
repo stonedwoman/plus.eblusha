@@ -6,6 +6,8 @@ import {
   presenceStatusColor,
   usePresenceDevice,
 } from '../../domain/store/presenceDeviceStore'
+// Стили «ботового» (аватар-«Б», метка «бот», пузырь, плашка «Спросить») — Avatar грузится везде.
+import './bot/botUi.css'
 
 type Props = {
   name: string
@@ -16,6 +18,32 @@ type Props = {
   avatarUrl?: string | null
   /** Opens the user card. stopPropagation is applied so host tiles don't also fire. */
   onClick?: () => void
+  /**
+   * Системный бот «Еблуша»: фирменная оранжевая «Б» на тёмном круге (как иконка приложения), без
+   * точки присутствия — у бота нет «в сети/был». Загруженный аватар бота не используется.
+   */
+  isBot?: boolean
+}
+
+/** Аватар бота: «Б» логотипа (#E25C2A) на фоне иконки (#0F1217). */
+function BotAvatar({ size, name, onClick }: { size: number; name: string; onClick?: () => void }) {
+  return (
+    <div
+      onClick={onClick ? (e) => { e.stopPropagation(); onClick() } : undefined}
+      role={onClick ? 'button' : undefined}
+      aria-label={name}
+      title={name}
+      className="eb-bot-avatar"
+      style={{
+        width: size,
+        height: size,
+        fontSize: Math.max(10, Math.round(size * 0.6)),
+        cursor: onClick ? 'pointer' : undefined,
+      }}
+    >
+      <span aria-hidden>Б</span>
+    </div>
+  )
 }
 
 function colorFromId(id: string) {
@@ -43,7 +71,12 @@ function initialsFromName(name: string): string {
   return s.charAt(0).toUpperCase()
 }
 
-export function Avatar({ name, size = 40, id = name, presence, inCall, avatarUrl, onClick }: Props) {
+export function Avatar(props: Props) {
+  if (props.isBot) return <BotAvatar size={props.size ?? 40} name={props.name} onClick={props.onClick} />
+  return <UserAvatar {...props} />
+}
+
+function UserAvatar({ name, size = 40, id = name, presence, inCall, avatarUrl, onClick }: Props) {
   const bg = colorFromId(id)
   const initial = initialsFromName(name)
   const isEmoji = !!avatarUrl?.startsWith('emoji:')

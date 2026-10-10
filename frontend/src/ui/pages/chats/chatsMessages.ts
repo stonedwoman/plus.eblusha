@@ -20,6 +20,7 @@ import {
   resolveAttachmentFileName,
 } from './chatsAttachments'
 import { formatMessageClockLabel } from './chatsTime'
+import { stripMarkdownForPreview } from '../../../domain/bot/systemBot'
 
 /** Склонение существительного «сообщение» для русского (11–14 → сообщений). */
 export function ruPluralSoobsheniya(n: number): string {
@@ -115,6 +116,8 @@ export type ReplyDraftQuotedEntry = {
   preview: string
   createdAt?: string | null
   replyImageStub?: { url: string; type: 'IMAGE'; metadata?: Record<string, unknown> } | null
+  /** Цитируется сообщение бота «Еблуша» (Message.isBot): ответ на него — вопрос боту (режим «Спросить»). */
+  isBot?: boolean
 }
 
 export type ReplyDraftState =
@@ -153,8 +156,10 @@ export function renderSystemMessageContent(message: any, currentUserId: string |
 }
 
 export function previewTextForReplyDraft(msg: any): string {
+  const content = typeof msg?.content === 'string' ? msg.content.trim() : ''
   const raw =
-    (typeof msg?.content === 'string' ? msg.content.trim() : '') ||
+    // Ответы бота «Еблуша» всегда размечены — в превью ответа без «**» и «[…](https://…)».
+    (content && (msg?.isBot === true || msg?.sender?.isBot === true) ? stripMarkdownForPreview(content) : content) ||
     (msg?.type === 'SYSTEM' ? renderSystemMessageContent(msg, null).trim() : '')
   if (raw) return raw.length > 200 ? `${raw.slice(0, 197)}…` : raw
   const atts = msg?.attachments
@@ -194,6 +199,7 @@ export function buildReplyDraftFromMessages(msgs: any[]): ReplyDraftState | null
     senderId: typeof m.senderId === 'string' ? m.senderId : '',
     preview: previewTextForReplyDraft(m),
     replyImageStub: firstImageAttachmentStubForQuote(m),
+    ...(m.isBot === true || m.sender?.isBot === true ? { isBot: true } : {}),
     ...(typeof m.createdAt === 'string' && m.createdAt.trim()
       ? { createdAt: m.createdAt.trim() }
       : typeof m.createdAt === 'number' && Number.isFinite(m.createdAt)
