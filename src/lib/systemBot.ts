@@ -8,10 +8,16 @@ import { enqueueBotJob } from "../jobs/queue";
 import { getIO } from "../realtime/socket";
 import {
   BOT_JOB_CHAIN_MAX,
+  BOT_JOB_HISTORY_BOTCHAT_MAX,
+  BOT_JOB_HISTORY_TEXT_MAX,
+  BOT_JOB_RECENT_MAX,
+  BOT_JOB_RECENT_WINDOW_MS,
+  BOT_JOB_REV,
   type BotAddressVia,
   type BotConversationKind,
   type BotJob,
   type BotJobAttachment,
+  type BotJobHistory,
   type BotJobMessage,
 } from "./botContract";
 
@@ -21,8 +27,10 @@ import {
  *  - Бот НЕ участник бесед. Он «живёт» в каждой обычной беседе (личке и группе): конвейер отправки
  *    (POST /conversations/send — единственный путь создания пользовательских сообщений; сокет
  *    создаёт только SYSTEM-записи звонков, правка не считается) замечает обращение к боту
- *    (detectBotAddress) и кладёт задачу в очередь BullMQ `bot` (dispatchToBot): триггер + цепочка
- *    его ответов, БЕЗ остальной переписки. Сервис бота (bot/) — потребитель этой очереди.
+ *    (detectBotAddress), помечает его metadata.botAsk и кладёт задачу в очередь BullMQ `bot`
+ *    (dispatchToBot): триггер + цепочка его ответов + история (loadBotHistory): в обычной беседе —
+ *    только разговоры с ботом за последние 30 минут (обращения + его ответы), БЕЗ остальной переписки
+ *    людей; в «Чате с Еблушей» — недавние сообщения этого чата. Сервис бота (bot/) — потребитель очереди.
  *  - Ответ бот публикует POST /api/bot/messages с разрешением (grant) из задачи: только в ту беседу,
  *    где к нему обратились, ограниченным числом сообщений и в течение BOT_GRANT_TTL_SECONDS.
  *    Сообщение бота — обычное облачное Message с isBot=true от системного пользователя (User.isBot),
@@ -46,8 +54,8 @@ export const BOT_SECRET_REFUSAL =
 export const BOT_WELCOME_TEXT = [
   "Привет! Я — **Еблуша**, бот этого мессенджера.",
   "",
-  "- Здесь можно писать мне без обращения.",
-  "- В любой обычной беседе позови: «Еблуша, …», а продолжай ответом на моё сообщение.",
+  "- Здесь можно писать мне без обращения — разговор я помню.",
+  "- В любой обычной беседе позови: «Еблуша, …». Наш недавний разговор там я тоже помню, так что отвечать на моё сообщение не обязательно.",
   "- Команды не нужны — пиши словами, как человеку.",
   "- В секретных чатах я не работаю.",
   "",
@@ -70,6 +78,8 @@ export const BOT_FOLLOWUP_TTL_SECONDS = 72 * 3600;
 export const BOT_FOLLOWUP_MAX_MESSAGES = 4;
 /** Продолжений с одного обычного разрешения. */
 export const BOT_FOLLOWUPS_PER_GRANT = 2;
+/** Поисков людей (POST /api/bot/people) на одно обращение: привязка персонажей владельцем. */
+export const BOT_GRANT_MAX_LOOKUPS = 20;
 /** Обращений к боту от одного человека в минуту — защита очереди от флуда (лимиты денег — в боте). */
 export const BOT_DISPATCH_PER_MINUTE = 20;
 /** Уведомлений бота в личный чат человека (без обращения) в час. */
@@ -422,7 +432,7 @@ export async function readBotGrant(token: unknown): Promise<BotGrant | null> {
 }
 
 /** Израсходовать одно действие по разрешению. false — лимит исчерпан (или Redis недоступен). */
-export async function spendBotGrant(token: string, what: "msg" | "react" | "followup", max: number, ttlSeconds = BOT_GRANT_TTL_SECONDS): Promise<boolean> {
+export async function spendBotGrant(token: string, what: "msg" | "react" | "followup" | "people", max: number, ttlSeconds = BOT_GRANT_TTL_SECONDS): Promise<boolean> {
   if (max <= 0) return false;
   try {
     const redis = await getRedisClient();
@@ -516,6 +526,15 @@ export function botTriggerOf(metadata: unknown): string | null {
   if (!b || typeof b !== "object" || Array.isArray(b)) return null;
   const t = (b as Record<string, unknown>).triggerMessageId;
   return typeof t === "string" && t.length > 0 ? t : null;
+}
+
+/** metadata.bot.kind сообщения бота (answer | command | notice | confirm | welcome) или null. */
+export function botKindOf(metadata: unknown): string | null {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+  const b = (metadata as Record<string, unknown>).bot;
+  if (!b || typeof b !== "object" || Array.isArray(b)) return null;
+  const k = (b as Record<string, unknown>).kind;
+  return typeof k === "string" && k.length > 0 ? k : null;
 }
 
 /** metadata.bot.askerId сообщения бота (автор обращения, на которое это ответ) или null — у старых ответов его нет. */
@@ -614,6 +633,176 @@ export async function loadReplyChain(conversationId: string, parentId: string | 
   return out;
 }
 
+// ───────────────────────────── Контекст без цитирования ─────────────────────────────
+
+const HISTORY_INCLUDE = { sender: { select: { displayName: true } }, attachments: true } as const;
+
+/** Сообщение истории: как в цепочке, но длинный текст обрезан (BOT_JOB_HISTORY_TEXT_MAX). */
+function historyMessage(m: MessageRowForJob): BotJobMessage {
+  const j = jobMessage(m);
+  if (j.content && j.content.length > BOT_JOB_HISTORY_TEXT_MAX) j.content = `${j.content.slice(0, BOT_JOB_HISTORY_TEXT_MAX)}…`;
+  return j;
+}
+
+/** Годится ли строка в историю: эта беседа, не удалена, не истекла, не системная/звонок, открытый текст, не новее триггера. */
+function historyUsable(
+  m: { conversationId: string; deletedAt: Date | null; expiresAt: Date | null; type: string; contentEncV?: number | null; createdAt: Date },
+  conversationId: string,
+  now: Date,
+  notAfter: Date,
+): boolean {
+  return (
+    m.conversationId === conversationId &&
+    !m.deletedAt &&
+    !(m.expiresAt && m.expiresAt <= now) &&
+    m.type !== "SYSTEM" &&
+    m.type !== "CALL" &&
+    (m.contentEncV ?? 0) === 0 &&
+    m.createdAt <= notAfter
+  );
+}
+
+/**
+ * История для задачи боту (контракт rev 2, BotJobHistory) — чтобы с ботом можно было говорить, не
+ * цитируя каждый раз его ответ (решение владельца 2026-10-10):
+ *  - «Чат с Еблушей» (kind "bot"): последние BOT_JOB_HISTORY_BOTCHAT_MAX сообщений этого чата, обе
+ *    стороны, без приветствия бота;
+ *  - обычная беседа ("dm" | "group"): ТОЛЬКО разговоры с ботом за BOT_JOB_RECENT_WINDOW_MS до триггера —
+ *    обращения к нему (metadata.botAsk: ставит только конвейер отправки, takeBotMeta вычищает его у
+ *    клиента, правка metadata не меняет) от любого участника и ответы бота (isBot). Остальная переписка
+ *    людей не читается вовсе. Ответ бота, чьё обращение удалено/истекло, не берётся (он мог
+ *    пересказывать удалённый вопрос); обращение к ответу из окна добирается, даже если оно старше окна.
+ * Везде: без удалённых, истёкших, SYSTEM/CALL, зашифрованных (contentEncV ≠ 0), без самого триггера и
+ * сообщений новее него. Секретных бесед здесь не бывает: задача ставится только из обычной.
+ */
+export async function loadBotHistory(args: {
+  conversationId: string;
+  kind: BotConversationKind;
+  trigger: { id: string; createdAt: Date };
+}): Promise<BotJobHistory> {
+  const now = new Date();
+  const notAfter = args.trigger.createdAt;
+  const base: Prisma.MessageWhereInput = {
+    conversationId: args.conversationId,
+    deletedAt: null,
+    contentEncV: 0,
+    type: { notIn: ["SYSTEM", "CALL"] },
+    id: { not: args.trigger.id },
+  };
+  const notExpired: Prisma.MessageWhereInput = { OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] };
+
+  if (args.kind === "bot") {
+    const rows = await prisma.message.findMany({
+      where: { ...base, createdAt: { lte: notAfter }, AND: [notExpired] },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      // приветствий бота в чате одно-два — берём с запасом и выкидываем
+      take: BOT_JOB_HISTORY_BOTCHAT_MAX + 5,
+      include: HISTORY_INCLUDE,
+    });
+    const messages = rows
+      .filter((r) => !(r.isBot && botKindOf(r.metadata) === "welcome"))
+      .slice(0, BOT_JOB_HISTORY_BOTCHAT_MAX)
+      .reverse()
+      .map((r) => historyMessage(r as MessageRowForJob));
+    return { mode: "botchat", windowMs: null, messages };
+  }
+
+  const since = new Date(notAfter.getTime() - BOT_JOB_RECENT_WINDOW_MS);
+  const rows = await prisma.message.findMany({
+    where: {
+      ...base,
+      createdAt: { gte: since, lte: notAfter },
+      AND: [notExpired, { OR: [{ isBot: true }, { metadata: { path: ["botAsk"], equals: true } }] }],
+    },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: BOT_JOB_RECENT_MAX,
+    include: HISTORY_INCLUDE,
+  });
+  const have = new Map(rows.map((r) => [r.id, r]));
+  const askedIds = [...new Set(rows.filter((r) => r.isBot).map((r) => botTriggerOf(r.metadata)).filter((t): t is string => !!t))];
+  const missing = askedIds.filter((id) => !have.has(id) && id !== args.trigger.id);
+  const extra = missing.length ? await prisma.message.findMany({ where: { id: { in: missing } }, include: HISTORY_INCLUDE }) : [];
+  const alive = new Set<string>(rows.map((r) => r.id));
+  const extraAlive = extra.filter((r) => historyUsable(r, args.conversationId, now, notAfter) && !r.isBot);
+  for (const r of extraAlive) alive.add(r.id);
+  const kept = rows.filter((r) => {
+    if (!r.isBot) return true;
+    const asked = botTriggerOf(r.metadata);
+    return !asked || alive.has(asked);
+  });
+  const all = [...kept, ...extraAlive].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const messages = all.slice(-BOT_JOB_RECENT_MAX).map((r) => historyMessage(r as MessageRowForJob));
+  return { mode: "recent", windowMs: BOT_JOB_RECENT_WINDOW_MS, messages };
+}
+
+// ───────────────────────────── Люди для привязки персонажей ─────────────────────────────
+
+export interface BotPerson {
+  id: string;
+  displayName: string | null;
+  /** 4-значный код EBLID (публичный, его показывает карточка пользователя). Логин (username) — никогда. */
+  eblid: string | null;
+  /** Участник беседы обращения. */
+  inConversation: boolean;
+}
+
+/**
+ * Люди для инструмента привязки персонажей (POST /api/bot/people; бот зовёт его только по просьбе
+ * владельца): участники беседы обращения; по запросу — люди среди ВСЕХ (не бот, не удалён, не
+ * заблокирован) по имени (displayName содержит запрос или основу его слова: «Сане» → «Сан»), по
+ * логину (только точное совпадение, сам логин не отдаётся) и по EBLID; по ids — имена (у кого забрали
+ * персонажа). Бот сам ранжирует и переспрашивает при неоднозначности.
+ */
+export async function lookupBotPeople(args: {
+  conversationId: string;
+  botId: string;
+  query?: string | undefined;
+  ids?: string[] | undefined;
+}): Promise<{ participants: BotPerson[]; matches: BotPerson[]; users: BotPerson[] }> {
+  const select = { id: true, displayName: true, eblid: true, isBot: true, deletedAt: true } as const;
+  const parts = await prisma.conversationParticipant.findMany({ where: { conversationId: args.conversationId }, select: { user: { select } } });
+  const inConv = new Set(parts.map((p) => p.user.id));
+  const person = (u: { id: string; displayName: string | null; eblid: string | null }): BotPerson => ({
+    id: u.id,
+    displayName: u.displayName ?? null,
+    eblid: u.eblid ?? null,
+    inConversation: inConv.has(u.id),
+  });
+  const participants = parts
+    .map((p) => p.user)
+    .filter((u) => !u.isBot && !u.deletedAt && u.id !== args.botId)
+    .map(person);
+
+  let matches: BotPerson[] = [];
+  const q = (args.query ?? "").trim().replace(/^@+/, "").slice(0, 64);
+  if (q) {
+    // Падежи: «Сане Иванову» → ищем и по основам слов («Сан», «Ивано») — бот сам отсеет лишнее.
+    const variants = new Set<string>();
+    for (const v of [q, q.replace(/ё/g, "е").replace(/Ё/g, "Е")]) {
+      variants.add(v);
+      for (const w of v.split(/\s+/).slice(0, 3)) if (w.length >= 4) variants.add(w.slice(0, Math.max(3, w.length - 2)));
+    }
+    const or: Prisma.UserWhereInput[] = [...variants].map((v) => ({ displayName: { contains: v, mode: "insensitive" as const } }));
+    or.push({ username: { equals: q, mode: "insensitive" } });
+    if (/^\d{4}$/.test(q)) or.push({ eblid: q });
+    const rows = await prisma.user.findMany({
+      where: { isBot: false, deletedAt: null, bannedAt: null, OR: or },
+      select,
+      orderBy: { createdAt: "asc" },
+      take: 25,
+    });
+    matches = rows.filter((u) => u.id !== args.botId).map(person);
+  }
+
+  let users: BotPerson[] = [];
+  const ids = [...new Set(args.ids ?? [])].slice(0, 20);
+  if (ids.length) {
+    const rows = await prisma.user.findMany({ where: { id: { in: ids } }, select });
+    users = rows.filter((u) => !u.isBot).map(person);
+  }
+  return { participants, matches, users };
+}
+
 /**
  * Поставить боту задачу на адресованное ему сообщение. НИКОГДА не бросает: сбой очереди не должен
  * ломать отправку сообщения. Возвращает, поставлена ли задача. В журнал — только id, без текста.
@@ -637,6 +826,13 @@ export async function dispatchToBot(args: {
         ? "group"
         : "dm";
     const chain = await loadReplyChain(conv.id, m.replyToId, BOT_JOB_CHAIN_MAX - 1);
+    // История — по возможности: не загрузилась — задача уходит без неё (бот живёт цепочкой, как раньше).
+    let history: BotJobHistory | undefined;
+    try {
+      history = await loadBotHistory({ conversationId: conv.id, kind, trigger: { id: m.id, createdAt: new Date(m.createdAt) } });
+    } catch (error) {
+      logger.warn({ error, conversationId: conv.id, messageId: m.id }, "bot: history load failed");
+    }
     const grant = crypto.randomBytes(24).toString("base64url");
     const now = Date.now();
     const grantValue: BotGrant = { conversationId: conv.id, triggerMessageId: m.id, authorId: m.senderId, kind };
@@ -644,6 +840,7 @@ export async function dispatchToBot(args: {
     await redis.set(grantKey(grant), JSON.stringify(grantValue), { EX: BOT_GRANT_TTL_SECONDS });
     const job: BotJob = {
       v: 1,
+      rev: BOT_JOB_REV,
       kind: "message",
       enqueuedAt: now,
       grant,
@@ -658,9 +855,13 @@ export async function dispatchToBot(args: {
       author: { id: m.senderId, displayName: m.sender?.displayName ?? null },
       message: jobMessage(m),
       chain,
+      ...(history ? { history } : {}),
     };
     await enqueueBotJob(job, m.id);
-    logger.info({ conversationId: conv.id, messageId: m.id, via: args.via, kind, chain: chain.length }, "bot: dispatched");
+    logger.info(
+      { conversationId: conv.id, messageId: m.id, via: args.via, kind, chain: chain.length, history: history ? history.messages.length : null },
+      "bot: dispatched",
+    );
     return true;
   } catch (error) {
     logger.warn({ error, conversationId: conv.id, messageId: m.id }, "bot: dispatch failed");

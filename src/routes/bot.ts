@@ -10,6 +10,7 @@ import {
   BOT_FOLLOWUP_MAX_MESSAGES,
   BOT_FOLLOWUP_TTL_SECONDS,
   BOT_FOLLOWUPS_PER_GRANT,
+  BOT_GRANT_MAX_LOOKUPS,
   BOT_GRANT_MAX_MESSAGES,
   BOT_GRANT_MAX_REACTIONS,
   BOT_GRANT_TTL_SECONDS,
@@ -23,6 +24,7 @@ import {
   findActiveBotChat,
   getBotChatState,
   getSystemBot,
+  lookupBotPeople,
   readBotGrant,
   setBotChatEnabled,
   spendBotGrant,
@@ -55,6 +57,12 @@ import {
  *                           ≤ BOT_FOLLOWUP_MAX_MESSAGES сообщений, BOT_FOLLOWUP_TTL_SECONDS, без реакций;
  *                           только по живому обычному разрешению (из продолжения — 400 BOT_FOLLOWUP_NESTED),
  *                           не больше BOT_FOLLOWUPS_PER_GRANT (429 BOT_GRANT_EXHAUSTED).
+ *   POST /api/bot/people    { grant, query?: string(≤64), ids?: cuid[](≤20) } → 200 {participants, matches, users}:
+ *                           люди для привязки персонажей владельцем (lookupBotPeople): участники беседы
+ *                           обращения, поиск среди всех по имени/логину(точно)/EBLID, имена по id. Каждый —
+ *                           {id, displayName, eblid, inConversation}; логин не отдаётся. Только по живому
+ *                           обычному разрешению (продолжение — 400 BOT_FOLLOWUP_NESTED), ≤ BOT_GRANT_MAX_LOOKUPS
+ *                           на обращение (429 BOT_GRANT_EXHAUSTED). В журнал — без текста запроса.
  *   По grant: обращение удалено автором → 409 BOT_TRIGGER_DELETED (ответа, реакции и «печатает» уже не будет).
  */
 
@@ -358,6 +366,48 @@ router.post("/followup", requireSystemBot, async (req, res) => {
   const f = await createBotFollowupGrant(g);
   logger.info({ conversationId: g.conversationId, triggerMessageId: g.triggerMessageId }, "bot: follow-up grant");
   res.status(201).json(f);
+});
+
+const peopleSchema = z
+  .object({
+    grant: z.string().min(1).max(100),
+    query: z.string().trim().min(1).max(64).optional(),
+    ids: z.array(z.string().cuid()).max(20).optional(),
+  })
+  .strict();
+
+router.post("/people", requireSystemBot, async (req, res) => {
+  const bot = (req as BotRequest).systemBot!;
+  const parsed = peopleSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ message: "Invalid payload" });
+    return;
+  }
+  const g = await grantOr410(res, parsed.data.grant);
+  if (!g) return;
+  if (g.followup) {
+    res.status(400).json({ message: "Not available for a follow-up grant", code: "BOT_FOLLOWUP_NESTED" });
+    return;
+  }
+  if (!(await writableConversation(g.conversationId))) {
+    res.status(409).json({ message: "Conversation is not writable for the bot", code: "BOT_CONVERSATION_GONE" });
+    return;
+  }
+  if (!(await spendBotGrant(parsed.data.grant, "people", BOT_GRANT_MAX_LOOKUPS))) {
+    res.status(429).json({ message: "Too many lookups for this request", code: "BOT_GRANT_EXHAUSTED" });
+    return;
+  }
+  const result = await lookupBotPeople({
+    conversationId: g.conversationId,
+    botId: bot.id,
+    query: parsed.data.query,
+    ids: parsed.data.ids,
+  });
+  logger.info(
+    { conversationId: g.conversationId, query: parsed.data.query ? true : false, ids: parsed.data.ids?.length ?? 0, matches: result.matches.length },
+    "bot: people lookup",
+  );
+  res.json(result);
 });
 
 export default router;
