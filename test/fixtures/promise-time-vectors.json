@@ -1319,6 +1319,174 @@
     "upperBound": false
    },
    "note": "13:40 Бухарест = 10:40Z; 21:00 EEST = 18:00Z"
+  },
+  {
+   "text": "я в 5 минутах",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:45:00.000Z",
+    "label": "5 мин",
+    "upperBound": false
+   },
+   "note": "«в N минутах» — через N минут, не час"
+  },
+  {
+   "text": "в 10 минутах от вас",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:50:00.000Z",
+    "label": "10 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "к 15 минутам",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "NO_TIME"
+   },
+   "note": "не час и не длительность"
+  },
+  {
+   "text": "это в 3 раза дороже",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "NO_TIME"
+   },
+   "note": "счёт после «в N» — не час"
+  },
+  {
+   "text": "в 2 словах не объяснить",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "NO_TIME"
+   }
+  },
+  {
+   "text": "в двух шагах",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "NO_TIME"
+   }
+  },
+  {
+   "text": "в 3 часах езды",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "NO_TIME"
+   }
+  },
+  {
+   "text": "в 2 км от вас, минут 10",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:50:00.000Z",
+    "label": "10 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "давай в 2 дня",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T11:00:00.000Z",
+    "label": "в 14:00",
+    "upperBound": false
+   },
+   "note": "«дня» — часть суток, не счёт"
+  },
+  {
+   "text": "через 1:30",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T12:10:00.000Z",
+    "label": "1,5 ч",
+    "upperBound": false
+   },
+   "note": "«через Ч:ММ» — длительность"
+  },
+  {
+   "text": "через 0:45",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T11:25:00.000Z",
+    "label": "45 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "в 14 буду",
+   "base": "2026-10-11T11:02:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T11:00:00.000Z",
+    "label": "в 14:00",
+    "upperBound": false
+   },
+   "note": "однозначное время, прошедшее меньше часа назад, — опоздание, а не завтра"
+  },
+  {
+   "text": "к 14:00",
+   "base": "2026-10-11T11:03:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T11:00:00.000Z",
+    "label": "к 14:00",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "в 9 вечера",
+   "base": "2026-10-11T18:20:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T18:00:00.000Z",
+    "label": "в 21:00",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "завтра в 9 утра",
+   "base": "2026-10-11T22:00:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-12T06:00:00.000Z",
+    "label": "завтра в 09:00",
+    "upperBound": false
+   },
+   "note": "ночью «завтра» — после сна: 01:00 12.10 → 12.10 09:00"
+  },
+  {
+   "text": "завтра в 10",
+   "base": "2026-10-11T22:00:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-12T07:00:00.000Z",
+    "label": "завтра в 10:00",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "завтра в 2",
+   "base": "2026-10-11T21:30:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-12T11:00:00.000Z",
+    "label": "завтра в 14:00",
+    "upperBound": false
+   },
+   "note": "00:30 — «завтра в 2» это 14:00 наступившего дня, не TOO_FAR"
   }
  ]
 }

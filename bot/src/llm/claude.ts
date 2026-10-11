@@ -6,8 +6,11 @@
  *   задаёт output_config.effort; по умолчанию у модели medium, мы ставим явно по задаче).
  * - fallbacks: "default" + beta server-side-fallback-2026-07-01: если классификатор откажет,
  *   API сам перезапустит запрос на рекомендованной модели.
- * - Серверные инструменты web_search_20260209 / web_fetch_20260209 (встроенная фильтрация),
- *   свои — custom tools со strict: true и eager_input_streaming (вход проверяем сами).
+ * - Серверные инструменты web_search_20260209 / web_fetch_20260209 (встроенная фильтрация; у Fable/Mythos загрузка —
+ *   web_fetch_20260318: набор глубокой модели подтверждает проба настоящим запросом, а 400 на тип инструмента в
+ *   ответе переводит на следующий набор), свои — custom tools со strict: true и eager_input_streaming.
+ * - Жёсткий потолок цены (hardCap, «подумай лучше»): max_tokens каждого шага урезается под остаток, так что даже
+ *   весь вывод шага не выводит ответ за потолок; исключение несёт потраченное (partialCostOf) — для учёта.
  * - Стриминг + finalMessage(): длинные ответы не упираются в HTTP-таймауты.
  * - Ручной цикл инструментов: pause_turn (сервер исчерпал свои итерации) продолжаем, refusal
  *   и обрезанный tool_use — не исполняем; цена считается по usage каждого шага, и при
@@ -39,7 +42,7 @@ import type {
 } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 import type { BotConfig, Effort } from "../config";
 import type { Logger } from "../log";
-import { addCost, costOf, ZERO_COST, type CostBreakdown } from "../core/budget";
+import { addCost, costOf, priceFor, ZERO_COST, type CostBreakdown } from "../core/budget";
 import type {
   AnswerRequest,
   AnswerResult,
@@ -186,6 +189,42 @@ export function citedSources(content: BetaContentBlock[]): Array<{ url: string; 
 /** Наборы серверных инструментов: первый, что принят моделью (проба), — её. */
 export type WebToolsVariant = "web_20260209" | "web_fetch_20260318" | "web_basic" | "none";
 
+/**
+ * Порядок проб наборов для модели: у Fable/Mythos загрузка с фильтрацией — web_fetch_20260318 (справочник
+ * claude-api), у Opus/Sonnet 5.x — _20260209.
+ */
+export function webToolsOrder(model: string): WebToolsVariant[] {
+  return /^claude-(?:fable|mythos)-/.test(model)
+    ? ["web_fetch_20260318", "web_20260209", "web_basic", "none"]
+    : ["web_20260209", "web_fetch_20260318", "web_basic", "none"];
+}
+
+/** 400 «этот серверный инструмент (его версия) модели не подходит». */
+export function isToolTypeError(e: unknown): boolean {
+  if (!(e instanceof Anthropic.BadRequestError)) return false;
+  const m = String(e.message ?? "");
+  // Ошибка схемы СВОЕГО инструмента (input_schema) — не повод менять серверные.
+  return /web_search|web_fetch/i.test(m) || (/tools\.\d+/.test(m) && /type/i.test(m) && !/input_schema/i.test(m));
+}
+
+/** Сколько ответ успел потратить до исключения (ClaudeEngine.answer вешает на ошибку), или null. */
+export function partialCostOf(e: unknown): CostBreakdown | null {
+  const c = (e as { llmCost?: CostBreakdown } | null)?.llmCost;
+  return c && typeof c.usd === "number" && (c.usd > 0 || c.inputTokens > 0) ? c : null;
+}
+
+/** Оценка токенов текста запроса для жёсткого потолка (с запасом: кириллица ~2,3 знака на токен). */
+function roughTokens(x: unknown): number {
+  try {
+    return Math.ceil(JSON.stringify(x).length / 2.3);
+  } catch {
+    return 0;
+  }
+}
+
+/** Наименьший шаг, ради которого стоит звать модель под жёстким потолком. */
+const HARDCAP_MIN_STEP_TOKENS = 1024;
+
 export function webTools(variant: WebToolsVariant, cfg: { webSearchMaxUses: number; webFetchMaxUses: number; webFetchMaxContentTokens: number }): BetaToolUnion[] {
   if (variant === "none") return [];
   const t: unknown[] = [];
@@ -205,6 +244,10 @@ function toolResultContent(r: LlmToolResult): string | Array<Record<string, unkn
 /** Ошибка API, при которой глубокая модель недоступна (хранение данных, нет доступа, нет модели, перегрузка). */
 export function deepUnavailable(e: unknown): "permanent" | "temporary" | null {
   if (!(e instanceof Anthropic.APIError)) return null;
+  // Наш же обрыв по времени — не недоступность модели (запасная не успеет: разрешение не резиновое).
+  if (e instanceof Anthropic.APIUserAbortError) return null;
+  // Сеть, таймаут соединения — временно: запасная модель (если бюджет ответа ещё позволяет).
+  if (e instanceof Anthropic.APIConnectionError) return "temporary";
   const msg = String(e.message ?? "");
   // 400 «организации нужно хранение данных» (Fable 5.1 — Covered Model), нет доступа к модели, нет модели.
   if (e.status === 400 && /retention|not available|do(?:es)? not have access|not_found|does not exist|unknown model/i.test(msg)) return "permanent";
@@ -265,24 +308,49 @@ export class ClaudeEngine implements LlmEngine {
     }
   }
 
-  private serverTools(model: string = this.model): BetaToolUnion[] {
-    return webTools(this.toolsByModel.get(model) ?? "web_20260209", this.cfg);
+  private variantOf(model: string): WebToolsVariant {
+    return this.toolsByModel.get(model) ?? webToolsOrder(model)[0]!;
   }
 
+  private serverTools(model: string = this.model): BetaToolUnion[] {
+    return webTools(this.variantOf(model), this.cfg);
+  }
+
+  /**
+   * Ответ модели. Исключение (обрыв, ошибка API, сбой инструмента) несёт потраченное до него: partialCostOf(e) —
+   * чтобы неудачный дорогой прогон («подумай лучше») всё равно попал в учёт и лимиты.
+   */
   async answer(req: AnswerRequest): Promise<AnswerResult> {
+    const st: { cost: CostBreakdown } = { cost: ZERO_COST };
+    try {
+      return await this.answerInner(req, st);
+    } catch (e) {
+      if (e && typeof e === "object" && st.cost.usd > 0) {
+        try {
+          (e as { llmCost?: CostBreakdown }).llmCost = st.cost;
+        } catch {
+          /* замороженная ошибка — без учёта */
+        }
+      }
+      throw e;
+    }
+  }
+
+  private async answerInner(req: AnswerRequest, st: { cost: CostBreakdown }): Promise<AnswerResult> {
     const model = req.model ?? this.model;
-    const tools: BetaToolUnion[] = [
-      ...(req.web === false ? [] : this.serverTools(model)),
-      ...req.tools.defs.map(
-        (d): BetaToolUnion => ({
-          name: d.name,
-          description: d.description,
-          input_schema: d.input_schema as BetaTool["input_schema"],
-          strict: true,
-          eager_input_streaming: true,
-        })
-      ),
-    ];
+    const customTools: BetaToolUnion[] = req.tools.defs.map(
+      (d): BetaToolUnion => ({
+        name: d.name,
+        description: d.description,
+        input_schema: d.input_schema as BetaTool["input_schema"],
+        strict: true,
+        eager_input_streaming: true,
+      })
+    );
+    let tools: BetaToolUnion[] = [...(req.web === false ? [] : this.serverTools(model)), ...customTools];
+    const price = priceFor(model);
+    const outPrice = price.output / 1_000_000;
+    const inPrice = price.input / 1_000_000;
     const build = () => {
       // Глубокий ответ — своё усилие верхним уровнем (у другой модели свой кэш — сбрасывать нечего).
       const msgEffort = !req.topEffort && this.effortMessages && req.effort !== BASE_EFFORT ? req.effort : null;
@@ -296,22 +364,31 @@ export class ClaudeEngine implements LlmEngine {
     let cost: CostBreakdown = ZERO_COST;
     let jsonRetries = 0;
     let servedBy = model;
-    let lastStep = 0;
+    /** Оценка ввода следующего шага (токены): после первого шага — прошлый ввод + его вывод + результаты инструментов. */
+    let nextInTokens = 0;
     const allContent: BetaContentBlock[] = [];
     const maxIter = req.maxIterations ?? this.cfg.maxToolIterations;
     const systemCache = req.systemTtl === "5m" ? ({ type: "ephemeral" } as const) : ({ type: "ephemeral", ttl: "1h" } as const);
 
     for (let iter = 0; iter < maxIter; iter++) {
-      // Жёсткий потолок (глубокий ответ): следующий шаг не дешевле прошлого — не начинать, если не влезет.
-      if (req.hardCap && iter > 0 && cost.usd + lastStep > req.maxUsd) {
-        return { text: finalText(allContent), sources: citedSources(allContent), cost, stop: "budget", servedBy };
+      // Жёсткий потолок (глубокий ответ): шаг не может стоить больше остатка — max_tokens шага урезается так, чтобы
+      // даже весь вывод (с мышлением) и ввод (по полной цене, без скидки кэша) и поиск уложились в остаток.
+      let maxTokens = req.maxTokens ?? this.cfg.maxTokens;
+      if (req.hardCap) {
+        const inTokens = iter === 0 ? roughTokens(messages) + roughTokens(this.system) + roughTokens(tools) : nextInTokens;
+        const webReserve = req.web === false ? 0 : this.cfg.webSearchMaxUses * 0.01;
+        const room = Math.floor((req.maxUsd - cost.usd - inTokens * inPrice - webReserve) / outPrice);
+        if (room < HARDCAP_MIN_STEP_TOKENS) {
+          return { text: finalText(allContent), sources: citedSources(allContent), cost, stop: "budget", servedBy };
+        }
+        maxTokens = Math.min(maxTokens, room);
       }
       let msg: BetaMessage;
       try {
         const stream = this.client.beta.messages.stream(
           {
             model,
-            max_tokens: req.maxTokens ?? this.cfg.maxTokens,
+            max_tokens: maxTokens,
             system: [{ type: "text", text: this.system, cache_control: systemCache }],
             tools,
             messages,
@@ -337,6 +414,19 @@ export class ClaudeEngine implements LlmEngine {
           iter--;
           continue;
         }
+        // Серверный инструмент этой версии модели не подходит (проба при старте могла его пропустить) — следующий
+        // набор до перезапуска; только на первом шаге (дальше в истории уже блоки этих инструментов).
+        if (iter === 0 && req.web !== false && isToolTypeError(err)) {
+          const order = webToolsOrder(model);
+          const next = order[order.indexOf(this.variantOf(model)) + 1];
+          if (next) {
+            this.toolsByModel.set(model, next);
+            this.log.warn("llm.web_tools_rejected", { model, next, err: err as Error });
+            tools = [...webTools(next, this.cfg), ...customTools];
+            iter--;
+            continue;
+          }
+        }
         // С eager_input_streaming непарсящийся вход инструмента роняет finalMessage();
         // переспрашиваем только этот случай, ошибки API — наверх.
         if (err instanceof Anthropic.APIError || req.signal.aborted || jsonRetries++ >= 2) throw err;
@@ -345,8 +435,10 @@ export class ClaudeEngine implements LlmEngine {
       }
 
       const step = costOf(msg.usage, model);
-      lastStep = step.usd;
       cost = addCost(cost, step);
+      st.cost = cost;
+      nextInTokens =
+        Math.ceil(((msg.usage.input_tokens ?? 0) + (msg.usage.cache_read_input_tokens ?? 0) + (msg.usage.cache_creation_input_tokens ?? 0) + (msg.usage.output_tokens ?? 0)) * 1.1);
       servedBy = msg.model || servedBy;
       allContent.push(...msg.content);
       this.log.debug("llm.step", {
@@ -386,6 +478,7 @@ export class ClaudeEngine implements LlmEngine {
           toolUses.map(async (tu) => {
             const r = await req.tools.run(tu.name, tu.input);
             if (r.endTurn) endTurn = true;
+            nextInTokens += roughTokens(r.content) + (r.images?.length ?? 0) * 1600;
             return {
               type: "tool_result" as const,
               tool_use_id: tu.id,
@@ -520,58 +613,62 @@ export class ClaudeEngine implements LlmEngine {
   async deepProbe(primary: string, fallback: string): Promise<DeepProbeResult> {
     let cost: CostBreakdown = ZERO_COST;
     let note: string | null = null;
-    const variants: WebToolsVariant[] = ["web_20260209", "web_fetch_20260318", "web_basic", "none"];
+    const toolErr = (e: unknown) => e instanceof Anthropic.APIError && e.status === 400 && /tool|web_/i.test(String(e.message));
     for (const model of [primary, fallback]) {
-      let chosen: WebToolsVariant | null = null;
       let modelGone = false;
-      for (const v of variants) {
+      let chosen: WebToolsVariant | null = null;
+      // Набор инструментов проверяется НАСТОЯЩИМ запросом (count_tokens может принять то, что messages отвергнет):
+      // сначала бесплатный count_tokens (отсеять заведомо чужие), потом крошечный messages.create С ЭТИМИ
+      // инструментами (доступ к модели, хранение данных, типы инструментов). Временный сбой — набор не отвергаем.
+      for (const v of webToolsOrder(model)) {
+        const vt = webTools(v, this.cfg);
         try {
           await this.client.beta.messages.countTokens(
             {
               model,
               messages: [{ role: "user", content: "ping" }],
-              ...(webTools(v, this.cfg).length ? { tools: webTools(v, this.cfg) } : {}),
+              ...(vt.length ? { tools: vt } : {}),
               ...this.workspace(),
             } as Parameters<Anthropic["beta"]["messages"]["countTokens"]>[0],
             { timeout: 20_000, maxRetries: 1 }
           );
-          chosen = v;
-          break;
         } catch (e) {
-          const kind = deepUnavailable(e);
-          if (e instanceof Anthropic.APIError && e.status === 400 && /tool|web_/i.test(String(e.message))) continue;
-          if (kind === "permanent" && !(e instanceof Anthropic.APIError && e.status === 400 && /tool|web_/i.test(String(e.message)))) {
+          if (toolErr(e)) continue;
+          if (deepUnavailable(e) === "permanent") {
             modelGone = true;
             break;
           }
-          // временное — считаем, что инструменты те же, что у основной модели бота
-          chosen = "web_20260209";
+          /* временное — проверит настоящий запрос */
+        }
+        try {
+          const msg = await this.client.beta.messages.create(
+            {
+              model,
+              max_tokens: 64,
+              messages: [{ role: "user", content: "Ответь одним словом: ок. Инструменты не используй." }],
+              ...(vt.length ? { tools: vt } : {}),
+              output_config: { effort: "low" },
+              ...this.workspace(),
+            } as Parameters<Anthropic["beta"]["messages"]["create"]>[0],
+            { timeout: 60_000, maxRetries: 1 }
+          );
+          cost = addCost(cost, costOf((msg as BetaMessage).usage, model));
+          chosen = v;
+          break;
+        } catch (e) {
+          if (toolErr(e)) continue;
+          if (deepUnavailable(e) === "permanent") {
+            modelGone = true;
+            break;
+          }
+          // временное — модель и набор оставляем (при ответе: другой набор при 400 инструмента, запасная модель)
+          chosen = v;
           break;
         }
       }
       if (modelGone || !chosen) {
         note = note ?? `${model}: недоступна`;
         continue;
-      }
-      // Настоящий крошечный запрос: доступ к модели и хранение данных проверяет только он.
-      try {
-        const msg = await this.client.beta.messages.create(
-          {
-            model,
-            max_tokens: 64,
-            messages: [{ role: "user", content: "Ответь одним словом: ок" }],
-            output_config: { effort: "low" },
-            ...this.workspace(),
-          },
-          { timeout: 60_000, maxRetries: 1 }
-        );
-        cost = addCost(cost, costOf(msg.usage, model));
-      } catch (e) {
-        if (deepUnavailable(e) === "permanent") {
-          note = note ?? `${model}: недоступна`;
-          continue;
-        }
-        // временное — модель оставляем, при ответе будет запасной путь
       }
       this.toolsByModel.set(model, chosen);
       return { model, tools: chosen, note: model === primary ? null : note, cost };

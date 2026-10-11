@@ -15,7 +15,11 @@
  *   - диапазон («час-полтора», «10-15 мин») — верхняя граница, метка это показывает;
  *   - часы 1–12 без «утра/дня/вечера/ночи» и не в 24-часовой форме — ближайшее будущее из h:mm и (h+12):mm от
  *     базы; дальше 8 ч — AMBIGUOUS (бот переспрашивает); пометка части суток предел снимает;
- *   - «завтра» + 1–7 без пометки — день (+12), 8–11 — утро, 12 — полдень;
+ *   - «завтра» + 1–7 без пометки — день (+12), 8–11 — утро, 12 — полдень; ночью (до 5 утра) «завтра» — наступивший
+ *     календарный день («после сна»);
+ *   - однозначное время (24-часовое или с частью суток), прошедшее не больше 30 мин назад, — опоздание, а не завтра;
+ *   - «в/к/до N» + счёт («в 3 раза», «в 2 км», «в двух шагах», «в 5 минутах», «к 15 минутам») — не час;
+ *     «в 5 минутах» — через 5 минут; «через 1:30» — длительность;
  *   - срок ∈ [сейчас − 60 мин; база + 36 ч]: раньше — PAST, позже — TOO_FAR (срок в прошлом в пределах часа —
  *     карточка сразу «опаздывает»);
  *   - прошедшее («15 мин назад», «был в 2»), вопросы, «скоро», «к обеду», голое «через 2» — NO_TIME;
@@ -48,6 +52,10 @@ export const PROMISE_MAX_AHEAD_MS = 36 * 3600_000;
 export const PROMISE_AMBIGUOUS_MS = 8 * 3600_000;
 /** «щас», «пару минут» — столько. */
 export const PROMISE_SOON_SEC = 5 * 60;
+/** Однозначное время, прошедшее не больше этого до базы, — опоздание, а не «завтра». */
+export const PROMISE_JUST_PASSED_MS = 30 * 60_000;
+/** До этого часа ночи «завтра» значит «после сна» — наступивший календарный день. */
+export const NIGHT_UNTIL_HOUR = 5;
 
 const MOSCOW = "Europe/Moscow";
 
@@ -111,9 +119,18 @@ export function normalizePromiseText(text: string): string {
 
 // ───────────────────────────── разбор ─────────────────────────────
 
-const MIN_W = "(?:минут[аыу]?|минутк[аиу]|минуточ[каеку]+|мин\\.?|м|min|mins|minutes?)";
+/** Минуты как длительность: «15 мин», «в 5 минутах» (= через 5 минут). «к 15 минутам» — не длительность. */
+const MIN_W = "(?:минут(?:ах|а|ы|у)?|минутк[аиу]|минуточ[каеку]+|мин\\.?|м|min|mins|minutes?)";
+/** Любая форма минут — после «в/к/до N» это не час («в 5 минутах», «к 15 минутам»). */
+const MIN_ANY = "(?:минут[а-я]*|минутк[а-я]*|минуточ[а-я]*|мин\\.?|м|min|mins|minutes?)";
 const HOUR_W = "(?:час(?:а|ов|ик|ок|очек|ика|ка)?|ч\\.?|h|hours?)";
 const SEC_W = "(?:секунд[аыу]?|сек\\.?|с)";
+/**
+ * После «в/к/до N» — не время, а счёт чего-то: «в 3 раза», «в 2 км», «в двух шагах», «в 2 словах», «в 5 метрах».
+ * Предложный падеж множественного числа (-ах/-ях) после числа — почти всегда «где», а не «когда».
+ */
+const NOT_HOUR_AFTER =
+  /^\s*(?:раз(?:а)?|км|километр[а-я]*|метр[а-я]*|м|см|кг|литр[а-я]*|шаг[а-я]*|слов[а-я]*|рубл[а-я]*|руб|процент[а-я]*|%|тыс[а-я]*|штук[а-я]*|человек[а-я]*|градус[а-я]*|секунд[а-я]*|сек|недел[а-я]*|месяц[а-я]*|год[а-я]*|лет|класс[а-я]*|этаж[а-я]*|квартир[а-я]*|ряд[а-я]*|част[а-я]*|игр[а-я]*|раунд[а-я]*|[а-я]+(?:ах|ях))(?![а-я])/;
 
 export interface ParsedPromise {
   spec: PromiseSpec;
@@ -247,6 +264,15 @@ export function parsePromiseText(text: string): ParsedPromise {
       }
     }
   }
+  // 3г′. «через 1:30», «через 0:45» — длительность Ч:ММ, а не время суток.
+  {
+    const m = /(?:^|\s)через\s+(\d{1,2})\s*[:.]\s*(\d{2})(?!\d)/.exec(t);
+    if (m) {
+      const sec = Number(m[1]) * 3600 + Number(m[2]) * 60;
+      if (Number(m[2]) <= 59 && sec > 0) return { spec: { kind: "in", minSec: sec, maxSec: sec } };
+      return none("no_time");
+    }
+  }
   // 3г. ЧЧ:ММ (21:30, 21.30, 21-30 после предлога, «в 9:30»)
   {
     const m = /(?:^|\s)(в|к|до|после|около)?\s*(\d{1,2})\s*[:.]\s*(\d{2})(?!\d)(.*)$/.exec(t) ?? /(?:^|\s)(в|к|до|после|около)\s+(\d{1,2})-(\d{2})(?!\d)(.*)$/.exec(t);
@@ -270,8 +296,10 @@ export function parsePromiseText(text: string): ParsedPromise {
     const m = /(?:^|\s)(в|к|до|после|около)\s+(\d{1,2})(?![\d.])(?:\s*(?:часов|часа|час|ч)(?![а-я]))?(.*)$/.exec(t) ?? /(?:^|\s)(в|к|до|после|около)\s+(часу)(?![а-я])(.*)$/.exec(t);
     if (m) {
       const rest = m[3] ?? "";
-      // «в 2 часа ночи» — часть суток; «к 9 минутам» — нет
-      if (!new RegExp(`^\\s*${MIN_W}(?:\\s|$)`).test(rest)) {
+      // «в 2 часа ночи» — часть суток; «к 9 минутам», «в 5 минутах» — нет; «в 3 раза», «в 2 км», «в двух шагах» —
+      // счёт, а не час (если «часа» не сказано).
+      const hourWord = /^(?:в|к|до|после|около)\s+\d{1,2}\s*(?:часов|часа|час|ч)(?![а-я])/.test(m[0].trim()) || m[2] === "часу";
+      if (!new RegExp(`^\\s*${MIN_ANY}(?![а-я])`).test(rest) && (hourWord || !NOT_HOUR_AFTER.test(rest))) {
         const h0 = m[2] === "часу" ? 1 : Number(m[2]);
         // «в 2 часа 30 минут» — минуты после часов
         const mm = new RegExp(`^\\s*(?:и\\s+)?(\\d{1,2})\\s*${MIN_W}(?=\\s|$|[.,])`).exec(rest);
@@ -528,7 +556,10 @@ export function resolveDeadline(spec: PromiseSpec, o: ResolveOptions): ResolvedD
   };
 
   if (spec.day === "tomorrow" || spec.day === "after") {
-    const tm = addDays(today, spec.day === "after" ? 2 : 1);
+    // Ночью (до 5 утра) «завтра» — это «после сна», то есть наступивший календарный день: «завтра в 9» в 01:00
+    // 12.10 — 12.10 09:00, а не 13.10.
+    const night = baseLocal.h < NIGHT_UNTIL_HOUR ? 1 : 0;
+    const tm = addDays(today, (spec.day === "after" ? 2 : 1) - night);
     let h = hour;
     if (spec.half === "unknown" && !spec.h24) {
       // «завтра в 2» — день; 8–11 — утро; 12 — полдень
@@ -546,6 +577,16 @@ export function resolveDeadline(spec: PromiseSpec, o: ResolveOptions): ResolvedD
   };
   const ambiguous = spec.half === "unknown" && !spec.h24 && hour >= 1 && hour <= 12;
   const hours = ambiguous ? [hour === 12 ? 0 : hour, hour === 12 ? 12 : hour + 12] : [hour];
+  // Однозначное время («в 14», «к 14:00», «в 9 вечера»), только что прошедшее (до 30 мин до базы), — это
+  // «я уже опаздываю», а не «завтра»: «в 14 буду» в 14:02 → 14:00 (карточка сразу «опаздывает»), не через 24 часа.
+  // Прошло больше — как раньше: завтра («в 13», сказанное в 13:40).
+  if (!ambiguous) {
+    const recent = [-1, 0]
+      .map((n) => at(addDays(today, n), hour))
+      .filter((ms) => ms < baseMs - 60_000 && ms >= baseMs - PROMISE_JUST_PASSED_MS)
+      .sort((a, b) => b - a)[0];
+    if (recent !== undefined) return limits(recent, labelFor(recent, false), false);
+  }
   const all = hours.flatMap(candidatesFor).filter((ms) => ms >= baseMs - 60_000).sort((a, b) => a - b);
   // «к 14» сказано в 14:00:20 — это «сейчас», а не завтра: минута запаса.
   const nearest = all[0];
@@ -582,10 +623,14 @@ export function sanitizeSpec(raw: unknown): PromiseSpec | null {
     return { kind: "in", minSec: Math.round(Math.min(min, max)), maxSec: Math.round(Math.max(min, max)) };
   }
   if (s.kind === "at") {
-    const hour = Number(s.hour);
+    let hour = Number(s.hour);
     const minute = Number(s.minute ?? 0);
     if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
     const half: PromiseHalf = s.half === "am" || s.half === "pm" ? s.half : "unknown";
+    // Модель пишет час «как сказано» с частью суток: «8 вечера» → 8 + pm = 20:00, «12 ночи» → 12 + am = 00:00.
+    // Уже 24-часовой час (20 + pm) не трогаем.
+    if (half === "pm" && hour >= 1 && hour <= 11) hour += 12;
+    else if (half === "am" && hour === 12) hour = 0;
     const day = s.day === "today" || s.day === "tomorrow" || s.day === "after" ? s.day : "nearest";
     const zone = typeof s.zone === "string" && isValidZone(s.zone) ? s.zone : undefined;
     return { kind: "at", hour, minute, half, day, ...(zone ? { zone } : {}), prep: s.prep === "k" ? "k" : "v", h24: hour === 0 || hour > 12 || half !== "unknown" };

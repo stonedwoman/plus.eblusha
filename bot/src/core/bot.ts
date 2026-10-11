@@ -35,7 +35,7 @@ import { ApiError, type ChatApi } from "../api/eblusha";
 import type { BotConversationKind, BotJob, BotJobMessage, BotPostInput, BotSignal, EbMessage, ShareInfo } from "../api/types";
 import type { AnswerRequest, AnswerResult, LlmEngine, LlmToolResult, ToolRuntime } from "../llm/types";
 import { ATTACH_IMAGE_TOOL, PROMISE_TOOLS, type MemoryPromise } from "../llm/prompt";
-import { deepUnavailable } from "../llm/claude";
+import { deepUnavailable, partialCostOf } from "../llm/claude";
 import { isDeepRequest, isShareForget, parseShareChoice } from "./cardIntents";
 import { PromiseFlow, type PromiseConv } from "./promises";
 import { READ_CHAT_TOOL, ShareCache, ShareReader, VIEW_PHOTO_TOOL, shareCardOf, shareInChain, shareOptions } from "./share";
@@ -98,7 +98,14 @@ export const DEEP_MARK = "🧠 **Подумал лучше**";
 interface AskMode {
   share?: ShareInfo;
   deep?: boolean;
+  /** «Подумай лучше»: опубликован ли глубокий ответ (нет — просьбу можно повторить). */
+  deepState?: { posted: boolean };
 }
+
+/** Виды сообщений бота, над которыми «подумай лучше» не думает (не ответ на вопрос). */
+const DEEP_NOT_ANSWER = new Set(["card", "confirm", "welcome", "notice", "command"]);
+/** Сколько помним, что над ответом уже подумали (повторная просьба — отказ, без второго прогона). */
+const DEEP_TARGET_TTL_MS = 24 * 3600_000;
 const NO_RE = /^(?:нет|no|отмена|отменить|не\s+надо|стоп)[.!\s]*$/i;
 
 export function chooseEffort(text: string): Effort {
@@ -172,10 +179,19 @@ export class Bot {
   private readonly promises: PromiseFlow;
   /** «Поделиться перепиской»: кэш в памяти процесса и чтение по согласию (core/share.ts). */
   readonly shareCache: ShareCache;
+  private readonly stopShareSweep: () => void;
   private readonly shareReader: ShareReader;
   /** «Подумай лучше»: модель после пробы (null — выключено), почему не основная. */
   private deepModel: string | null;
   private deepNote: string | null = null;
+  /**
+   * «Подумай лучше» в работе — ещё не записаны в расход: по человеку и всего. Лимиты считают их вместе с
+   * записанными, иначе параллельные просьбы из разных бесед проходят проверку все разом (находка ревью).
+   */
+  private readonly deepInflight = new Map<string, number>();
+  private deepInflightTotal = 0;
+  /** Над какими ответами (беседа:сообщение бота) уже думают или подумали → когда. Повтор — без второго прогона. */
+  private readonly deepTargets = new Map<string, number>();
 
   constructor(private readonly d: BotDeps) {
     this.now = d.now ?? Date.now;
@@ -205,6 +221,7 @@ export class Bot {
     this.fetchImage = d.downloadImage ?? ((u, o) => realDownloadImage(u, o));
     this.deepModel = d.cfg.deepModel;
     this.shareCache = new ShareCache(() => this.now());
+    this.stopShareSweep = this.shareCache.startSweep();
     this.shareReader = new ShareReader({ cfg: d.cfg, api: d.api, llm: d.llm, log: d.log, now: () => this.now(), cache: this.shareCache });
     this.promises = new PromiseFlow({
       cfg: d.cfg,
@@ -280,12 +297,15 @@ export class Bot {
     try {
       const n = this.memory.purgeIdle();
       if (n) this.d.log.info("memory.purged", { n });
+      const p = this.d.store.purgePending(this.now());
+      if (p) this.d.log.info("promise.pending_purged", { n: p });
     } catch (e) {
       this.d.log.warn("memory.purge_failed", { err: e as Error });
     }
   }
 
   async stop(): Promise<void> {
+    this.stopShareSweep();
     for (const m of this.d.registry.modules) await m.stop?.().catch(() => {});
   }
 
@@ -315,8 +335,12 @@ export class Bot {
                   await this.d.api.promises!.arrived(id, { via: "valheim", at: o.at, detail: o.detail });
                   return true;
                 } catch (e) {
-                  this.d.log.info("promise.valheim_rejected", { code: e instanceof ApiError ? e.code ?? e.status : undefined });
-                  return false;
+                  // Окончательный отказ — 4xx кроме 408/429 (закрыт, рано, нет таймера); остальное (сеть, 5xx,
+                  // перезапуск бэкенда, лимит) — временно: наблюдатель попробует на следующем опросе.
+                  const status = e instanceof ApiError ? e.status : 0;
+                  const final = status >= 400 && status < 500 && status !== 408 && status !== 429;
+                  this.d.log.info(final ? "promise.valheim_rejected" : "promise.valheim_retry", { code: e instanceof ApiError ? e.code ?? e.status : undefined });
+                  return final ? false : null;
                 }
               },
             },
@@ -573,12 +597,15 @@ export class Bot {
     const t = this.now();
     const day = utcDay(t);
     const limit = requester.isOwner ? this.d.cfg.deepOwnerDaily : this.d.cfg.deepUserDaily;
-    if (this.d.store.userKindCount(requester.userId, day, "deep") >= limit) {
+    const inflight = this.deepInflight.get(requester.userId) ?? 0;
+    if (this.d.store.userKindCount(requester.userId, day, "deep") + inflight >= limit) {
       const next = new Date(Date.UTC(new Date(t).getUTCFullYear(), new Date(t).getUTCMonth(), new Date(t).getUTCDate() + 1));
       const hm = new Intl.DateTimeFormat("ru-RU", { timeZone: this.d.cfg.timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(next);
       return `На сегодня «подумай лучше» закончилось (${limit} в день) — обновится в ${hm} по Москве. Мой обычный ответ выше остаётся в силе.`;
     }
-    if (this.d.store.spentKindMonth(utcMonth(t), "deep") >= this.d.cfg.deepMonthlyUsd) {
+    // Месячный потолок — с ценой этого ответа и всех, что уже думаются (каждый — до BOT_DEEP_MAX_USD_PER_ANSWER):
+    // при $39.9 из $40 следующий не начинается.
+    if (this.d.store.spentKindMonth(utcMonth(t), "deep") + (this.deepInflightTotal + 1) * this.d.cfg.deepMaxUsdPerAnswer > this.d.cfg.deepMonthlyUsd) {
       return "Лимит на «подумай лучше» в этом месяце исчерпан — обновится 1-го числа. Мой обычный ответ выше остаётся в силе.";
     }
     return null;
@@ -600,10 +627,35 @@ export class Bot {
         await this.sendReply(conv, m.id, "Это уже мой самый обдуманный ответ 🙂 Если что-то в нём не так — уточни, что именно.", [], "notice");
         return;
       }
-      if (parent.bot.kind === "card" || parent.bot.kind === "confirm" || parent.bot.kind === "welcome") {
+      // Карточки, подтверждения, служебные ответы (отказы, «уже подумал», шаблоны вроде пунктуальности) — не ответ
+      // на вопрос: думать над ними нечего, а лимит и деньги ушли бы зря.
+      if (DEEP_NOT_ANSWER.has(parent.bot.kind)) {
         await this.sendReply(conv, m.id, "Тут думать нечего 🙂 Ответь «подумай лучше» на мой ответ на вопрос.", [], "notice");
         return;
       }
+    }
+    // Ответ по переписке: «подумай лучше» перечитает её — только пока доступ действует.
+    if (parent?.isBot && parent.bot?.shareId && this.d.api.share && (job.rev ?? 1) >= 4) {
+      let live = false;
+      try {
+        live = (await this.d.api.share.status(parent.bot.shareId, conv.grant)).status === "granted";
+      } catch {
+        live = false;
+      }
+      if (!live) {
+        await this.sendReply(conv, m.id, "Этот ответ был по переписке, а доступ к ней уже закончился — без неё подумать лучше не выйдет. Спроси заново — я попрошу разрешение.", [], "notice");
+        return;
+      }
+    }
+    // Над этим ответом уже думаю или подумал (вторая кнопка, второе устройство) — второй прогон не запускаем.
+    const t0 = this.now();
+    for (const [k, at] of this.deepTargets) if (t0 - at > DEEP_TARGET_TTL_MS) this.deepTargets.delete(k);
+    const targetKey = parent?.isBot ? `${conv.id}:${parent.id}` : null;
+    if (targetKey && this.deepTargets.has(targetKey)) {
+      this.d.store.skipInMemory(conv.id, m.id, this.now());
+      await this.sendReply(conv, m.id, "Над этим ответом я уже подумал (или думаю прямо сейчас) — смотри ниже 🙂", [], "notice");
+      log.info("deep.refused", { why: "repeat" });
+      return;
     }
     const verdict = this.budget.check(requester.userId, requester.isOwner);
     if (!verdict.ok) {
@@ -618,7 +670,21 @@ export class Bot {
       log.info("deep.refused", { why: "limit" });
       return;
     }
-    await this.handleAsk(job, conv, requester, text, log, { deep: true });
+    // Бронь: до записи расхода этот ответ уже считается в лимитах (проверка выше и бронь — без await между ними).
+    this.deepInflight.set(requester.userId, (this.deepInflight.get(requester.userId) ?? 0) + 1);
+    this.deepInflightTotal++;
+    if (targetKey) this.deepTargets.set(targetKey, t0);
+    const deepState = { posted: false };
+    try {
+      await this.handleAsk(job, conv, requester, text, log, { deep: true, deepState });
+    } finally {
+      const n = (this.deepInflight.get(requester.userId) ?? 1) - 1;
+      if (n > 0) this.deepInflight.set(requester.userId, n);
+      else this.deepInflight.delete(requester.userId);
+      this.deepInflightTotal = Math.max(0, this.deepInflightTotal - 1);
+      // Не получилось (сбой, отказ по пути) — можно попросить ещё раз.
+      if (targetKey && !deepState.posted) this.deepTargets.delete(targetKey);
+    }
   }
 
   private toolContext(
@@ -1166,7 +1232,9 @@ export class Bot {
   private async promiseTool(name: string, input: unknown, ctx: ToolContext, x: { job?: BotJob; conv?: Conv }, mode: string): Promise<LlmToolResult> {
     const job = x.job;
     const conv = x.conv;
-    if (!job || !conv || mode !== "normal" || !this.promises.available(job)) return { content: "Таймеры сейчас недоступны — так и скажи.", isError: false };
+    // «Подумай лучше» может СМОТРЕТЬ пунктуальность (только чтение), но не ставить таймеры.
+    const readOnly = name === "punctuality" && mode === "deep";
+    if (!job || !conv || (mode !== "normal" && !readOnly) || !this.promises.available(job)) return { content: "Таймеры сейчас недоступны — так и скажи.", isError: false };
     const log = ctx.log;
     const i = (input ?? {}) as Record<string, unknown>;
     const m = job.message;
@@ -1207,13 +1275,14 @@ export class Bot {
 
   private async handleAsk(job: BotJob, conv: Conv, requester: Requester, text: string, log: Logger, mode: AskMode = {}): Promise<void> {
     const m = job.message;
-    // Уточнение по цепочке ответа по согласию — переписку подкладываем сразу (без новой карточки).
-    if (!mode.share && !mode.deep && this.d.api.share && (job.rev ?? 1) >= 4) {
+    // Уточнение по цепочке ответа по согласию — переписку подкладываем сразу (без новой карточки). И для «подумай
+    // лучше» над ответом по переписке: иначе глубокая модель отвечала бы, не видя данных (и с веб-поиском).
+    if (!mode.share && this.d.api.share && (job.rev ?? 1) >= 4) {
       const sid = shareInChain(job);
       if (sid) {
         try {
           const s = await this.d.api.share.status(sid, conv.grant);
-          if (s.status === "granted" && s.until) mode = { share: s };
+          if (s.status === "granted" && s.until) mode = { ...mode, share: s };
         } catch {
           /* согласие закончилось или вне области — обычный ответ */
         }
@@ -1242,10 +1311,16 @@ export class Bot {
     this.typing(conv, true, log);
     const typing = setInterval(() => this.typing(conv, true, log), typingEvery);
     typing.unref?.();
-    const abort = AbortSignal.timeout(4 * 60_000);
+    // «Подумай лучше» на трудном вопросе думает долго — до 12 минут, но не дольше жизни разрешения (иначе ответ
+    // уже не примут). Обычный ответ — 4 минуты.
+    const abort = AbortSignal.timeout(
+      mode.deep ? Math.max(60_000, Math.min(12 * 60_000, job.grantExpiresAt - this.now() - GRANT_MARGIN_MS - 15_000)) : 4 * 60_000
+    );
     const images: OutgoingImage[] = [];
     const after: Array<(replyIds: string[]) => Promise<void>> = [];
     let replyIds: string[] = [];
+    let deepKind = false;
+    let deepSpent = 0;
     try {
       // Память беседы: сводка давнего + свежий хвост (сжатие — тут же, недорогой моделью). Не загрузилась —
       // отвечаем без неё (по цепочке ответов), но удалённое обращение — повод вовсе не отвечать.
@@ -1316,7 +1391,19 @@ export class Bot {
               /* вернуть карточку нельзя — скажем словами */
             }
           }
-          await this.sendReply(conv, m.id, prep.reason === "budget" ? "На переписку за этот период не хватает моего лимита на сегодня — выбери период поменьше." : prep.reason === "error" ? "Не получилось прочитать переписку — попробуй ещё раз чуть позже." : "Переписки за этот период слишком много для моего лимита — выбери период поменьше.", [], "notice");
+          await this.sendReply(
+            conv,
+            m.id,
+            prep.reason === "budget"
+              ? "На переписку за этот период не хватает моего лимита на сегодня — выбери период поменьше."
+              : prep.reason === "limit"
+                ? "По этому разрешению я уже ответил много раз — спроси заново (не ответом на меня), и я попрошу разрешение ещё раз."
+                : prep.reason === "error"
+                  ? "Не получилось прочитать переписку — попробуй ещё раз чуть позже."
+                  : "Переписки за этот период слишком много для моего лимита — выбери период поменьше.",
+            [],
+            "notice"
+          );
           return;
         }
         preamble = prep.prepared.preamble;
@@ -1338,9 +1425,21 @@ export class Bot {
             await this.sendReply(conv, m.id, "Ответь «подумай лучше» на мой ответ, над которым подумать, — так я пойму, о чём речь.", [], "notice");
             return;
           }
-          note += `\nЧеловек просит подумать лучше над твоим последним ответом ему (на его вопрос от ${target}).`;
+          // Последний ответ ему — уже «подумал лучше» (или отказ на такую просьбу): второй прогон не нужен.
+          if (target.deep) {
+            await this.sendReply(conv, m.id, "Мой последний ответ тебе — уже самый обдуманный 🙂 Если что-то в нём не так — уточни, что именно.", [], "notice");
+            return;
+          }
+          // Последний ответ был по переписке — без ответа на него переписку не подложить.
+          if (target.shareId && !mode.share) {
+            await this.sendReply(conv, m.id, "Тот ответ был по переписке — ответь «подумай лучше» прямо на него, и я перечитаю её.", [], "notice");
+            return;
+          }
+          note += `\nЧеловек просит подумать лучше над твоим последним ответом ему (на его вопрос от ${target.when}).`;
         }
-        note += "\nЭто «подумай лучше»: ответь на исходный вопрос заново — тщательнее, проверь факты, расчёты и логику (если нужно — поищи и прочитай страницы). Если вывод изменился против прошлого ответа — в начале одной фразой скажи, что изменилось; если нет — подтверди и коротко скажи, что проверил. Не пиши, что ты другая модель.";
+        note += mode.share
+          ? "\nЭто «подумай лучше» над ответом по переписке: ответь на исходный вопрос заново — внимательнее перечитай переписку выше, проверь, кто что и когда говорил. Искать в интернете здесь нельзя. Если вывод изменился против прошлого ответа — в начале одной фразой скажи, что изменилось; если нет — подтверди и коротко скажи, что проверил. Не пиши, что ты другая модель."
+          : "\nЭто «подумай лучше»: ответь на исходный вопрос заново — тщательнее, проверь факты, расчёты и логику (если нужно — поищи и прочитай страницы). Если вывод изменился против прошлого ответа — в начале одной фразой скажи, что изменилось; если нет — подтверди и коротко скажи, что проверил. Не пиши, что ты другая модель.";
       }
 
       const ask = async (over: Partial<AnswerRequest> = {}): Promise<AnswerResult> =>
@@ -1361,15 +1460,16 @@ export class Bot {
       let kind = "answer";
       if (deep) {
         kind = "deep";
-        const run = (model: string) => {
+        deepKind = true;
+        const run = (model: string, maxUsd: number = this.d.cfg.deepMaxUsdPerAnswer) => {
           const outPrice = priceFor(model).output / 1_000_000;
-          const maxTokens = Math.max(8000, Math.min(64_000, Math.floor((this.d.cfg.deepMaxUsdPerAnswer * 0.8) / outPrice)));
+          const maxTokens = Math.max(8000, Math.min(64_000, Math.floor((maxUsd * 0.8) / outPrice)));
           return ask({
             model,
             topEffort: model === this.d.cfg.deepFallbackModel && model !== this.d.cfg.deepModel ? "max" : "high",
             maxTokens,
             maxIterations: this.d.cfg.deepMaxSteps,
-            maxUsd: this.d.cfg.deepMaxUsdPerAnswer,
+            maxUsd,
             hardCap: true,
             systemTtl: "5m",
           });
@@ -1377,15 +1477,48 @@ export class Bot {
         try {
           res = await run(this.deepModel!);
         } catch (e) {
+          // Потраченное неудачным прогоном — в учёт и в лимиты (иначе обрыв дорогого прогона был бы бесплатным).
+          const spent = partialCostOf(e);
+          if (spent) {
+            this.recordCost(requester.userId, conv.id, kind, spent);
+            deepSpent += spent.usd;
+          }
           const why = deepUnavailable(e);
-          if (!why || this.deepModel === this.d.cfg.deepFallbackModel) throw e;
-          log.warn("deep.fallback", { why, status: (e as { status?: number }).status ?? null });
+          if (!why || this.deepModel === this.d.cfg.deepFallbackModel) {
+            if (why === "permanent") {
+              this.deepModel = null;
+              this.deepNote = "недоступны обе";
+            }
+            throw e;
+          }
+          log.warn("deep.fallback", { why, status: (e as { status?: number }).status ?? null, spent: spent ? Number(spent.usd.toFixed(4)) : 0 });
           // Постоянная недоступность (хранение данных, нет доступа) — запасная модель до перезапуска.
           if (why === "permanent") {
             this.deepModel = this.d.cfg.deepFallbackModel;
             this.deepNote = "основная недоступна";
           }
-          res = await run(this.d.cfg.deepFallbackModel);
+          // Запасной прогон — с остатком потолка ответа (не новым), и с чистого листа: картинки и отложенные
+          // «после ответа» дела первого прогона не выполняются второй раз.
+          const left = this.d.cfg.deepMaxUsdPerAnswer - deepSpent;
+          if (left < 0.25) throw e;
+          images.length = 0;
+          after.length = 0;
+          imageState.count = 0;
+          imageState.moduleData = false;
+          try {
+            res = await run(this.d.cfg.deepFallbackModel, left);
+          } catch (e2) {
+            const spent2 = partialCostOf(e2);
+            if (spent2) {
+              this.recordCost(requester.userId, conv.id, kind, spent2);
+              deepSpent += spent2.usd;
+            }
+            if (deepUnavailable(e2) === "permanent") {
+              this.deepModel = null;
+              this.deepNote = "недоступны обе";
+            }
+            throw e2;
+          }
         }
       } else {
         res = await ask();
@@ -1420,16 +1553,27 @@ export class Bot {
             return;
           }
         }
+        // Пока модель думала, из переписки удалили сообщение, которое она читала, — ответ мог его пересказать.
+        if (await this.shareReader.deletedSinceRead(conv.grant, mode.share.id, log)) {
+          log.info("answer.dropped", { code: "SHARE_MESSAGE_DELETED" });
+          await this.sendReply(conv, m.id, "Пока я читал переписку, из неё удалили сообщение — спроси, пожалуйста, ещё раз.", [], "notice");
+          return;
+        }
       }
 
       let body: string;
+      // Отказ глубокой модели — не «обдуманный ответ»: без пометки depth (кнопка не гаснет, метки «Подумал лучше» нет),
+      // служебным сообщением; обычный ответ выше остаётся в силе.
+      const deepRefusal = deep && res.stop === "refusal";
       if (res.stop === "refusal") {
-        body = "С этим я помочь не могу.";
+        body = deep ? "С этим я помочь не могу — мой обычный ответ выше остаётся в силе." : "С этим я помочь не могу.";
       } else {
         const clean = sanitizeMarkdown(res.text);
         // Заголовки памяти («⟦Имя · время⟧») модель иногда повторяет в начале ответа — людям они не нужны.
         body = clean.text.replace(/^\s*(?:⟦[^⟧\n]{0,160}⟧\s*)+/u, "").trim();
-        for (const im of clean.images) {
+        // Ответ по переписке картинок по адресам из текста не качает вовсе: адрес мог подсказать текст из чата
+        // («вставь ![](https://…?d=<пересказ>)»), и сервер бота сам унёс бы выдержку наружу.
+        for (const im of mode.share ? [] : clean.images) {
           if (images.length >= MAX_MODEL_IMAGES) break;
           if (imageState.moduleData && !isWikiImageUrl(im.url)) continue; // то же правило, что у attach_image
           try {
@@ -1458,10 +1602,12 @@ export class Bot {
           body = "Не нашёл, что ответить. Попробуй переформулировать.";
         }
       }
-      if (deep && res.stop !== "refusal" && body) body = `${DEEP_MARK}\n\n${body}`;
+      if (deep && !deepRefusal && body) body = `${DEEP_MARK}\n\n${body}`;
       replyIds = (
-        await this.postAll({ grant: conv.grant }, m.id, body, images, "answer", deep ? { depth: "deep", model: res.servedBy } : undefined)
+        await this.postAll({ grant: conv.grant }, m.id, body, images, deepRefusal ? "notice" : "answer", deep && !deepRefusal ? { depth: "deep", model: res.servedBy } : undefined)
       ).map((x) => x.id);
+      // Отказ глубокой модели — не «подумал»: просьбу над тем же ответом можно повторить.
+      if (mode.deepState && replyIds.length && !deepRefusal) mode.deepState.posted = true;
       if (mode.share && shareRead && replyIds.length && this.d.api.share) {
         await this.d.api.share
           .answered(mode.share.id, { grant: conv.grant, messageIds: replyIds.slice(0, 12), read: shareRead, usd: Number((res.cost.usd + shareUsd).toFixed(4)) })
@@ -1501,8 +1647,20 @@ export class Bot {
         if (e.code === "BOT_CONVERSATION_GONE") this.d.store.dropMemory(conv.id, { withSkips: true });
         return;
       }
-      log.error("answer.failed", { ms: this.now() - started, err: e as Error });
-      await this.sendReply(conv, m.id, "Что-то сломалось у меня внутри, попробуй ещё раз чуть позже.", [], "notice").catch(() => {});
+      // Потраченное до сбоя — в учёт (у «подумай лучше» уже записано по пути).
+      const spent = deepKind ? null : partialCostOf(e);
+      if (spent) this.recordCost(requester.userId, conv.id, "answer", spent);
+      log.error("answer.failed", { ms: this.now() - started, err: e as Error, usd: deepSpent || (spent ? Number(spent.usd.toFixed(4)) : undefined) });
+      const timedOut = abort.aborted;
+      await this.sendReply(
+        conv,
+        m.id,
+        mode.deep && timedOut
+          ? "Не успел додумать — вопрос оказался слишком тяжёлым. Мой обычный ответ выше остаётся в силе."
+          : "Что-то сломалось у меня внутри, попробуй ещё раз чуть позже.",
+        [],
+        "notice"
+      ).catch(() => {});
     } finally {
       clearInterval(typing);
       this.typing(conv, false, log);
@@ -1514,14 +1672,21 @@ export class Bot {
     }
   }
 
-  /** Время последнего обращения человека, на которое бот ответил (по памяти беседы) — для «подумай лучше» без ответа. */
-  private lastAnswerTo(mem: MemoryLoad | null, userId: string): string | null {
+  /**
+   * Последний ответ бота этому человеку (по памяти беседы) — для «подумай лучше» без ответа (reply): когда был вопрос,
+   * был ли тот ответ уже глубоким (или отказом на такую просьбу) и не по переписке ли он.
+   */
+  private lastAnswerTo(mem: MemoryLoad | null, userId: string): { when: string; deep: boolean; shareId: string | null } | null {
     const units = mem?.view.units ?? [];
     for (let i = units.length - 1; i > 0; i--) {
       const u = units[i]!;
       if (u.role !== "assistant" || u.skip) continue;
       const q = units[i - 1]!;
-      if (q.role === "user" && !q.skip && q.messages[0]?.senderId === userId) return formatWhen(q.messages[0]!.createdAt, this.d.cfg.timeZone);
+      if (q.role === "user" && !q.skip && q.messages[0]?.senderId === userId) {
+        const deep = u.messages.some((x) => x.bot?.depth === "deep") || isDeepRequest(invocationText(q.messages[0]!.content ?? ""));
+        const shareId = u.messages.find((x) => x.bot?.shareId)?.bot?.shareId ?? null;
+        return { when: formatWhen(q.messages[0]!.createdAt, this.d.cfg.timeZone), deep, shareId };
+      }
     }
     return null;
   }
@@ -1622,6 +1787,9 @@ export class Bot {
           attachments,
           kind,
           ...(replyToId && !first ? { replyToId } : {}),
+          // часть того же ответа: «подумал лучше» и у картинок (иначе «подумай лучше» на картинку — второй прогон)
+          ...(extra?.depth ? { depth: extra.depth } : {}),
+          ...(extra?.model ? { model: extra.model } : {}),
         });
         this.noteSent(sent);
         first ??= sent;

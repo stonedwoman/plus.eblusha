@@ -17,7 +17,7 @@ import { parsePromiseText, resolveDeadline } from "../../src/core/promiseTime";
 import { estimateShareTokens, estimateShareUsd, ShareCache, shareInChain, shareOptions } from "../../src/core/share";
 import { punctualityText } from "../../src/core/promises";
 import { PromiseWatch } from "../../src/modules/valheim/promiseWatch";
-import { ClaudeEngine, deepUnavailable, turnsToMessages } from "../../src/llm/claude";
+import { ClaudeEngine, deepUnavailable, isToolTypeError, partialCostOf, turnsToMessages } from "../../src/llm/claude";
 import { silentLogger } from "../../src/log";
 import type { BotJob, ShareEstimate, ShareInfo, ShareMessage, SharePeriod } from "../../src/api/types";
 import type { ShareApi } from "../../src/api/eblusha";
@@ -364,7 +364,8 @@ test("инструмент ответил сам (endTurn) — модель бо
     assert.equal(res.content[1].source.data, img.toString("base64"));
   }
   {
-    // шаг стоит ≈ $0.01 + 100×$50/млн; потолок $0.012 — второй шаг не начинается
+    // Потолок $0.06 без поиска: первый шаг — max_tokens урезан до ≤ 1200 (весь вывод ≤ $0.06); шаг стоит ≈ $0.015
+    // (1000 вх. + 100 вых.); на второй остатка меньше 1024 токенов вывода — не начинается.
     const { client, calls } = fakeClient([{ ...toolUse("t3", "valheim_status"), model: "claude-fable-5-1" }, { model: "claude-fable-5-1", stop_reason: "end_turn", content: [], usage: usage() }]);
     const eng = new ClaudeEngine(cfg, "С", silentLogger, client);
     const r = await eng.answer({
@@ -374,29 +375,127 @@ test("инструмент ответил сам (endTurn) — модель бо
       userKey: "k",
       tools: { defs: [{ name: "valheim_status", description: "d", input_schema: { type: "object" } }], run: async () => ({ content: "ok", isError: false }) },
       signal: new AbortController().signal,
-      maxUsd: 0.016,
+      maxUsd: 0.06,
       model: "claude-fable-5-1",
       hardCap: true,
+      web: false,
+      maxTokens: 32000,
     });
     assert.equal(r.stop, "budget");
     assert.equal(calls.length, 1);
+    assert.ok(calls[0]!.max_tokens <= 1200 && calls[0]!.max_tokens >= 1024, `max_tokens ${calls[0]!.max_tokens}`);
   }
+  {
+    // Находка ревью: шаг 1 — 1000 вх. + 19000 вых. ($0.96); раньше шаг 2 шёл с max_tokens 32000 (до $1.6) и ответ
+    // стоил $2.57 при потолке $2. Теперь max_tokens второго шага — от остатка: даже весь его вывод в потолок влезает.
+    const { client, calls } = fakeClient([
+      { ...toolUse("t4", "valheim_status"), model: "claude-fable-5-1", usage: usage(1000, 19000) },
+      { model: "claude-fable-5-1", stop_reason: "end_turn", content: [{ type: "text", text: "итог", citations: null }], usage: usage(21000, 500) },
+    ]);
+    const eng = new ClaudeEngine(cfg, "С", silentLogger, client);
+    await eng.answer({
+      turns: [{ role: "user", text: "q" }],
+      contextNote: "",
+      effort: "medium",
+      userKey: "k",
+      tools: { defs: [{ name: "valheim_status", description: "d", input_schema: { type: "object" } }], run: async () => ({ content: "ok", isError: false }) },
+      signal: new AbortController().signal,
+      maxUsd: 2,
+      model: "claude-fable-5-1",
+      hardCap: true,
+      maxTokens: 32000,
+    });
+    assert.equal(calls.length, 2);
+    const step1 = 1000 * 10e-6 + 19000 * 50e-6;
+    const worst2 = 20000 * 1.1 * 10e-6 + calls[1]!.max_tokens * 50e-6;
+    assert.ok(step1 + worst2 <= 2, `худший случай ${step1 + worst2}`);
+    assert.ok(calls[1]!.max_tokens < 32000);
+  }
+});
+
+test("ответ: исключение несёт потраченное; 400 на тип серверного инструмента — следующий набор", async () => {
+  {
+    const { client } = fakeClient([
+      { model: "claude-fable-5-1", stop_reason: "tool_use", content: [{ type: "tool_use", id: "t1", name: "x", input: {} }], usage: usage(1000, 1000) },
+      apiErr(529, "Overloaded"),
+    ]);
+    const eng = new ClaudeEngine(cfg, "С", silentLogger, client);
+    let caught: unknown = null;
+    try {
+      await eng.answer({
+        turns: [{ role: "user", text: "q" }],
+        contextNote: "",
+        effort: "medium",
+        userKey: "k",
+        tools: { defs: [{ name: "x", description: "d", input_schema: { type: "object" } }], run: async () => ({ content: "ok", isError: false }) },
+        signal: new AbortController().signal,
+        maxUsd: 2,
+        model: "claude-fable-5-1",
+        hardCap: true,
+      });
+    } catch (e) {
+      caught = e;
+    }
+    assert.ok(caught instanceof Anthropic.APIError);
+    const c = partialCostOf(caught);
+    assert.ok(c && Math.abs(c.usd - (1000 * 10e-6 + 1000 * 50e-6)) < 1e-9, "первый шаг учтён");
+    assert.equal(deepUnavailable(caught), "temporary");
+  }
+  {
+    const msg = "tools.1.type: web_fetch_20260318 is not supported for this model";
+    const { client, calls } = fakeClient([
+      new Anthropic.BadRequestError(400, { type: "error", error: { type: "invalid_request_error", message: msg } }, msg, new Headers()),
+      { model: "claude-fable-5-1", stop_reason: "end_turn", content: [{ type: "text", text: "ok", citations: null }], usage: usage() },
+    ]);
+    const eng = new ClaudeEngine(cfg, "С", silentLogger, client);
+    const r = await eng.answer({
+      turns: [{ role: "user", text: "q" }],
+      contextNote: "",
+      effort: "medium",
+      userKey: "k",
+      tools: { defs: [], run: async () => ({ content: "", isError: false }) },
+      signal: new AbortController().signal,
+      maxUsd: 2,
+      model: "claude-fable-5-1",
+    });
+    assert.equal(r.text, "ok");
+    assert.equal(calls.length, 2);
+    assert.ok(calls[0]!.tools.some((t: any) => t.type === "web_fetch_20260318"));
+    assert.ok(calls[1]!.tools.some((t: any) => t.type === "web_fetch_20260209"), "следующий набор");
+  }
+  const bad = (m: string) => new Anthropic.BadRequestError(400, { type: "error", error: { type: "invalid_request_error", message: m } }, m, new Headers());
+  assert.ok(isToolTypeError(bad("tools.0: web_search_20260209 not supported")));
+  assert.ok(!isToolTypeError(bad("tools.3.input_schema: invalid type")), "своя схема — не повод");
+  assert.equal(deepUnavailable(new Anthropic.APIConnectionError({ message: "socket hang up" })), "temporary");
+  assert.equal(deepUnavailable(new Anthropic.APIUserAbortError()), null, "свой обрыв по времени — не недоступность");
 });
 
 test("проба глубокой модели: инструменты, доступ, запасная, выключение", async () => {
   {
-    const { client, countCalls } = fakeClient([{ model: "claude-fable-5-1", stop_reason: "end_turn", content: [], usage: usage(10, 5) }]);
+    const { client, countCalls, calls } = fakeClient([{ model: "claude-fable-5-1", stop_reason: "end_turn", content: [], usage: usage(10, 5) }]);
     const r = await new ClaudeEngine(cfg, "С", silentLogger, client).deepProbe("claude-fable-5-1", "claude-opus-5-5");
     assert.equal(r.model, "claude-fable-5-1");
-    assert.equal(r.tools, "web_20260209");
+    assert.equal(r.tools, "web_fetch_20260318", "у Fable загрузка с фильтрацией — web_fetch_20260318");
     assert.equal(countCalls[0]!.model, "claude-fable-5-1");
+    assert.ok(calls[0]!.tools.some((t: any) => t.type === "web_fetch_20260318"), "настоящий запрос пробы — с этими инструментами");
     assert.ok(r.cost.usd > 0);
   }
   {
-    // инструменты 20260209 не приняты — следующий набор
-    const { client } = fakeClient([{ model: "claude-fable-5-1", stop_reason: "end_turn", content: [], usage: usage(10, 5) }], [apiErr(400, "tools.1: web_fetch_20260209 is not supported")]);
+    // count_tokens отверг набор — следующий
+    const { client } = fakeClient([{ model: "claude-fable-5-1", stop_reason: "end_turn", content: [], usage: usage(10, 5) }], [apiErr(400, "tools.1: web_fetch_20260318 is not supported")]);
     const r = await new ClaudeEngine(cfg, "С", silentLogger, client).deepProbe("claude-fable-5-1", "claude-opus-5-5");
-    assert.equal(r.tools, "web_fetch_20260318");
+    assert.equal(r.tools, "web_20260209");
+  }
+  {
+    // count_tokens принял, а настоящий запрос отверг тип инструмента (находка ревью) — следующий набор, не «зелёная» проба
+    const { client, calls } = fakeClient([
+      apiErr(400, "tools.1.type: web_fetch_20260318 is not supported for this model"),
+      { model: "claude-fable-5-1", stop_reason: "end_turn", content: [], usage: usage(10, 5) },
+    ]);
+    const r = await new ClaudeEngine(cfg, "С", silentLogger, client).deepProbe("claude-fable-5-1", "claude-opus-5-5");
+    assert.equal(r.model, "claude-fable-5-1");
+    assert.equal(r.tools, "web_20260209");
+    assert.equal(calls.length, 2);
   }
   {
     // хранение данных — запасная модель

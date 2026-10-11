@@ -377,6 +377,11 @@ export async function createBotMessage(opts: {
   extraBot?: { depth?: "deep"; model?: string; promiseId?: string; mentions?: string[] } | undefined;
   /** Кому слать пуш (по умолчанию — всем получателям, как у любого сообщения). */
   pushTo?: string[] | undefined;
+  /**
+   * Сбой рассылки после записи сообщения: "throw" (по умолчанию) — наверх; "log" — только в журнал (напоминание
+   * таймера: задачу повторит BullMQ, и второе такое же сообщение было бы лишним — первое уже в беседе).
+   */
+  publishErrors?: "throw" | "log";
 }) {
   const attachments = opts.attachments ?? [];
   const message = await prisma.message.create({
@@ -414,17 +419,23 @@ export async function createBotMessage(opts: {
     },
     include: SENT_MESSAGE_INCLUDE,
   });
-  await publishNewMessage({
-    conversationId: opts.conversationId,
-    message,
-    senderId: opts.botId,
-    secret: false,
-    type: opts.type,
-    content: opts.content ?? null,
-    linkPreview: opts.linkPreview === true,
-    previewUserId: opts.botId,
-    ...(opts.pushTo ? { pushTo: opts.pushTo } : {}),
-  });
+  try {
+    await publishNewMessage({
+      conversationId: opts.conversationId,
+      message,
+      senderId: opts.botId,
+      secret: false,
+      type: opts.type,
+      content: opts.content ?? null,
+      linkPreview: opts.linkPreview === true,
+      previewUserId: opts.botId,
+      ...(opts.pushTo ? { pushTo: opts.pushTo } : {}),
+      ...(opts.extraBot?.mentions?.length ? { mentions: opts.extraBot.mentions } : {}),
+    });
+  } catch (error) {
+    if (opts.publishErrors !== "log") throw error;
+    logger.warn({ error, conversationId: opts.conversationId, messageId: message.id }, "bot message: fanout failed (message kept)");
+  }
   return message;
 }
 

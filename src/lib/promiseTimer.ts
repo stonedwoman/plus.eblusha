@@ -273,13 +273,32 @@ export async function summaryOf(row: PromiseTimer, names?: Map<string, string>):
   };
 }
 
-/** Пояс, по которому понимаем слова: из текста > обещавшего > спросившего > МСК. */
-async function zoneForWords(promiserId: string, requesterId: string): Promise<{ zone: string; source: "promiser" | "requester" | "default" }> {
-  const pz = await getEffectiveTimeZone(promiserId);
-  if (isValidZone(pz)) return { zone: pz, source: "promiser" };
-  const rz = await getEffectiveTimeZone(requesterId);
-  if (isValidZone(rz)) return { zone: rz, source: "requester" };
+/**
+ * Пояс, по которому понимаем слова: из текста > АВТОРА СЛОВ (обещавший сказал «к 9» — его пояс; спросивший «проследи,
+ * чтобы Вася был к 21:30» или ответ на «во сколько?» — пояс спросившего) > другого участника > МСК.
+ */
+async function zoneForWords(
+  authorId: string,
+  otherId: string,
+  promiserId: string,
+): Promise<{ zone: string; source: "promiser" | "requester" | "default" }> {
+  const src = (id: string) => (id === promiserId ? ("promiser" as const) : ("requester" as const));
+  const az = await getEffectiveTimeZone(authorId);
+  if (isValidZone(az)) return { zone: az, source: src(authorId) };
+  const oz = await getEffectiveTimeZone(otherId);
+  if (isValidZone(oz)) return { zone: oz, source: src(otherId) };
   return { zone: "Europe/Moscow", source: "default" };
+}
+
+/** Пояс автора слов продления/поправки (его пояс, иначе пояс таймера). */
+export async function zoneOfAuthor(userId: string, fallback: string): Promise<string> {
+  try {
+    const z = await getEffectiveTimeZone(userId);
+    if (isValidZone(z)) return z;
+  } catch {
+    /* пояс таймера */
+  }
+  return isValidZone(fallback) ? fallback : "Europe/Moscow";
 }
 
 function deadlineError(r: Extract<ResolvedDeadline, { ok: false }>): PromiseCreateError {
@@ -309,6 +328,12 @@ export interface CreatePromiseInput {
   promiserId: string;
   promiseMessageId?: string | null;
   text?: string | null;
+  /**
+   * Сообщение, в котором сказаны слова времени (text/spec), если это не само обещание: ответ на переспрос «Когда он
+   * будет?» / «Это 02:00 ночи?», обращение с «к девяти». Срок считается от ЕГО времени и в поясе ЕГО автора; начало
+   * таймера (кольцо, «пришёл не раньше») — по-прежнему время обещания.
+   */
+  textMessageId?: string | null;
   spec?: PromiseSpec | null;
   cancelAllowedIds: string[];
   confirmAmbiguous?: boolean;
@@ -359,7 +384,25 @@ export async function createPromiseTimer(
   }
   if (!text && !i.spec) return { ok: false, error: { status: 409, code: "PROMISE_NO_TIME", message: "No time in the promise" } };
 
-  const wz = await zoneForWords(i.promiserId, i.requesterId);
+  // Чьи слова и когда сказаны: само обещание (обещавший, его время) — или отдельное сообщение со словами времени
+  // (ответ на переспрос, обращение): тогда срок от него, в поясе его автора.
+  let wordsBase = base;
+  let wordsAuthorId = i.promiseMessageId ? i.promiserId : i.requesterId;
+  if (i.textMessageId && (i.text || i.spec)) {
+    const tm = await prisma.message.findUnique({
+      where: { id: i.textMessageId },
+      select: { conversationId: true, senderId: true, createdAt: true, deletedAt: true, isBot: true },
+    });
+    if (!tm || tm.conversationId !== i.conversationId || tm.deletedAt || tm.isBot) {
+      return { ok: false, error: { status: 400, code: "PROMISE_BAD", message: "textMessageId is not a message in this conversation" } };
+    }
+    wordsBase = tm.createdAt;
+    wordsAuthorId = tm.senderId;
+  } else if (i.promiseMessageId && quoteById) {
+    // ответили «проконтролируй» на чужие слова о человеке — слова автора сообщения
+    wordsAuthorId = quoteById;
+  }
+  const wz = await zoneForWords(wordsAuthorId, wordsAuthorId === i.promiserId ? i.requesterId : i.promiserId, i.promiserId);
   let parseSource: "code" | "model" = "code";
   let spec: PromiseSpec;
   if (i.spec) {
@@ -368,7 +411,7 @@ export async function createPromiseTimer(
   } else {
     spec = parsePromiseText(text).spec;
   }
-  const r = resolveDeadline(spec, { base, zone: wz.zone, now, confirmAmbiguous: i.confirmAmbiguous === true });
+  const r = resolveDeadline(spec, { base: wordsBase, zone: wz.zone, now, confirmAmbiguous: i.confirmAmbiguous === true });
   if (!r.ok) return { ok: false, error: deadlineError(r) };
   const zoneSource = r.zoneFromText ? "text" : wz.source;
 
@@ -492,7 +535,7 @@ async function cardFor(db: Db, row: PromiseTimer, now: Date): Promise<CardEnvelo
   return buildPromiseCard(row, await peopleFor(db, row), now);
 }
 
-export async function cancelTimer(id: string, byId: string, opts: { reason?: string; silentReopen?: boolean } = {}): Promise<PromiseTimer> {
+export async function cancelTimer(id: string, byId: string | null, opts: { reason?: string; silentReopen?: boolean } = {}): Promise<PromiseTimer> {
   const now = new Date();
   const row = await prisma.$transaction(async (tx) => {
     const r = await lockTimer(tx, id);
@@ -568,6 +611,13 @@ export async function reopenTimer(id: string, byId: string): Promise<PromiseTime
     if (r.status === "RUNNING" || r.status === "UNRESOLVED") throw new CardError(409, "CARD_CLOSED", "Nothing to reopen", await cardFor(tx, r, now));
     if (!r.reopenUntil || r.reopenUntil.getTime() <= now.getTime()) throw new CardError(409, "CARD_ACTION_EXPIRED", "Too late to reopen", await cardFor(tx, r, now));
     if (!r.reopenBy.includes(byId)) throw new CardError(403, "CARD_FORBIDDEN", "Not yours to reopen", await cardFor(tx, r, now));
+    // Те же пределы, что при создании (замок беседы общий): пока карточка была закрыта, могли поставить новый таймер
+    // тому же человеку; а если он уже в звонке этой беседы — засекать нечего (вход в звонок уже случился).
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`promise:${r.conversationId}`}))`;
+    const running = await tx.promiseTimer.findMany({ where: { conversationId: r.conversationId, status: "RUNNING", id: { not: r.id } }, select: { promiserId: true } });
+    if (running.some((x) => x.promiserId === r.promiserId)) throw new CardError(409, "PROMISE_EXISTS", "Another timer is running", await cardFor(tx, r, now));
+    if (running.length >= PROMISE_MAX_RUNNING_PER_CONVERSATION) throw new CardError(409, "PROMISE_LIMIT", "Too many timers", await cardFor(tx, r, now));
+    if (isUserInConversationCall(r.conversationId, r.promiserId)) throw new CardError(409, "PROMISE_ALREADY_HERE", "Already in the call", await cardFor(tx, r, now));
     return applyTx(
       tx,
       r,
@@ -677,7 +727,13 @@ export async function processPromiseReminder(id: string, deadlineMs: number, off
     const r = await lockTimer(tx, id);
     if (!r || r.status !== "RUNNING" || r.deadlineAt.getTime() !== deadlineMs) return { kind: "skip" as const, row: null };
     if (r.remindersSent.includes(offset)) return { kind: "skip" as const, row: null };
-    const quiet = opts.silent || (offset === 0 && r.createdLate) || r.remindersTotal >= PROMISE_MAX_REMINDERS || !promiseTimersEnabled();
+    // Опоздали с напоминанием (бэкенд лежал, таймер поставлен уже опоздавшим) — не «догоняем» пачкой: больше 5 мин
+    // или уже наступил срок следующего напоминания — только отметка. Так «+15» и «+30» не приходят разом.
+    const due = deadlineMs + offset * 60_000;
+    const late = now.getTime() - due > PROMISE_SWEEP_CATCHUP_MS;
+    const superseded = PROMISE_REMINDER_OFFSETS.some((o) => o > offset && now.getTime() >= deadlineMs + o * 60_000);
+    const quiet =
+      opts.silent || late || superseded || (offset === 0 && r.createdLate) || r.remindersTotal >= PROMISE_MAX_REMINDERS || !promiseTimersEnabled();
     const row = await applyTx(
       tx,
       r,
@@ -705,7 +761,9 @@ export async function processPromiseReminder(id: string, deadlineMs: number, off
     const conv = await prisma.conversation.findUnique({ where: { id: row.conversationId }, select: { id: true, isSecret: true, type: true } });
     if (!conv || conv.isSecret || conv.type === "SECRET") return "skipped";
     const idx = await nextTemplateIndex(row.conversationId, offset);
+    // Сообщение уже в базе, а рассылка споткнулась — не бросаем: повтор задачи написал бы напоминание второй раз.
     await createBotMessage({
+      publishErrors: "log",
       botId: bot.id,
       conversationId: row.conversationId,
       type: "TEXT",
@@ -806,11 +864,34 @@ export async function promiseOnMessageDeleted(msg: { id: string; conversationId:
   }
 }
 
+/**
+ * Крючок правки сообщения (PATCH /api/messages/:id): обещание поправили — цитата на карточке и в запасном тексте
+ * тоже (убранное из сообщения не должно жить в карточке). Срок не пересчитывается. Не бросает.
+ */
+export async function promiseOnMessageEdited(msg: { id: string; content: string | null; contentEncV?: number | null }): Promise<void> {
+  try {
+    const rows = await prisma.promiseTimer.findMany({ where: { promiseMessageId: msg.id, quote: { not: null } }, select: { id: true } });
+    const text = (msg.contentEncV ?? 0) === 0 ? (msg.content ?? "").replace(/\s+/g, " ").trim().slice(0, QUOTE_MAX) || null : null;
+    for (const x of rows) {
+      const now = new Date();
+      const row = await prisma.$transaction(async (tx) => {
+        const r = await lockTimer(tx, x.id);
+        if (!r || r.quote === null || r.quote === text) return null;
+        return applyTx(tx, r, { quote: text }, now);
+      });
+      await published(row);
+    }
+  } catch (error) {
+    logger.warn({ error, messageId: msg.id }, "promise: edit hook failed");
+  }
+}
+
 /** Человек вышел из беседы: его идущие таймеры (он обещавший) — отменены тихо. Не бросает. */
 export async function promiseOnParticipantLeft(conversationId: string, userId: string): Promise<void> {
   try {
     const rows = await prisma.promiseTimer.findMany({ where: { conversationId, promiserId: userId, status: "RUNNING" }, select: { id: true } });
-    for (const r of rows) await cancelTimer(r.id, userId, { reason: "promiser_left", silentReopen: true }).catch(() => undefined);
+    // Отменил не он: «отменил Вася» на карточке выглядело бы так, будто он сам; cancelledBy — пусто.
+    for (const r of rows) await cancelTimer(r.id, null, { reason: "promiser_left", silentReopen: true }).catch(() => undefined);
   } catch (error) {
     logger.warn({ error, conversationId }, "promise: leave hook failed");
   }
@@ -863,7 +944,7 @@ export async function promiseCandidates(conversationId: string, triggerMessageId
     if (parsed.spec.kind === "none") continue;
     let zone = zones.get(m.senderId);
     if (!zone) {
-      zone = (await zoneForWords(m.senderId, authorId)).zone;
+      zone = (await zoneForWords(m.senderId, authorId, m.senderId)).zone;
       zones.set(m.senderId, zone);
     }
     const r = resolveDeadline(parsed.spec, { base: m.createdAt, zone, now });
@@ -907,11 +988,36 @@ export interface PunctualityStats {
   last: Array<{ deltaSec: number; at: string; via: string | null }>;
 }
 
-/** Пунктуальность человека — только по беседам, где спрашивающий сейчас участник (чужие беседы — не наше дело). */
-export async function punctualityStats(userId: string, askerId: string): Promise<PunctualityStats> {
-  const convs = await prisma.conversationParticipant.findMany({ where: { userId: askerId }, select: { conversationId: true } });
+/**
+ * Беседы-источники статистики: где спрашивающий сейчас участник И где есть все люди беседы, в которой прозвучит
+ * ответ (ответ видят они все — таймеры из лички Ромы с Васей не должен увидеть Петя в их общей группе).
+ * Без беседы ответа — все беседы спрашивающего.
+ */
+async function statsSourceConversations(askerId: string, answerConversationId: string | null): Promise<string[]> {
+  const mine = (await prisma.conversationParticipant.findMany({ where: { userId: askerId }, select: { conversationId: true } })).map((c) => c.conversationId);
+  if (!answerConversationId || !mine.length) return mine;
+  const here = (
+    await prisma.conversationParticipant.findMany({ where: { conversationId: answerConversationId }, select: { userId: true, user: { select: { isBot: true } } } })
+  )
+    .filter((p) => !p.user.isBot)
+    .map((p) => p.userId);
+  if (!here.length) return [];
+  const counts = await prisma.conversationParticipant.groupBy({
+    by: ["conversationId"],
+    where: { conversationId: { in: mine }, userId: { in: here } },
+    _count: { userId: true },
+  });
+  return counts.filter((c) => c._count.userId >= here.length).map((c) => c.conversationId);
+}
+
+/**
+ * Пунктуальность человека — только по беседам, где спрашивающий сейчас участник (чужие беседы — не наше дело) и где
+ * есть все, кто увидит ответ (answerConversationId — беседа, куда бот ответит).
+ */
+export async function punctualityStats(userId: string, askerId: string, answerConversationId: string | null = null): Promise<PunctualityStats> {
+  const convs = await statsSourceConversations(askerId, answerConversationId);
   const rows = await prisma.promiseTimer.findMany({
-    where: { promiserId: userId, conversationId: { in: convs.map((c) => c.conversationId) }, status: { not: "RUNNING" } },
+    where: { promiserId: userId, conversationId: { in: convs }, status: { not: "RUNNING" } },
     orderBy: { createdAt: "asc" },
     take: 2000,
   });
@@ -966,7 +1072,7 @@ export async function punctualityBoard(conversationId: string, askerId: string, 
   const out: PunctualityStats[] = [];
   for (const p of parts) {
     if (p.userId === botId) continue;
-    const s = await punctualityStats(p.userId, askerId);
+    const s = await punctualityStats(p.userId, askerId, conversationId);
     if (s.onTime + s.late > 0) out.push(s);
   }
   return out.sort((a, b) => (b.onTimeRate ?? 0) - (a.onTimeRate ?? 0) || (a.avgDeltaSec ?? 0) - (b.avgDeltaSec ?? 0)).slice(0, 25);
@@ -1011,10 +1117,12 @@ export async function deadlineFromWords(o: {
   text?: string | null;
   spec?: PromiseSpec | null;
   base: Date;
+  /** Пояс автора слов (продление — обещавший, поправка — спросивший); нет — пояс таймера. */
+  zone?: string;
 }): Promise<{ ok: true; deadlineAt: Date; label: string } | { ok: false; code: string; deadlineAt?: string }> {
   const spec = o.spec ?? (o.text ? parsePromiseText(o.text).spec : null);
   if (!spec) return { ok: false, code: "PROMISE_NO_TIME" };
-  const r = resolveDeadline(spec, { base: o.base, zone: o.row.zone, now: new Date(), confirmAmbiguous: true });
+  const r = resolveDeadline(spec, { base: o.base, zone: o.zone ?? o.row.zone, now: new Date(), confirmAmbiguous: true });
   if (!r.ok) return { ok: false, code: `PROMISE_${r.code}`, ...(r.deadlineAt ? { deadlineAt: r.deadlineAt.toISOString() } : {}) };
   return { ok: true, deadlineAt: r.deadlineAt, label: r.label };
 }

@@ -57,6 +57,8 @@ export interface PromisesApi {
     promiserName?: string;
     promiseMessageId?: string;
     text?: string;
+    /** Сообщение, где сказаны слова времени (ответ на переспрос, обращение), если это не само обещание. */
+    textMessageId?: string;
     spec?: PromiseSpecInput;
     cancelAllowedIds?: string[];
     confirmAmbiguous?: boolean;

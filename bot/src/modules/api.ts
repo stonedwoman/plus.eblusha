@@ -256,7 +256,11 @@ export interface CoreServices {
    */
   promises?: {
     active(): Promise<Array<{ id: string; conversationId: string; promiserId: string; startAt: string; deadlineAt: string }>>;
-    arrived(id: string, o: { at: string; detail: string }): Promise<boolean>;
+    /**
+     * Отметить «пришёл» по Valheim. true — отмечено; false — сервер отказал окончательно (таймер закрыт, вошёл
+     * раньше обещания, таймера нет); null — временный сбой (сеть, перезапуск сервера, 5xx, 429): повторить позже.
+     */
+    arrived(id: string, o: { at: string; detail: string }): Promise<boolean | null>;
   };
 }
 

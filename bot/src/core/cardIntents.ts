@@ -62,6 +62,8 @@ export type PromiseIntent =
   | { kind: "remember" }
   | { kind: "arrived"; self: boolean }
   | { kind: "extend"; text: string }
+  /** Поправка срока спросившим в первые 5 минут: «не 2 ночи, а к 14», «нет, к 14». text — новое время. */
+  | { kind: "correct"; text: string }
   | { kind: "cancel" }
   | { kind: "punctuality"; name: string | null; self: boolean }
   | { kind: "board" };
@@ -100,6 +102,12 @@ export function parsePromiseIntent(text: string): PromiseIntent | null {
       const self = /^(?:меня|я|мной|мне)$/u.test(raw);
       return { kind: "punctuality", name: self ? null : raw, self };
     }
+  }
+
+  // поправка срока («не 2 ночи, а к 14», «нет, к 14», «не в 2, а в 14») — только если в новом есть время
+  {
+    const c = /^(?:не\s+.+?\s+а|нет(?:\s+не)?)\s+(.+)$/u.exec(raw.replace(/[,;]+/g, " ").replace(/\s+/g, " ").trim());
+    if (c && looksLikeTime(c[1]!) && parsePromiseText(c[1]!).spec.kind !== "none") return { kind: "correct", text: c[1]!.trim() };
   }
 
   // продление словами («ещё 10 минут», «+10», «буду в 15:00») — только если в словах есть время

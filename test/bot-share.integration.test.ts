@@ -30,6 +30,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import sharp from "sharp";
+import { io as ioClient, type Socket } from "socket.io-client";
 import Anthropic from "../bot/node_modules/@anthropic-ai/sdk";
 import app from "../src/app";
 import env from "../src/config/env";
@@ -220,6 +221,18 @@ async function main() {
     console.log(`[share] ok: оценка — сегодня ${per("today").messages}, неделя ${per("week").messages}, всё ${per("all").messages}, фото ${per("today").photos}`);
 
     await getPushQueue().drain(true);
+    // message:notify: спросившему — как обычно, остальным — muted: true (без звука и плашки на ПК и в вебе)
+    const notifies: Array<{ to: string; p: any }> = [];
+    const listen = async (token: string, who: string): Promise<Socket> => {
+      const so = ioClient(baseUrl, { auth: { token }, transports: ["websocket"], forceNew: true });
+      await new Promise<void>((res, rej) => {
+        so.once("connect", () => res());
+        so.once("connect_error", rej);
+      });
+      so.on("message:notify", (pl) => notifies.push({ to: who, p: pl }));
+      return so;
+    };
+    const notifySockets = [await listen(R.token, "R"), await listen(P.token, "P")];
     const req1 = await botCall("/api/bot/share/request", { grant: j1.grant, suggest: { period: "today", photos: false }, options: { all: { enabled: false, off: "budget" } } });
     assert.equal(req1.status, 201, JSON.stringify(req1.body));
     const s1 = req1.body.share.id as string;
@@ -238,6 +251,11 @@ async function main() {
       return jobs.find((j) => (j.data as any).payload?.messageId === card1) ?? null;
     });
     assert.deepEqual((pushes.data as any).userIds, [R.id], "пуш — только спросившему");
+    const nR = await waitFor("message:notify спросившему", async () => notifies.find((n) => n.to === "R" && n.p.messageId === card1));
+    const nP = await waitFor("message:notify участнику", async () => notifies.find((n) => n.to === "P" && n.p.messageId === card1));
+    assert.equal(nR.p.muted, false, "спросившему — со звуком");
+    assert.equal(nP.p.muted, true, "остальным — без звука (и на ПК, и в вебе)");
+    for (const so of notifySockets) so.disconnect();
     // права
     assert.equal((await call("POST", `/api/cards/${card1}/act`, P.token, { action: "share", input: { period: "today", photos: false } })).body.code, "CARD_FORBIDDEN");
     assert.equal((await call("POST", `/api/cards/${card1}/act`, X.token, { action: "share", input: { period: "today", photos: false } })).status, 404);
@@ -287,7 +305,18 @@ async function main() {
     const byIds = await botCall(`/api/bot/share/${s1}/messages`, { grant: resume.grant, ids: [todayMsg.id] });
     assert.equal(byIds.body.messages[0].text, "сегодня: беру уголь, мясо и пиво");
     assert.equal(byIds.body.messages[0].edited, true);
-    console.log("[share] ok: страницы — только период, без удалённого/истёкшего/SYSTEM, фото с галкой, курсор, журнал правок/удалений");
+    // цитата сообщения ВНЕ периода — без текста (на него согласия не было), в периоде — с текстом
+    const oldSecret = await prisma.message.create({ data: { conversationId: g.id, senderId: V.id, type: "TEXT", content: "давняя тайна про пароль", createdAt: new Date(Date.now() - 40 * 86_400_000) } });
+    const replyOld = await prisma.message.create({ data: { conversationId: g.id, senderId: P.id, type: "TEXT", content: "это про то самое", replyToId: oldSecret.id } });
+    const replyNew = await prisma.message.create({ data: { conversationId: g.id, senderId: P.id, type: "TEXT", content: "и про уголь", replyToId: todayMsg.id } });
+    const rq = await botCall(`/api/bot/share/${s1}/messages`, { grant: resume.grant, ids: [replyOld.id, replyNew.id] });
+    const rOld = rq.body.messages.find((m: any) => m.id === replyOld.id);
+    const rNew = rq.body.messages.find((m: any) => m.id === replyNew.id);
+    assert.equal(rOld.replyTo.text, null, "текст сообщения вне периода не уходит");
+    assert.equal(rOld.replyTo.senderName, "Вася");
+    assert.ok(rNew.replyTo.text && rNew.replyTo.text.includes("уголь"));
+    await prisma.message.deleteMany({ where: { id: { in: [replyOld.id, replyNew.id, oldSecret.id] } } });
+    console.log("[share] ok: страницы — только период, без удалённого/истёкшего/SYSTEM, фото с галкой, курсор, журнал правок/удалений, цитаты вне периода без текста");
 
     // область согласия: другой вопрос — 403; ответ по согласию → уточнение — да
     const { job: jOther } = await ask(P.token, g.id, "Еблуша, а какая погода?");
@@ -375,7 +404,9 @@ async function main() {
     }
     const { job: j8 } = await ask(R.token, g3.id, "Еблуша, найди схему");
     const r8 = await botCall("/api/bot/share/request", { grant: j8.grant, suggest: { period: "all", photos: true } });
-    assert.equal(((await prisma.message.findUniqueOrThrow({ where: { id: r8.body.cardMessageId } })).metadata as any).card.data.options.find((o: any) => o.period === "all").photosUsed, 60);
+    const card8 = ((await prisma.message.findUniqueOrThrow({ where: { id: r8.body.cardMessageId } })).metadata as any).card;
+    assert.equal(card8.data.options.find((o: any) => o.period === "all").photosUsed, 60);
+    assert.equal(card8.data.suggest.photos, false, "галка «Включать фото» по умолчанию выключена, даже если модель просила фото");
     await call("POST", `/api/cards/${r8.body.cardMessageId}/act`, R.token, { action: "share", input: { period: "all", photos: true } });
     const resume8 = await jobOf(`share-${r8.body.share.id}-${(await shareRow(r8.body.share.id)).rev}`);
     const pg8 = await botCall(`/api/bot/share/${r8.body.share.id}/messages`, { grant: resume8.grant, limit: 500 });
@@ -397,6 +428,18 @@ async function main() {
     // без галки — фото строкой
     await call("POST", `/api/cards/${r8.body.cardMessageId}/act`, R.token, { action: "forget" });
     console.log("[share] ok: фото — не больше 60 самых новых, остальные строкой; новый выбор после «слишком много» — новая задача");
+
+    // беседу удалили, пока доступ открыт: строки уходят каскадом — сигнал боту стереть переписку всё равно уходит
+    const g4 = await conv([R.id, V.id], "Удаление беседы");
+    await prisma.message.create({ data: { conversationId: g4.id, senderId: V.id, type: "TEXT", content: "тут кое-что было" } });
+    const { job: j9 } = await ask(R.token, g4.id, "Еблуша, о чём тут было?");
+    const r9 = await botCall("/api/bot/share/request", { grant: j9.grant, suggest: { period: "today", photos: false } });
+    assert.equal(r9.status, 201, JSON.stringify(r9.body));
+    assert.equal((await call("POST", `/api/cards/${r9.body.cardMessageId}/act`, R.token, { action: "share", input: { period: "today", photos: false } })).status, 200);
+    assert.equal((await call("DELETE", `/api/conversations/${g4.id}`, R.token)).status, 200);
+    const sig9 = await waitFor("сигнал боту при удалении беседы", async () => (await queue.getJobs(["waiting"])).find((j) => j.name === "signal" && (j.data as any).signal.shareId === r9.body.share.id) ?? null);
+    assert.equal((sig9.data as any).signal.reason, "conversation_deleted");
+    console.log("[share] ok: удалили беседу при открытом доступе — сигнал «стереть переписку» боту");
 
     // «Чат с Еблушей» — 409; выключатель
     const bc = await call("PUT", "/api/bot/settings", X.token, { botChatEnabled: true });
@@ -472,6 +515,17 @@ async function main() {
     assert.ok(!fCall.preamble!.includes("Барсик"), "удалённое в окне — выкинуто из кэша");
     assert.equal(await prisma.botShare.count({ where: { conversationId: ga.id } }), 1, "без новой карточки");
     console.log("[share] ok: бот — read_chat → карточка → «Поделиться» → ответ по переписке без поиска → уточнение без карточки, удалённого нет");
+    // «подумай лучше» над ответом по переписке: глубокая модель видит переписку и не ищет в интернете
+    const callsD = llm.calls.length;
+    const dsh = await send(P.token, ga.id, "Еблуша, подумай лучше", { replyToId: bAns.id });
+    const dshAns = await botReplyTo(dsh.id);
+    assert.match(dshAns.content!, /^🧠 \*\*Подумал лучше\*\*\n\nПо переписке: Вася берёт уголь/);
+    assert.equal((dshAns.metadata as any).bot.depth, "deep");
+    const dshCall = llm.calls.slice(callsD).find((c) => c.model)!;
+    assert.ok(dshCall.preamble && /<chat_transcript>/.test(dshCall.preamble), "переписка подложена");
+    assert.equal(dshCall.web, false, "без поиска");
+    assert.equal(dshCall.hardCap, true);
+    console.log("[share] ok: «подумай лучше» над ответом по переписке — с перепиской, без поиска");
 
     // «забудь переписку» — кэш стёрт
     const fg = await send(V.token, ga.id, "Еблуша, забудь переписку");
@@ -541,7 +595,15 @@ async function main() {
     // над «глубоким» — отказ
     const deep2 = await send(R.token, gd.id, "Еблуша, подумай лучше", { replyToId: da1.id });
     assert.match((await botReplyTo(deep2.id)).content!, /уже мой самый обдуманный ответ/);
+    // ещё раз над тем же обычным ответом (вторая кнопка, второе устройство) — без второго прогона
+    const deepAgain = await send(R.token, gd.id, "Еблуша, подумай лучше", { replyToId: a1.id });
+    assert.match((await botReplyTo(deepAgain.id)).content!, /уже подумал/);
+    // без ответа, когда последний ответ ему — уже глубокий (или отказ на «подумай лучше») — без второго прогона
+    const deepNo = await send(R.token, gd.id, "Еблуша, подумай ещё");
+    assert.match((await botReplyTo(deepNo.id)).content!, /уже самый обдуманный/);
     // без ответа — над последним ответом этому человеку; запасная модель при 400 «нужно хранение данных»
+    const d2b = await send(R.token, gd.id, "Еблуша, сколько будет 3+3?");
+    assert.equal((await botReplyTo(d2b.id)).content, "Обычный ответ: 4");
     llm.failModel = {
       model: "claude-fable-5-1",
       error: new Anthropic.BadRequestError(400, { type: "error", error: { type: "invalid_request_error", message: "In order to access this model, your organization or workspace must have data retention enabled." } }, "In order to access this model, your organization or workspace must have data retention enabled.", new Headers()),
@@ -552,7 +614,9 @@ async function main() {
     assert.equal((da3.metadata as any).bot.model, "claude-opus-5-5");
     assert.match(lastCall().contextNote, /последним ответом ему/);
     // лимит в сутки (BOT_DEEP_USER_DAILY=2)
-    const d4 = await send(R.token, gd.id, "Еблуша, подумай как следует", { replyToId: a1.id });
+    const d4q = await send(R.token, gd.id, "Еблуша, сколько будет 5+5?");
+    const a4 = await botReplyTo(d4q.id);
+    const d4 = await send(R.token, gd.id, "Еблуша, подумай как следует", { replyToId: a4.id });
     assert.match((await botReplyTo(d4.id)).content!, /На сегодня «подумай лучше» закончилось \(2 в день\) — обновится в \d\d:\d\d по Москве/);
     assert.ok(logLines.some((l) => l.includes('"evt":"deep.fallback"')));
     console.log("[share] ok: «Подумай лучше» — Fable 5.1 (high, потолок $2, 5-мин кэш), depth=deep + пометка, над глубоким — нет, без ответа — по памяти, 400 «хранение данных» → Opus 5.5 max, лимит в сутки");

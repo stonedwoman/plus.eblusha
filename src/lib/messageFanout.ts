@@ -46,11 +46,20 @@ export async function publishNewMessage(opts: {
   /** Кому считать лимит постановки превью (rate:preview-enqueue). */
   previewUserId: string;
   /**
-   * Кому слать пуш (подмножество получателей). Нет — всем, как раньше. message:new / message:notify уходят всем
-   * в любом случае (непрочитанные считаются у всех): так карточка «поделиться перепиской» будит только
-   * спросившего (docs/bot-cards.md).
+   * Кого будить (подмножество получателей): пуш — только им, а message:notify остальным уходит с muted: true
+   * («не звени», тот же признак, что у «Без звука»). Нет — будить всех, как раньше. message:new / message:notify
+   * уходят всем в любом случае (непрочитанные считаются у всех): так карточка «поделиться перепиской» будит только
+   * спросившего (docs/bot-cards.md) — и на телефоне, и звуком на ПК/в вебе.
    */
   pushTo?: string[];
+  /**
+   * Кого это сообщение упоминает (напоминание таймера — обещавшего, metadata.bot.mentions). Сейчас ничего не меняет
+   * (будятся все); при слиянии с «Без звука» (feat/chat-mute) упомянутый будится и в заглушённой беседе — как ответ
+   * на его сообщение. Решение конфликта при слиянии:
+   *   const wake = (rid) => (alert(rid) || mentioned.has(rid)) && (!pushSet || pushSet.has(rid));
+   *   message:notify … muted: !wake(rid);   enqueuePush(recipients.filter((rid) => rid !== senderId && wake(rid)), …)
+   */
+  mentions?: string[];
 }): Promise<void> {
   const { conversationId, message, senderId } = opts;
 
@@ -73,6 +82,9 @@ export async function publishNewMessage(opts: {
     include: { participants: true },
   });
   const recipients = convForNotify?.participants.map((p) => p.userId) ?? [];
+  // Кого будить (пуш, звук, плашка): pushTo — только их (остальным message:notify с muted: true).
+  const pushSet = opts.pushTo ? new Set(opts.pushTo) : null;
+  const wake = (rid: string) => !pushSet || pushSet.has(rid);
 
   for (const rid of recipients) {
     if (rid !== senderId) {
@@ -81,6 +93,7 @@ export async function publishNewMessage(opts: {
         messageId: message.id,
         senderId,
         message,
+        ...(pushSet ? { muted: !wake(rid) } : {}),
       });
     }
   }
@@ -104,9 +117,8 @@ export async function publishNewMessage(opts: {
             : attachmentKind
               ? "Файл"
               : "";
-    const pushSet = opts.pushTo ? new Set(opts.pushTo) : null;
     enqueuePush(
-      recipients.filter((rid) => rid !== senderId && (!pushSet || pushSet.has(rid))),
+      recipients.filter((rid) => rid !== senderId && wake(rid)),
       {
         kind: "message",
         conversationId,

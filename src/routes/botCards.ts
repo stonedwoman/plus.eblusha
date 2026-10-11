@@ -21,6 +21,7 @@ import {
   punctualityBoard,
   punctualityStats,
   summaryOf,
+  zoneOfAuthor,
 } from "../lib/promiseTimer";
 import {
   botShareEnabled,
@@ -135,6 +136,8 @@ const createSchema = z
     promiserName: z.string().min(1).max(64).optional(),
     promiseMessageId: cuid.optional(),
     text: z.string().max(1000).optional(),
+    /** Сообщение со словами времени, если это не само обещание (ответ на переспрос, обращение): срок — от него. */
+    textMessageId: cuid.optional(),
     spec: specSchema,
     cancelAllowedIds: z.array(z.string().max(64)).max(5).optional(),
     confirmAmbiguous: z.boolean().optional(),
@@ -172,6 +175,7 @@ botPromisesRouter.post("/", async (req, res) => {
       promiserId,
       promiseMessageId: b.promiseMessageId ?? null,
       text: b.text ?? null,
+      textMessageId: b.textMessageId ?? null,
       spec,
       cancelAllowedIds: b.cancelAllowedIds ?? [],
       confirmAmbiguous: b.confirmAmbiguous === true,
@@ -213,6 +217,9 @@ botPromisesRouter.post("/:id/extend", async (req, res) => {
   // Продлевает только сам обещавший: его обращение или его же новое сообщение, на которое ответили.
   let base: Date | null = null;
   let byMessageId: string | null = null;
+  // Слова продления: из запроса бота, а если их нет (новое обещание самого обещавшего, на которое ответили
+  // «проконтролируй», §6.4) — из того сообщения.
+  let words: string | null = p.data.text ?? null;
   if (g.authorId === t.promiserId) {
     const trig = await prisma.message.findUnique({ where: { id: g.triggerMessageId }, select: { createdAt: true } });
     base = trig?.createdAt ?? new Date();
@@ -220,16 +227,18 @@ botPromisesRouter.post("/:id/extend", async (req, res) => {
   } else if (p.data.sourceMessageId) {
     const src = await prisma.message.findUnique({
       where: { id: p.data.sourceMessageId },
-      select: { conversationId: true, senderId: true, createdAt: true, deletedAt: true },
+      select: { conversationId: true, senderId: true, createdAt: true, deletedAt: true, content: true, type: true, contentEncV: true, isBot: true },
     });
-    if (src && !src.deletedAt && src.conversationId === g.conversationId && src.senderId === t.promiserId && src.createdAt > t.createdAt) {
+    if (src && !src.deletedAt && !src.isBot && src.conversationId === g.conversationId && src.senderId === t.promiserId && src.createdAt > t.createdAt) {
       base = src.createdAt;
       byMessageId = p.data.sourceMessageId;
+      if (!words && !p.data.spec && src.type === "TEXT" && src.contentEncV === 0) words = (src.content ?? "").trim() || null;
     }
   }
   if (!base) return void res.status(403).json({ message: "Only the promiser may extend", code: "PROMISE_EXTEND_FORBIDDEN" });
   const spec = p.data.spec !== undefined && p.data.spec !== null ? sanitizeSpec(p.data.spec) : null;
-  const d = await deadlineFromWords({ row: t, text: p.data.text ?? null, spec, base });
+  // Слова обещавшего — в его поясе.
+  const d = await deadlineFromWords({ row: t, text: words, spec, base, zone: await zoneOfAuthor(t.promiserId, t.zone) });
   if (!d.ok) return void res.status(409).json({ message: "No new time", code: d.code, ...(d.deadlineAt ? { deadlineAt: d.deadlineAt } : {}) });
   try {
     const row = await extendTimer(t.id, { byId: g.authorId, newDeadline: d.deadlineAt, label: d.label, byMessageId });
@@ -250,7 +259,8 @@ botPromisesRouter.post("/:id/correct", async (req, res) => {
   if (g.authorId !== t.requesterId) return void res.status(403).json({ message: "Only the requester may correct", code: "PROMISE_CORRECT_FORBIDDEN" });
   if (Date.now() - t.createdAt.getTime() > PROMISE_CORRECT_MS) return void res.status(409).json({ message: "Too late to correct", code: "PROMISE_CORRECT_EXPIRED" });
   const spec = p.data.spec !== undefined && p.data.spec !== null ? sanitizeSpec(p.data.spec) : null;
-  const d = await deadlineFromWords({ row: t, text: p.data.text ?? null, spec, base: t.startAt });
+  // Поправку пишет спросивший — его слова в его поясе.
+  const d = await deadlineFromWords({ row: t, text: p.data.text ?? null, spec, base: t.startAt, zone: await zoneOfAuthor(g.authorId, t.zone) });
   if (!d.ok) return void res.status(409).json({ message: "No new time", code: d.code });
   try {
     const row = await extendTimer(t.id, { byId: g.authorId, newDeadline: d.deadlineAt, label: d.label, byMessageId: g.triggerMessageId, correct: true });
@@ -279,7 +289,11 @@ botPromisesRouter.post("/:id/arrived", async (req, res) => {
       if (!g) return;
       const t = await timerOf(res, id.data, g);
       if (!t) return;
-      const row = await markArrived(t.id, { via: g.authorId === t.promiserId ? "self" : "phrase", byId: g.authorId });
+      // Пришёл тогда, когда это сказали («я тут» в 14:14:30), а не когда очередь бота дошла до сообщения.
+      const trig = await prisma.message.findUnique({ where: { id: g.triggerMessageId }, select: { createdAt: true } });
+      const now = Date.now();
+      const at = trig && trig.createdAt.getTime() <= now ? new Date(Math.max(trig.createdAt.getTime(), t.startAt.getTime())) : undefined;
+      const row = await markArrived(t.id, { via: g.authorId === t.promiserId ? "self" : "phrase", byId: g.authorId, ...(at ? { at } : {}) });
       return void res.json({ promise: await summaryOf(row) });
     }
     // Valheim: без разрешения (наблюдатель бота), at ∈ [startAt; сейчас + 5 с].
@@ -351,7 +365,7 @@ botPromisesRouter.post("/stats", async (req, res) => {
     where: { userId: target!, conversation: { isSecret: false, participants: { some: { userId: g.authorId } } } },
   });
   if (!shared) return void res.status(404).json({ message: "No shared conversations", code: "PROMISE_NOT_FOUND" });
-  res.json({ stats: await punctualityStats(target!, g.authorId) });
+  res.json({ stats: await punctualityStats(target!, g.authorId, g.conversationId) });
 });
 
 // ═════════════════════════════ /api/bot/share ═════════════════════════════

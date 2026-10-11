@@ -481,12 +481,21 @@ export class Store {
     this.db.prepare(`DELETE FROM promise_pending WHERE expires_at < ?`).run(Date.now() - 3600_000);
   }
 
+  /** Удалить истёкшие ожидания (при старте и раз в 6 часов): на диске бота они не нужны. */
+  purgePending(now = Date.now()): number {
+    return Number(this.db.prepare(`DELETE FROM promise_pending WHERE expires_at < ?`).run(now).changes ?? 0);
+  }
+
   /** Ожидание по вопросу бота (ещё живое) или null. take — забрать (удалить). */
   getPending(botMessageId: string, now: number, take = false): { conversationId: string; kind: string; data: unknown } | null {
     const r = this.db.prepare(`SELECT conversation_id, kind, data_json, expires_at FROM promise_pending WHERE bot_message_id = ?`).get(botMessageId) as
       | { conversation_id: string; kind: string; data_json: string; expires_at: number }
       | undefined;
-    if (!r || Number(r.expires_at) < now) return null;
+    if (r && Number(r.expires_at) < now) {
+      this.db.prepare(`DELETE FROM promise_pending WHERE bot_message_id = ?`).run(botMessageId);
+      return null;
+    }
+    if (!r) return null;
     if (take) this.db.prepare(`DELETE FROM promise_pending WHERE bot_message_id = ?`).run(botMessageId);
     let data: unknown = null;
     try {

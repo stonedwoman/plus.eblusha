@@ -10,6 +10,9 @@
  *     не раскрывается. Перезапуск бота ничего не теряет: считаем по since, а не по моменту опроса.
  *   - Без since (данные карты без мода) — вход замечается переходом «не было в игре → есть» между опросами, если
  *     прошлый опрос был уже после обещания.
+ *   - Отметка не прошла из-за временного сбоя (сеть, перезапуск бэкенда, 5xx) — таймер остаётся под наблюдением, и
+ *     следующий опрос пробует снова (since тот же — время входа не теряется). Закрытые таймеры уходят из «сделано»,
+ *     когда пропадают из списка идущих: «Вернуть» — и вход снова отмечается.
  */
 import type { CoreServices } from "../api";
 
@@ -26,6 +29,8 @@ export class PromiseWatch {
   private lastPoll = 0;
   private lastSeen = new Set<string>();
   private readonly done = new Set<string>();
+  /** Вход замечен, но отметка сорвалась (временный сбой): время входа до следующей попытки. */
+  private readonly pendingAt = new Map<string, number>();
   private busy = false;
 
   constructor(
@@ -59,6 +64,10 @@ export class PromiseWatch {
       if (t - this.activeAt >= (this.opts.activeEveryMs ?? 30_000) || this.activeAt === 0) {
         this.active = (await this.core.promises.active()).map((p) => ({ id: p.id, promiserId: p.promiserId, startAt: p.startAt }));
         this.activeAt = t;
+        // Закрытых (и вернутых «Вернуть» — они снова в списке) в «сделано» не держим.
+        const ids = new Set(this.active.map((p) => p.id));
+        for (const id of this.done) if (!ids.has(id)) this.done.delete(id);
+        for (const id of [...this.pendingAt.keys()]) if (!ids.has(id)) this.pendingAt.delete(id);
       }
       const watched = this.active.filter((p) => !this.done.has(p.id) && this.core.links.charactersOf(p.promiserId).length > 0);
       if (!watched.length) {
@@ -74,11 +83,19 @@ export class PromiseWatch {
         for (const ch of this.core.links.charactersOf(p.promiserId)) {
           const pl = players.find((x) => x.name === ch);
           if (!pl) continue;
-          let at: number | null = null;
-          if (pl.since !== null) at = pl.since >= start - 1000 ? pl.since : null;
+          let at: number | null = this.pendingAt.get(p.id) ?? null;
+          if (at !== null) {
+            /* прошлая попытка сорвалась — то же время входа */
+          } else if (pl.since !== null) at = pl.since >= start - 1000 ? pl.since : null;
           else if (this.lastPoll >= start && !this.lastSeen.has(ch)) at = t;
           if (at === null) continue;
           const ok = await this.core.promises.arrived(p.id, { at: new Date(Math.min(at, t)).toISOString(), detail: ch });
+          if (ok === null) {
+            // Временный сбой: без since вход не повторится переходом — помним его время до следующей попытки.
+            if (pl.since === null) this.pendingAt.set(p.id, at);
+            break;
+          }
+          this.pendingAt.delete(p.id);
           this.done.add(p.id);
           if (ok) {
             marked++;

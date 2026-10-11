@@ -72,10 +72,10 @@
       "expect": { "selected": "all", "photos": { "checked": true, "disabled": false, "note": "(60 последних из 337)", "aria": "Включать фото, 60 фото" }, "input": { "period": "all", "photos": true } }
     },
     {
-      "name": "подсказка бота — неделя с фото",
+      "name": "подсказка бота — неделя «с фото»: галка всё равно выключена (фото включает человек, решение владельца)",
       "viewer": "roma",
       "card": { "data": { "suggest": { "period": "week", "photos": true } } },
-      "expect": { "selected": "week", "photos": { "checked": true }, "input": { "period": "week", "photos": true } }
+      "expect": { "selected": "week", "photos": { "checked": false }, "input": { "period": "week", "photos": false } }
     },
     {
       "name": "подсказка «Сегодня» пустая → следующий непустой; без фото — галка недоступна",

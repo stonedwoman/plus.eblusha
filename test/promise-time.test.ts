@@ -58,6 +58,21 @@ assert.ok(r1.ok && r1.deadlineAt.toISOString() === "2026-10-11T11:10:00.000Z", "
 assert.equal(sanitizeSpec({ kind: "in", minSec: -5, maxSec: 10 }), null);
 assert.equal(sanitizeSpec({ kind: "at", hour: 25, minute: 0 }), null);
 assert.equal(sanitizeSpec("x"), null);
+// модель пишет час «как сказано» с частью суток (схема бота): 8 + pm = 20:00, 3 + pm завтра = 15:00, 12 + am = 00:00
+{
+  const at = (raw: Record<string, unknown>) => {
+    const s = sanitizeSpec({ kind: "at", minute: 0, day: "nearest", ...raw });
+    assert.ok(s);
+    const r = resolveDeadline(s!, { base: B, zone: "Europe/Moscow", now: B });
+    assert.ok(r.ok, JSON.stringify(raw));
+    return r.ok ? r.deadlineAt.toISOString() : "";
+  };
+  assert.equal(at({ hour: 8, half: "pm" }), "2026-10-11T17:00:00.000Z", "«8 вечера» → 20:00 сегодня, а не завтра 08:00");
+  assert.equal(at({ hour: 3, half: "pm", day: "tomorrow" }), "2026-10-12T12:00:00.000Z", "«завтра в 3 дня» → 15:00");
+  assert.equal(at({ hour: 12, half: "am" }), "2026-10-11T21:00:00.000Z", "«12 ночи» → 00:00");
+  assert.equal(at({ hour: 20, half: "pm" }), "2026-10-11T17:00:00.000Z", "уже 24-часовой час не трогаем");
+  assert.equal(at({ hour: 12, half: "pm" }), "2026-10-12T09:00:00.000Z", "«12 дня» → полдень (сегодня прошёл — завтра)");
+}
 const s2 = sanitizeSpec({ kind: "in", minSec: 600, maxSec: 900 });
 const r2 = resolveDeadline(s2!, { base: B, zone: "Europe/Moscow", now: B });
 assert.ok(r2.ok && r2.upperBound && r2.deadlineAt.toISOString() === "2026-10-11T10:55:00.000Z");

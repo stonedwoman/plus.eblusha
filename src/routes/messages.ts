@@ -22,7 +22,7 @@ import {
   logSecretCloudWriteBlocked,
   rejectSecretCloudWrite,
 } from "../lib/secretLatch";
-import { promiseOnMessageDeleted } from "../lib/promiseTimer";
+import { promiseOnMessageDeleted, promiseOnMessageEdited } from "../lib/promiseTimer";
 import { shareNoteChange, shareOnMessageDeleted } from "../lib/botShare";
 
 const router = Router();
@@ -496,6 +496,8 @@ router.post("/update", async (req, res) => {
   });
   // «Поделиться перепиской»: пока доступ открыт, бот перечитает поправленное (docs/bot-cards.md).
   void shareNoteChange(existing.conversationId, messageId, "edited");
+  // Таймер обещания: цитата на карточке — как в поправленном сообщении.
+  void promiseOnMessageEdited({ id: messageId, content: updated.content, contentEncV: updated.contentEncV });
 
   res.json({ message: updated });
 });

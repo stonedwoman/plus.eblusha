@@ -42,7 +42,7 @@ import { getBotQueue, getCardsQueue } from "../src/jobs/queue";
 import { startCardsWorker } from "../src/jobs/workers/cards.worker";
 import { resetSystemBotCache } from "../src/lib/systemBot";
 import { promiseOnCallJoin, sweepPromises } from "../src/lib/promiseTimer";
-import { resolveDeadline } from "../src/lib/promiseTime";
+import { parsePromiseText, resolveDeadline } from "../src/lib/promiseTime";
 import type { BotJob } from "../src/lib/botContract";
 import { ensureBotUser } from "../src/scripts/seedBotUser";
 import { loadConfig } from "../bot/src/config";
@@ -405,6 +405,76 @@ async function main() {
     assert.equal((await botCall(`/api/bot/promises/${c4.body.promise.id}/correct`, { grant: j4v.grant, text: "50 минут" })).body.code, "PROMISE_CORRECT_FORBIDDEN");
     console.log("[promise] ok: продление только обещавшим (от времени его сообщения, «не позже» — 409), поправка спросившего");
 
+    // ---------- правки по ревью 2026-10-11 (спрашивает владелец бота: у него нет дневного предела таймеров) ----------
+    // 1. Слова времени — в отдельном сообщении (ответ на «Когда он будет?»): срок от НЕГО, начало — обещание.
+    const g10 = await conv([O.id, V.id, P.id], "Ревью");
+    const vSoon = await prisma.message.create({ data: { conversationId: g10.id, senderId: V.id, type: "TEXT", content: "скоро буду", createdAt: new Date(Date.now() - 40 * 60_000) } });
+    const { job: j10 } = await ask(O.token, g10.id, "Еблуша, проконтролируй", { replyToId: vSoon.id });
+    assert.equal((await botCall("/api/bot/promises", { grant: j10.grant, promiserId: V.id, promiseMessageId: vSoon.id })).body.code, "PROMISE_NO_TIME");
+    const { m: a10, job: j10a } = await ask(O.token, g10.id, "Еблуша, через 20 минут");
+    const c10 = await botCall("/api/bot/promises", { grant: j10a.grant, promiserId: V.id, promiseMessageId: vSoon.id, text: "через 20 минут", textMessageId: a10.id });
+    assert.equal(c10.status, 201, JSON.stringify(c10.body));
+    assert.equal(c10.body.promise.deadlineAt, new Date(Date.parse(a10.createdAt) + 20 * 60_000).toISOString(), "срок — от ответа, а не от обещания 40 мин назад");
+    assert.equal(c10.body.promise.startAt, vSoon.createdAt.toISOString(), "начало — само обещание");
+    assert.equal((await timerRow(c10.body.promise.id)).createdLate, false, "не «уже опоздал»");
+    const g10x = await conv([O.id, V.id], "Ревью чужая");
+    const other10 = await send(V.token, g10x.id, "через 5 минут");
+    assert.equal((await botCall("/api/bot/promises", { grant: j10a.grant, promiserId: P.id, text: "через 5 минут", textMessageId: other10.id, dryRun: true })).body.code, "PROMISE_BAD", "слова из чужой беседы — нет");
+    // 2. Пояс — автора слов: «проследи, чтобы Петя был к 21:30» сказал владелец (Бухарест) — его пояс; «буду к 21:30»
+    //    Пети (Красноярск) — пояс Пети.
+    await redis.set(`ltz:eff:${O.id}`, JSON.stringify({ key: "it", tz: "Europe/Bucharest" }));
+    await redis.set(`ltz:eff:${P.id}`, JSON.stringify({ key: "it", tz: "Asia/Krasnoyarsk" }));
+    const { m: z10, job: jz } = await ask(O.token, g10.id, "Еблуша, проследи, чтобы Петя был к 21:30");
+    const dz = await botCall("/api/bot/promises", { grant: jz.grant, promiserId: P.id, text: "к 21:30", dryRun: true });
+    const wantZ = resolveDeadline(parsePromiseText("к 21:30").spec, { base: new Date(z10.createdAt), zone: "Europe/Bucharest", now: new Date() });
+    assert.ok(wantZ.ok && dz.body.promise.deadlineAt === wantZ.deadlineAt.toISOString(), `по поясу спросившего: ${JSON.stringify(dz.body)}`);
+    const pk10 = await send(P.token, g10.id, "буду к 21:30");
+    const { job: jzp } = await ask(O.token, g10.id, "Еблуша, засеки", { replyToId: pk10.id });
+    const dzp = await botCall("/api/bot/promises", { grant: jzp.grant, promiserId: P.id, promiseMessageId: pk10.id, dryRun: true });
+    const wantP = resolveDeadline(parsePromiseText("буду к 21:30").spec, { base: new Date(pk10.createdAt), zone: "Asia/Krasnoyarsk", now: new Date() });
+    assert.ok(wantP.ok && dzp.body.promise.deadlineAt === wantP.deadlineAt.toISOString(), "слова обещавшего — по его поясу");
+    await redis.del([`ltz:eff:${O.id}`, `ltz:eff:${P.id}`]);
+    // 3. Новое обещание самого обещавшего, на которое ответили «проконтролируй», — продление его словами (§6.4).
+    const vMore = await send(V.token, g10.id, "ну ещё 30 мин");
+    const { job: jm } = await ask(O.token, g10.id, "Еблуша, проконтролируй", { replyToId: vMore.id });
+    const exists10 = await botCall("/api/bot/promises", { grant: jm.grant, promiserId: V.id, promiseMessageId: vMore.id });
+    assert.equal(exists10.body.code, "PROMISE_EXISTS");
+    const viaSrc = await botCall(`/api/bot/promises/${exists10.body.promise.id}/extend`, { grant: jm.grant, sourceMessageId: vMore.id });
+    assert.equal(viaSrc.status, 200, JSON.stringify(viaSrc.body));
+    assert.equal(viaSrc.body.promise.deadlineAt, new Date(Date.parse(vMore.createdAt) + 30 * 60_000).toISOString(), "срок — по словам того сообщения");
+    // 4. Правка обещания — цитата на карточке тоже.
+    assert.equal((await call("POST", "/api/messages/update", V.token, { messageId: vSoon.id, content: "скоро буду (поправил)" })).status, 200);
+    await waitFor("цитата поправлена", async () => ((await timerRow(c10.body.promise.id)).quote === "скоро буду (поправил)" ? true : null));
+    assert.equal((await cardOf(c10.body.cardMessageId)).card.data.quote.text, "скоро буду (поправил)");
+    // 5. «Еблуша, я тут» — пришёл, когда сказал, а не когда очередь бота дошла.
+    const { m: here10, job: jh } = await ask(V.token, g10.id, "Еблуша, я тут");
+    await new Promise((r) => setTimeout(r, 1200));
+    assert.equal((await botCall(`/api/bot/promises/${c10.body.promise.id}/arrived`, { grant: jh.grant, via: "phrase" })).status, 200);
+    assert.equal((await timerRow(c10.body.promise.id)).arrivedAt!.toISOString(), new Date(here10.createdAt).toISOString());
+    // 6. «Вернуть», пока тому же человеку поставили новый таймер, — 409 с текущей карточкой.
+    const g11 = await conv([O.id, V.id], "Вернуть");
+    const v11a = await send(V.token, g11.id, "через 30 минут");
+    const { job: j11a } = await ask(O.token, g11.id, "Еблуша, засеки", { replyToId: v11a.id });
+    const c11a = await botCall("/api/bot/promises", { grant: j11a.grant, promiserId: V.id, promiseMessageId: v11a.id });
+    assert.equal((await call("POST", `/api/cards/${c11a.body.cardMessageId}/act`, O.token, { action: "cancel" })).status, 200);
+    const v11b = await send(V.token, g11.id, "через 35 минут");
+    const { job: j11b } = await ask(O.token, g11.id, "Еблуша, засеки", { replyToId: v11b.id });
+    assert.equal((await botCall("/api/bot/promises", { grant: j11b.grant, promiserId: V.id, promiseMessageId: v11b.id })).status, 201);
+    const re11 = await call("POST", `/api/cards/${c11a.body.cardMessageId}/act`, O.token, { action: "reopen" });
+    assert.equal(re11.status, 409, JSON.stringify(re11.body));
+    assert.equal(re11.body.code, "PROMISE_EXISTS");
+    assert.equal(re11.body.card.state, "cancelled");
+    // 7. Таймер, поставленный на 40 мин позже срока: «+15» и «+30» не приходят пачкой — только отметки.
+    const g12 = await conv([O.id, V.id], "Пачка");
+    const vOld12 = await prisma.message.create({ data: { conversationId: g12.id, senderId: V.id, type: "TEXT", content: "15 минут", createdAt: new Date(Date.now() - 55 * 60_000) } });
+    const { job: j12 } = await ask(O.token, g12.id, "Еблуша, проконтролируй", { replyToId: vOld12.id });
+    const c12 = await botCall("/api/bot/promises", { grant: j12.grant, promiserId: V.id, promiseMessageId: vOld12.id });
+    assert.equal(c12.status, 201, JSON.stringify(c12.body));
+    await waitFor("отметки трёх напоминаний", async () => ((await timerRow(c12.body.promise.id)).remindersSent.length === 3 ? true : null), 20_000);
+    const burst = await prisma.message.count({ where: { conversationId: g12.id, isBot: true, metadata: { path: ["bot", "promiseId"], equals: c12.body.promise.id } } });
+    assert.equal(burst, 0, "опоздавшие напоминания не приходят разом");
+    console.log("[promise] ok: ревью — срок от ответа (textMessageId), пояс автора слов, продление по sourceMessageId, правка цитаты, «я тут» по времени сообщения, «Вернуть» при новом таймере — 409, без пачки напоминаний");
+
     // ---------- напоминания на ускоренном времени, авто-закрытие ----------
     process.env.CARDS_TEST_TIME_SCALE = "1200"; // минута — за 50 мс, 6 часов — за 18 с
     const g5 = await conv([R.id, V.id, P.id], "Напоминания");
@@ -494,6 +564,8 @@ async function main() {
     assert.equal((await call("DELETE", `/api/conversations/${g8.id}/participants/me`, V.token)).status, 200);
     await waitFor("обещавший вышел → отменён", async () => ((await timerRow(c8b.body.promise.id)).status === "CANCELLED" ? true : null));
     assert.equal((await timerRow(c8b.body.promise.id)).closeReason, "promiser_left");
+    assert.equal((await timerRow(c8b.body.promise.id)).cancelledById, null, "отменил не он — «отменил Вася» не пишем");
+    assert.equal((await cardOf(c8b.body.cardMessageId)).card.data.cancelledBy, null);
     console.log("[promise] ok: удалили обещание — цитата убрана; удалили карточку — отменён; обещавший вышел — отменён");
 
     // ---------- пределы и ошибки разбора ----------
@@ -525,7 +597,7 @@ async function main() {
     const { job: je } = await ask(R.token, g9.id, "Еблуша, засеки");
     const noTime = await botCall("/api/bot/promises", { grant: je.grant, promiserId: R.id, text: "как смогу", dryRun: true });
     assert.equal(noTime.body.code, "PROMISE_NO_TIME");
-    const tooFar = await botCall("/api/bot/promises", { grant: je.grant, promiserId: R.id, text: "послезавтра в 2", dryRun: true });
+    const tooFar = await botCall("/api/bot/promises", { grant: je.grant, promiserId: R.id, text: "послезавтра в 23", dryRun: true }); // в любое время суток — дальше 36 ч (ночью «послезавтра» — на день ближе)
     assert.equal(tooFar.body.code, "PROMISE_TOO_FAR");
     // двусмысленное: подбираем час, ближайшее будущее которого дальше 8 ч от «сейчас»
     let ambHour = 0;
@@ -546,7 +618,13 @@ async function main() {
     console.log("[promise] ok: пределы (3 на беседу), нет времени / слишком далеко / двусмысленно (+ «да»), имя участника");
 
     // ---------- пунктуальность ----------
-    const { job: js } = await ask(R.token, g1.id, "Еблуша, как у Васи с пунктуальностью?");
+    // Статистика — только из бесед, где есть все, кто увидит ответ: в личке Ромы с Васей (g3) видно всё их общее
+    // (и «никто не отметил» из g5), а в g1 с Петей и владельцем — только беседы, где есть все четверо.
+    const { job: jsg } = await ask(R.token, g1.id, "Еблуша, как у Васи с пунктуальностью?");
+    const inGroup = await botCall("/api/bot/promises/stats", { grant: jsg.grant, userId: V.id });
+    assert.equal(inGroup.status, 200);
+    assert.equal(inGroup.body.stats.unresolved, 0, "таймер из беседы без Пети и владельца в ответ для них не попадает");
+    const { job: js } = await ask(R.token, g3.id, "Еблуша, как у Васи с пунктуальностью?");
     const stats = await botCall("/api/bot/promises/stats", { grant: js.grant, userId: V.id });
     assert.equal(stats.status, 200);
     assert.ok(stats.body.stats.onTime + stats.body.stats.late >= 3, JSON.stringify(stats.body.stats));

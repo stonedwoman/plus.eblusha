@@ -199,7 +199,9 @@ export function buildShareCard(row: BotShare, names: Map<string, string>): CardE
     actions,
     data: {
       asker: who(row.askerId),
-      suggest: { period: (row.suggestPeriod as SharePeriod | null) ?? "today", photos: row.suggestPhotos },
+      // Галка «Включать фото» по умолчанию ВЫКЛЮЧЕНА всегда (решение владельца): фото включает человек, а не модель.
+      // Подсказка модели (row.suggestPhotos) остаётся только в базе — для журнала.
+      suggest: { period: (row.suggestPeriod as SharePeriod | null) ?? "today", photos: false },
       options: optionsOf(row).map((o) => ({
         period: o.period,
         messages: o.messages,
@@ -702,7 +704,7 @@ export async function shareMessagesPage(o: {
       sender: { select: { displayName: true, username: true } },
       attachments: true,
       reactions: { include: { user: { select: { displayName: true, username: true } } } },
-      replyTo: { select: { id: true, content: true, contentEncV: true, deletedAt: true, sender: { select: { displayName: true } } } },
+      replyTo: { select: { id: true, content: true, contentEncV: true, deletedAt: true, createdAt: true, expiresAt: true, sender: { select: { displayName: true } } } },
     },
   });
   const more = !o.ids?.length && rows.length > o.limit;
@@ -771,7 +773,9 @@ export async function shareMessagesPage(o: {
             return { url: a.url, w: typeof x.width === "number" ? x.width : null, h: typeof x.height === "number" ? x.height : null };
           })
       : [];
-    const rt = m.replyTo && !m.replyTo.deletedAt ? m.replyTo : null;
+    const rt = m.replyTo && !m.replyTo.deletedAt && (!m.replyTo.expiresAt || m.replyTo.expiresAt > now) ? m.replyTo : null;
+    // Цитата сообщения ВНЕ выбранного периода — без текста (на него согласия не было): только кому отвечали.
+    const rtInPeriod = !!rt && (!s.periodFrom || rt.createdAt >= s.periodFrom);
     out.push({
       id: m.id,
       at: m.createdAt.toISOString(),
@@ -780,7 +784,9 @@ export async function shareMessagesPage(o: {
       isBot: m.isBot,
       kind,
       text: body,
-      replyTo: rt ? { id: rt.id, senderName: rt.sender?.displayName ?? null, text: ((await text(rt.content, rt.contentEncV)) ?? "").slice(0, 80) || null } : null,
+      replyTo: rt
+        ? { id: rt.id, senderName: rt.sender?.displayName ?? null, text: rtInPeriod ? ((await text(rt.content, rt.contentEncV)) ?? "").slice(0, 80) || null : null }
+        : null,
       edited: typeof md.editedAt === "string",
       forwarded: !!md.forwardFrom,
       reactions: [...reacts.entries()].map(([emoji, names]) => ({ emoji, names: names.slice(0, 10) })),
@@ -873,6 +879,20 @@ export async function shareOnMessageDeleted(msg: { id: string; conversationId: s
     }
   } catch (error) {
     logger.warn({ error, messageId: msg.id }, "share: delete hook failed");
+  }
+}
+
+/**
+ * Беседу удалили: строки BotShare уходят каскадом, и задача «конец окна» молча ничего не найдёт — поэтому сигнал
+ * «стереть переписку» боту шлём здесь (shareIds — действовавшие согласия, собранные ДО удаления). Не бросает.
+ */
+export async function shareOnConversationDeleted(conversationId: string, shareIds: string[]): Promise<void> {
+  for (const shareId of shareIds) await dispatchBotSignal({ type: "share.ended", shareId, conversationId, reason: "conversation_deleted" });
+  try {
+    const redis = await getRedisClient();
+    await redis.del([activeKey(conversationId), changesKey(conversationId)]);
+  } catch {
+    /* ключи сами истекут */
   }
 }
 
