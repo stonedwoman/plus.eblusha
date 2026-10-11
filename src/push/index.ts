@@ -1,7 +1,8 @@
 import prisma from "../lib/prisma";
 import logger from "../config/logger";
 import { sendFcm, isFcmConfigured } from "./fcm";
-import { sendApns, isApnsConfigured } from "./apns";
+import { sendApns, isApnsConfigured, type ApnsSendExtras } from "./apns";
+import { apnsBadgeEnabled, apnsBadges, badgeCapableDevices } from "./badge";
 import type { PushPayload, PushProvider, PushTarget } from "./types";
 import { isUrgent } from "./types";
 
@@ -118,23 +119,67 @@ export async function sendPushToUsers(
       if (device.alert && (device.alert.provider === "apns" || device.alert.provider === "fcm")) chosen.push(device.alert);
       continue;
     }
+    // Число на значке — только iOS alert-токен (кому из них — решает badgeNumbers ниже).
+    if (payload.kind === "badge") {
+      if (device.alert?.provider === "apns") chosen.push(device.alert);
+      continue;
+    }
     if (urgent && device.voip) chosen.push(device.voip);
     else if (device.alert) chosen.push(device.alert);
   }
 
   // Транспорты разные (у FCM и APNs свои «мёртвые» статусы) — разводим по провайдеру.
   const fcmTargets = chosen.filter((t) => t.provider === "fcm");
-  const apnsTargets = chosen.filter((t) => t.provider !== "fcm");
+  let apnsTargets = chosen.filter((t) => t.provider !== "fcm");
+
+  // Значок iOS (push/badge.ts): число непрочитанного без заглушённых бесед — в момент отправки, только
+  // устройствам, объявившим caps badge (старые сборки значок не сбрасывают — у них он залип бы).
+  //  - message: число в сам alert-пуш;
+  //  - badge: только число (кому его нет — не шлём);
+  //  - read: тихий read-пуш число нести не может — следом тем же устройствам badge-only пуш.
+  const badgeByDevice = await badgeNumbers(payload, apnsTargets);
+  if (payload.kind === "badge") apnsTargets = apnsTargets.filter((t) => badgeByDevice.has(t.deviceId));
+  const apnsExtras: ApnsSendExtras | undefined =
+    badgeByDevice.size > 0 && payload.kind !== "read" ? { badgeByDevice } : undefined;
 
   const [fcmResult, apnsResult] = await Promise.all([
     sendFcm(fcmTargets, payload),
-    sendApns(apnsTargets, payload),
+    apnsExtras ? sendApns(apnsTargets, payload, apnsExtras) : sendApns(apnsTargets, payload),
   ]);
-  await dropDeadTokens([...fcmResult.dead, ...apnsResult.dead]);
+  const followUp =
+    payload.kind === "read" && badgeByDevice.size > 0
+      ? await sendApns(
+          apnsTargets.filter((t) => badgeByDevice.has(t.deviceId)),
+          { kind: "badge" },
+          { badgeByDevice },
+        )
+      : { sent: 0, dead: [] as string[] };
+  await dropDeadTokens([...fcmResult.dead, ...apnsResult.dead, ...followUp.dead]);
   const sent = fcmResult.sent + apnsResult.sent;
   // Повторяем только если НИКОМУ не ушло: повтор job'а шлёт всем заново, и тот, кому уже
   // доставили, получил бы дубль. (Для call/call-cancel дубли и так схлопывает
   // apns-collapse-id, но сообщений это не касается.)
   const retryable = (fcmResult.retryable === true || apnsResult.retryable === true) && sent === 0;
   return { sent, retryable };
+}
+
+/**
+ * deviceId → число на значке для APNs alert-целей этого пуша (push/badge.ts). Пусто, если APNS_BADGE=off,
+ * пуш не того вида или ни одно устройство не объявляло caps badge.
+ */
+async function badgeNumbers(payload: PushPayload, apnsTargets: PushTarget[]): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (!apnsBadgeEnabled()) return out;
+  if (payload.kind !== "message" && payload.kind !== "badge" && payload.kind !== "read") return out;
+  const alertTargets = apnsTargets.filter((t) => t.provider === "apns");
+  if (alertTargets.length === 0) return out;
+  const capable = await badgeCapableDevices(alertTargets.map((t) => t.userId));
+  const targets = alertTargets.filter((t) => capable.has(t.deviceId));
+  if (targets.length === 0) return out;
+  const counts = await apnsBadges(targets.map((t) => t.userId));
+  for (const t of targets) {
+    const n = counts.get(t.userId);
+    if (n !== undefined) out.set(t.deviceId, n);
+  }
+  return out;
 }

@@ -9,6 +9,7 @@ import { kickDevice } from "../realtime/socket";
 import { buildIpLocation } from "../lib/ipLocation";
 import { resolveCurrentDeviceId } from "../lib/currentDevice";
 import { forgetDevice as forgetLocalTimeDevice } from "../lib/localTime";
+import { BADGE_CAP, apnsBadgeEnabled, setBadgeCapable } from "../push/badge";
 
 const router = Router();
 
@@ -207,6 +208,10 @@ router.post("/:deviceId/push", async (req, res) => {
     .object({
       token: z.string().min(10).max(4096),
       provider: z.enum(["fcm", "apns", "apns-voip"]).default("fcm"),
+      // Что умеет приложение сверх базового контракта; незнакомое игнорируется. Сейчас одно: "badge" —
+      // iOS-сборка сама сбрасывает значок и просит сервер вести его число (push/badge.ts). Кривое поле
+      // регистрацию токена не роняет (catch): без пушей человек остался бы из-за необязательного признака.
+      caps: z.array(z.unknown()).max(64).optional().catch(undefined),
     })
     .safeParse(req.body);
   if (!parsed.success) {
@@ -242,6 +247,15 @@ router.post("/:deviceId/push", async (req, res) => {
           pushUpdatedAt: new Date(),
         },
   });
+  // Значок iOS (push/badge.ts): объявление живёт при alert-токене. Регистрация без caps (откат на старую
+  // сборку, у которой число залипло бы) его снимает. badge в ответе — «число ведёт сервер»: только тогда
+  // приложение показывает значок вообще (иначе его некому было бы обновлять, пока приложение выгружено).
+  if (parsed.data.provider === "apns") {
+    const wants = parsed.data.caps?.includes(BADGE_CAP) === true;
+    const saved = await setBadgeCapable(userId, deviceId, wants);
+    res.json({ ok: true, badge: wants && saved && apnsBadgeEnabled() });
+    return;
+  }
   res.json({ ok: true });
 });
 
@@ -265,6 +279,7 @@ router.delete("/:deviceId/push", async (req, res) => {
       pushVoipUpdatedAt: new Date(),
     },
   });
+  await setBadgeCapable(userId, deviceId, false);
   res.json({ ok: true });
 });
 

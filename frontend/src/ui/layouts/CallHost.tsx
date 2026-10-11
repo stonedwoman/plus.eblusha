@@ -15,6 +15,7 @@ import {
 } from '../../core/call-state/incomingCallActions'
 import { acceptCall, declineCall, endCall, inviteCall } from '../../core/realtime'
 import { useCallStore } from '../../domain/store/callStore'
+import { ingestConversationsResponse } from '../../domain/mute/muteSync'
 import { Avatar } from '../components/Avatar'
 import { ensureMediaPermissions } from '../../utils/media'
 import { isChatsRoute, withAppRoutePrefix } from '../../core/navigation/routes'
@@ -26,7 +27,10 @@ function useConversationData() {
   const conversationsQuery = useQuery({
     queryKey: ['conversations'],
     queryFn: async () => {
+      const sentAt = Date.now()
       const response = await api.get('/conversations')
+      // Тот же ключ, что у ChatsPage: «Без звука» из ответа — в хранилище (domain/mute/muteSync.ts).
+      ingestConversationsResponse(response.data, sentAt)
       return response.data.conversations as any[]
     },
   })

@@ -16,6 +16,7 @@ import { getIO } from "../realtime/socket";
 import { deleteS3ObjectsByKeys } from "../lib/storageDeletion";
 import { resolveCurrentDeviceId } from "../lib/currentDevice";
 import { enqueuePush } from "../jobs/queue";
+import { mutedRecipients } from "../lib/conversationMute";
 import logger from "../config/logger";
 import {
   SECRET_HEADER_INVALID_CODE,
@@ -671,8 +672,16 @@ router.post("/messages/push", rateLimit({ name: "secret_messages_push", windowMs
   // Ни текста, ни шифртекста в пуше нет — лишь «кто» и «в какой беседе»; за содержимым
   // клиент сходит сам (secret: true). POST /send (конверты ключей) пуша не ставит.
   // S8: в CANCELLED-тред не пушим (иначе это спам «Секретное сообщение» в закрытый чат).
+  // «Без звука» (lib/conversationMute.ts): тем, у кого тред заглушён, пуша нет. Пробития нет — тред 1:1, а
+  // содержимого сервер не знает. secret:notify выше НЕ трогаем: по нему клиент забирает сообщение.
   if (!threadCancelled) {
     try {
+      let muted: Map<string, Date> = new Map();
+      try {
+        muted = await mutedRecipients(threadId);
+      } catch (error) {
+        logger.warn({ error, threadId }, "secret: mute lookup failed — pushing to everyone");
+      }
       const me = (req as AuthedRequest).user;
       let senderName = me?.displayName ?? me?.username ?? "";
       if (!senderName) {
@@ -683,7 +692,7 @@ router.post("/messages/push", rateLimit({ name: "secret_messages_push", windowMs
         senderName = sender?.displayName ?? sender?.username ?? "пользователь";
       }
       enqueuePush(
-        participantUserIds.filter((uid) => uid !== userId),
+        participantUserIds.filter((uid) => uid !== userId && !muted.has(uid)),
         {
           kind: "message",
           conversationId: threadId,

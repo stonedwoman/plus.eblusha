@@ -142,15 +142,37 @@ export type PreparedRequest = {
   body: string;
 };
 
+/**
+ * Дополнения к одному запросу, которых нет в общем PushPayload (FCM их не получает).
+ * badge — число на значке приложения: общий счётчик непрочитанного БЕЗ заглушённых бесед
+ * (push/badge.ts). Ставится в alert-пуш о сообщении и в badge-only пуш — только устройствам с
+ * caps "badge" и только при APNS_BADGE=on (решает push/index.ts: у кого нет числа — без badge).
+ */
+export type ApnsRequestExtras = { badge?: number };
+/** deviceId → число на значке (только устройства, которым сервер ведёт значок). */
+export type ApnsSendExtras = { badgeByDevice?: ReadonlyMap<string, number> };
+
+function validBadge(value: number | undefined): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
 /** Экспорт — для теста полезной нагрузки (test/read-sync.integration.test.ts). */
-export function buildRequest(config: ApnsConfig, target: PushTarget, payload: PushPayload): PreparedRequest | null {
+export function buildRequest(
+  config: ApnsConfig,
+  target: PushTarget,
+  payload: PushPayload,
+  extras?: ApnsRequestExtras,
+): PreparedRequest | null {
   const now = Math.floor(Date.now() / 1000);
   const urgent = isUrgent(payload);
+  const rawBadge = extras?.badge;
+  const badge = validBadge(rawBadge) ? Math.floor(rawBadge) : undefined;
 
   if (target.provider === "apns-voip") {
     // VoIP-пуши живут только для звонков: iOS 13+ требует от приложения немедленно показать
     // CallKit-экран, иначе система перестаёт доставлять пуши вовсе. Сообщения сюда не шлём.
-    if (!urgent) return null;
+    // (Проверка по kind, а не только isUrgent: так TypeScript видит conversationId у звонка.)
+    if (!urgent || (payload.kind !== "call" && payload.kind !== "call-cancel")) return null;
     return {
       headers: {
         "apns-topic": `${config.bundleId}.voip`,
@@ -192,9 +214,29 @@ export function buildRequest(config: ApnsConfig, target: PushTarget, payload: Pu
           sound: "default",
           "mutable-content": 1,
           "thread-id": payload.conversationId,
+          ...(badge !== undefined ? { badge } : {}),
         },
         ...data,
       }),
+    };
+  }
+
+  if (payload.kind === "badge") {
+    // Только число на значке (push/badge.ts): alert-тип без alert и sound — число применяет сама система,
+    // приложение не будится и ничего не показывает, в том числе выгруженное свайпом (background-пуш до
+    // него не дошёл бы). Priority 10, как у сообщений: «5» Apple вправе придержать или не доставить, а
+    // недоставленное число так и висело бы. collapse-id один: пока телефон без сети, ждёт только
+    // последнее число. Числа нет — слать нечего.
+    if (badge === undefined) return null;
+    return {
+      headers: {
+        "apns-topic": config.bundleId,
+        "apns-push-type": "alert",
+        "apns-priority": "10",
+        "apns-expiration": String(now + 86400),
+        "apns-collapse-id": "badge",
+      },
+      body: JSON.stringify({ aps: { badge }, ...data }),
     };
   }
 
@@ -441,7 +483,11 @@ function parseReason(body: string): string {
   }
 }
 
-export async function sendApns(targets: PushTarget[], payload: PushPayload): Promise<PushSendResult> {
+export async function sendApns(
+  targets: PushTarget[],
+  payload: PushPayload,
+  extras?: ApnsSendExtras,
+): Promise<PushSendResult> {
   const config = loadConfig();
   // Не настроено или ключ не подписывает JWT — повтор job'а ничего не изменит, retryable не ставим.
   if (!config || targets.length === 0) return { sent: 0, dead: [] };
@@ -454,7 +500,8 @@ export async function sendApns(targets: PushTarget[], payload: PushPayload): Pro
   // Запросы по очереди: устройств у пользователя единицы, мультиплексирование тут
   // ничего не выиграет (ср. цикл в fcm.ts). Соединения переиспользуются — см. getSession.
   for (const target of targets) {
-    const prepared = buildRequest(config, target, payload);
+    const badge = extras?.badgeByDevice?.get(target.deviceId);
+    const prepared = buildRequest(config, target, payload, badge !== undefined ? { badge } : undefined);
     if (!prepared) continue; // например, message на voip-токен — туда нельзя
     // Порядок кластеров: сначала тот, где токен уже отвечал; в режиме auto при
     // BadDeviceToken пробуем второй — токен другой среды выглядит именно так.

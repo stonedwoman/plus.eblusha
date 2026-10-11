@@ -1,5 +1,32 @@
 import { useEffect, type Dispatch, type SetStateAction } from 'react'
 import { socket } from '../../../../core/realtime'
+import { shouldAlertForNotify } from '../../../../domain/mute/muteRules'
+import { muteStore } from '../../../../domain/mute/muteSync'
+
+/**
+ * «Без звука» (docs/conversation-mute.md §6): звенеть ли на этот message:notify. Сервер прислал muted —
+ * верим ему (он считал для меня); поля нет (старый сервер) — локальное правило по своему состоянию.
+ * «Группа» — только серверный isGroup из списка бесед.
+ */
+function notifyWantsAlert(p: { conversationId: string; senderId: string; message?: any; muted?: unknown }, meId: string | null | undefined, client: any): boolean {
+  let isGroup = false
+  try {
+    const rows = client?.getQueryData?.(['conversations'])
+    const row = Array.isArray(rows) ? rows.find((r: any) => r?.conversation?.id === p.conversationId) : null
+    isGroup = row?.conversation?.isGroup === true
+  } catch {
+    /* нет списка — считаем 1:1: пробьют только записи о звонке */
+  }
+  return shouldAlertForNotify({
+    payloadMuted: p.muted,
+    meId,
+    senderId: p.senderId,
+    message: p.message,
+    isGroup,
+    mutedUntilMs: muteStore.mutedUntil(p.conversationId),
+    nowMs: muteStore.serverNow(),
+  })
+}
 
 export function useChatSocketSubscriptions(opts: {
   activeId: string | null
@@ -133,7 +160,7 @@ export function useChatSocketSubscriptions(opts: {
 
   // Unified handler for message:notify - handles both active and inactive chats
   useEffect(() => {
-    const handler = async (p: { conversationId: string; messageId: string; senderId: string; message?: any }) => {
+    const handler = async (p: { conversationId: string; messageId: string; senderId: string; message?: any; muted?: boolean }) => {
       if (isSecretBlockedForDevice(p.conversationId)) {
         return
       }
@@ -141,8 +168,8 @@ export function useChatSocketSubscriptions(opts: {
       const isViewing = p.conversationId === activeId
       const visible = document.visibilityState === 'visible'
 
-      // Воспроизводим звук уведомления, если нужно
-      if (!isMine && (!isViewing || !visible)) {
+      // Воспроизводим звук уведомления, если нужно («Без звука» — молчим; плитка и счётчик обновятся как обычно)
+      if (!isMine && (!isViewing || !visible) && notifyWantsAlert(p, meId, client)) {
         playNotifySoundIfAllowed()
       }
 
@@ -163,6 +190,6 @@ export function useChatSocketSubscriptions(opts: {
     }
     socket.on('message:notify', handler)
     return () => { socket.off('message:notify', handler) }
-  }, [activeId, meId, messagesQuery, isSecretBlockedForDevice, appendMessageToCache, playNotifySoundIfAllowed])
+  }, [activeId, meId, client, messagesQuery, isSecretBlockedForDevice, appendMessageToCache, playNotifySoundIfAllowed])
 }
 

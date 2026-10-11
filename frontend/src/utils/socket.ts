@@ -9,6 +9,7 @@ import {
   type PresenceDevice,
 } from '../domain/store/presenceDeviceStore'
 import { installLocalTimeSync } from '../domain/localTime/localTimeSync'
+import { installMuteSync } from '../domain/mute/muteSync'
 
 function isTruthyEnv(v: unknown): boolean {
   const s = String(v ?? '').trim().toLowerCase()
@@ -231,6 +232,26 @@ installLocalTimeSync({
   },
 })
 
+// «Без звука»: событие conversation:mute и снапшот при каждом подключении — в хранилище (domain/mute/muteSync.ts).
+// Подписка на уровне модуля: снапшот приходит на connect, ещё до монтирования ChatsPage.
+installMuteSync({
+  on: (event, cb) => {
+    socket.on(event, cb)
+    return () => {
+      socket.off(event, cb)
+    }
+  },
+  onUserChange: (cb) => {
+    let prev = useAppStore.getState().session?.user?.id ?? null
+    return useAppStore.subscribe((s) => {
+      const next = s.session?.user?.id ?? null
+      if (next === prev) return
+      prev = next
+      cb(next)
+    })
+  },
+})
+
 export function connectSocket() {
   // На Android используем только нативный сокет, JS сокет отключен
   if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android') {
@@ -427,7 +448,7 @@ export function onReceiptsUpdate(cb: (payload: { conversationId: string; message
   socket.on('receipts:update', cb)
 }
 
-export function onMessageNotify(cb: (payload: { conversationId: string; messageId: string; senderId: string }) => void) {
+export function onMessageNotify(cb: (payload: { conversationId: string; messageId: string; senderId: string; muted?: boolean }) => void) {
   socket.on('message:notify', (payload) => {
     // Log payload for debugging (especially for Electron overlay)
     console.log('[socket.ts] message:notify received:', JSON.stringify(payload, null, 2))

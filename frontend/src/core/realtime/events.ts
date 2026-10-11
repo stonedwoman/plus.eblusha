@@ -125,6 +125,23 @@ export type LocalTimeInfoPayload = { timeZone: string; city: string | null; offs
 export type LocalTimeUpdatePayload = { userId: string; localTime: LocalTimeInfoPayload | null }
 export type LocalTimeSettingsPayload = { shareLocalTime: boolean; shareLocalTimeAt: number }
 
+/**
+ * «Без звука» для беседы поменяли (в том числе на другом моём устройстве) — docs/conversation-mute.md §3.
+ * mutedUntil — ISO по часам сервера (null — звук включён), at — момент изменения (asOf).
+ */
+export type ConversationMutePayload = {
+  conversationId: string
+  mutedUntil: string | null
+  mutedForever: boolean
+  at: string
+  byDeviceId?: string
+}
+/** При каждом подключении сокета — ЗАМЕНА целиком: беседы не из items не заглушены. */
+export type ConversationMuteSnapshotPayload = {
+  items: Array<{ conversationId: string; mutedUntil: string; mutedForever: boolean }>
+  serverNow: string
+}
+
 export type RealtimeInboundEventMap = {
   connect: undefined
   disconnect: string | undefined
@@ -165,6 +182,8 @@ export type RealtimeInboundEventMap = {
   'localtime:update': LocalTimeUpdatePayload
   'localtime:settings': LocalTimeSettingsPayload
   'bot:settings': BotSettingsPayload
+  'conversation:mute': ConversationMutePayload
+  'conversation:mute:snapshot': ConversationMuteSnapshotPayload
 }
 
 export type RealtimeOutboundEventMap = {

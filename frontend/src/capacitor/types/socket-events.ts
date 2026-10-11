@@ -14,6 +14,11 @@ export interface MessageNotifyPayload {
   messageId: string
   senderId: string
   message?: Message
+  /**
+   * «Без звука» (docs/conversation-mute.md §3): посчитано сервером для ЭТОГО получателя. true — не звенеть
+   * и не показывать уведомление; нет поля — старый сервер, решать локальным правилом.
+   */
+  muted?: boolean
 }
 
 export interface ConversationTypingPayload {

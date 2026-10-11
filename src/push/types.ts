@@ -57,6 +57,14 @@ export type PushPayload =
        * Нет поля (старый сервер, сбой Redis) — приложение снимает все уведомления беседы.
        */
       readAt?: number;
+    }
+  | {
+      /**
+       * Только число на значке iOS-приложения (push/badge.ts): APNs alert без alert и sound, aps.badge
+       * считает воркер в момент отправки. Только APNs-устройствам, объявившим caps "badge", и только при
+       * APNS_BADGE=on; FCM его не получает. В кастомных данных — только kind.
+       */
+      kind: "badge";
     };
 
 export type PushTarget = {

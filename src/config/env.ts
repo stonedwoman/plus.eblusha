@@ -129,6 +129,9 @@ const envSchema = z.object({
     .string()
     .optional()
     .transform((v) => (v && v.trim() ? v.trim() : undefined)),
+  // Число на значке iOS-приложения (aps.badge): непрочитанное без заглушённых бесед, ведёт сервер (push/badge.ts) —
+  // только устройствам, объявившим caps "badge" (старые сборки его не получают при любом значении). off по умолчанию.
+  APNS_BADGE: z.enum(["on", "off"]).default("off"),
 });
 
 const env = envSchema.parse(process.env);

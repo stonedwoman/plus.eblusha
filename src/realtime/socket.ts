@@ -12,6 +12,12 @@ import logger from "../config/logger";
 import { decGauge, incGauge } from "../obs/metrics";
 import { enqueuePush } from "../jobs/queue";
 import { replayRecentReads } from "../push/readSync";
+import {
+  loadAlertGate,
+  muteSnapshot,
+  type ConversationMuteEvent,
+  type ConversationMuteSnapshot,
+} from "../lib/conversationMute";
 import { cloudMessageWritesAllowed, isSecretConversation } from "../lib/secretLatch";
 import { acceptSecretThread, announceSecretThreadAccepted, declineSecretThread } from "../lib/secretThreadState";
 import { initCloudRealtime } from "../cloud/realtime";
@@ -63,7 +69,16 @@ type ServerToClientEvents = {
     card?: unknown;
     serverNow?: string;
   }) => void;
-  "message:notify": (payload: { conversationId: string; messageId: string; senderId: string; message?: any }) => void;
+  /**
+   * Новое сообщение беседы — в user:<получатель>, каждому отдельно. muted — «Без звука» для ЭТОГО
+   * получателя (lib/conversationMute.ts): true — не звенеть, не показывать уведомление/плашку (плитку и
+   * непрочитанное обновлять как обычно). Новый сервер шлёт поле всегда; нет поля — старый сервер.
+   */
+  "message:notify": (payload: { conversationId: string; messageId: string; senderId: string; message?: any; muted?: boolean }) => void;
+  /** «Без звука» беседы изменился (с этого или другого устройства) — в user:<свой id>. docs/conversation-mute.md */
+  "conversation:mute": (payload: ConversationMuteEvent) => void;
+  /** При КАЖДОМ подключении сокета, только ему: все заглушённые сейчас беседы. Замена целиком. */
+  "conversation:mute:snapshot": (payload: ConversationMuteSnapshot) => void;
   "message:reaction": (payload: { conversationId: string; messageId: string; senderId: string }) => void;
   "availability:updated": (payload: { conversationId: string; userId: string }) => void;
   "availability:proposals:updated": (payload: { conversationId: string; proposalId?: string }) => void;
@@ -1284,12 +1299,14 @@ export async function initSocket(
           senderId: endedByUserId,
           message: msg,
         });
+        const alert = await loadAlertGate(conversationId, { isGroup: Boolean(conv?.isGroup), callSystem: true });
         for (const rid of recipients) {
           io.to(userRoom(rid)).emit("message:notify", {
             conversationId,
             messageId: msg.id,
             senderId: endedByUserId,
             message: msg,
+            muted: !alert(rid),
           });
         }
       } catch (error) {
@@ -1720,6 +1737,12 @@ export async function initSocket(
     void replayRecentReads(userId, (e) => {
       socket.emit("conversation:read-self", e);
     });
+    // «Без звука»: снапшот — ему одному, при каждом подключении (так долетает и «Включить звук»,
+    // случившийся, пока устройство было без связи). lib/conversationMute.ts.
+    void muteSnapshot(userId).then(
+      (snap) => socket.emit("conversation:mute:snapshot", snap),
+      (error) => logger.warn({ error, userId }, "mute: snapshot failed"),
+    );
     incGauge("sockets_connected", 1);
     // Presence semantics (multi-instance):
     // - online is derived from Redis presence_socks/presence_sock keys (NOT in-memory)
@@ -2521,20 +2544,24 @@ export async function initSocket(
             senderId: userId,
             message: msg,
           });
-          // Также отправляем message:notify для каждого участника отдельно (кроме отправителя)
+          // Также отправляем message:notify для каждого участника отдельно (кроме отправителя).
+          // «Без звука»: в заглушённой группе начало звонка — тихая отметка (плитка «В ЗВОНКЕ», запись в
+          // ленте), без пуша, звука и плашки: muted: true и пуша нет (lib/conversationMute.ts).
+          const alert = await loadAlertGate(conversationId, { isGroup: true });
           for (const rid of recipients) {
             io.to(userRoom(rid)).emit("message:notify", {
               conversationId,
               messageId: msg.id,
               senderId: userId,
               message: msg,
+              muted: !alert(rid),
             });
           }
           // Выгруженные телефоны: call:incoming для групп не шлём, и без пуша они узнали бы
           // о звонке, лишь открыв приложение. Обычный alert-пуш о сообщении — его все
           // клиенты уже умеют показывать; ключ тот же, что у пуша о сообщении в REST.
           enqueuePush(
-            recipients,
+            recipients.filter((rid) => alert(rid)),
             {
               kind: "message",
               conversationId,
@@ -2542,6 +2569,9 @@ export async function initSocket(
               senderId: userId,
               senderName: name,
               preview: video ? "Групповой видеозвонок" : "Групповой звонок",
+              // Момент записи по часам сервера — как у пушей о сообщениях: по нему клиенты ловят гонку
+              // «заглушили сразу после постановки пуша» (docs/conversation-mute.md §5) и read-sync.
+              sentAt: new Date(msg.createdAt).getTime(),
             },
             `msg-${msg.id}`,
           );
@@ -2854,12 +2884,15 @@ export async function initSocket(
             senderId: userId,
             message: msg,
           });
+          // Запись о звонке 1:1 «Без звука» не глушит (callSystem) — muted: false.
+          const alert = await loadAlertGate(conversationId, { isGroup: false, callSystem: true });
           for (const rid of recipients) {
             io.to(userRoom(rid)).emit("message:notify", {
               conversationId,
               messageId: msg.id,
               senderId: userId,
               message: msg,
+              muted: !alert(rid),
             });
           }
         } catch (error) {
@@ -2963,10 +2996,16 @@ export async function initSocket(
                 });
                 // Отправляем событие о новом сообщении всем участникам беседы через комнату
                 io.to(conversationId).emit("message:new", { conversationId, messageId: msg.id, senderId: userId });
-                // Также отправляем message:notify для всех участников (кроме отправителя)
+                // Также отправляем message:notify для всех участников (кроме отправителя); «Без звука» — muted.
+                const alert = await loadAlertGate(conversationId, { isGroup: true });
                 for (const p of conv.participants) {
                   if (p.userId !== userId) {
-                    io.to(userRoom(p.userId)).emit("message:notify", { conversationId, messageId: msg.id, senderId: userId });
+                    io.to(userRoom(p.userId)).emit("message:notify", {
+                      conversationId,
+                      messageId: msg.id,
+                      senderId: userId,
+                      muted: !alert(p.userId),
+                    });
                   }
                 }
                 logger.info({ conversationId, userId, video: callVideo, messageId: msg.id }, "Call started message created in call:room:join (no callState)");
