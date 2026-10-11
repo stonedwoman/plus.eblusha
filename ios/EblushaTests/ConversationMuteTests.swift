@@ -358,6 +358,33 @@ final class ConversationMuteStoreTests: XCTestCase {
         XCTAssertNil(s.tip("g"))
     }
 
+    func testWakeAtExpiryOrLocalMidnight() {
+        var bucharest = Calendar(identifier: .gregorian)
+        bucharest.timeZone = TimeZone(identifier: "Europe/Bucharest")!
+        // 23:50 местного (UTC+3): срок через 2 ч — проснуться в полночь (через 10 мин), чтобы
+        // «до завтра, 01:50» стало «до 01:50».
+        let lateMs = ms("2026-10-11T20:50:00Z")
+        let late = Date(timeIntervalSince1970: Double(lateMs) / 1000)
+        let atMidnight = ConversationMuteStore.nextWakeDelay(
+            untils: [lateMs + 2 * HOUR], nowMs: lateMs, localNow: late, calendar: bucharest
+        )
+        XCTAssertEqual(atMidnight ?? -1, 600.05, accuracy: 0.001)
+        // Срок раньше полуночи — будит срок (+50 мс: уже ПОСЛЕ него).
+        let atExpiry = ConversationMuteStore.nextWakeDelay(
+            untils: [nil, lateMs + 300_000, MuteRules.foreverMs], nowMs: lateMs, localNow: late, calendar: bucharest
+        )
+        XCTAssertEqual(atExpiry ?? -1, 300.05, accuracy: 0.001)
+        // Только «навсегда», истёкшие или ничего — будить незачем: подпись «навсегда» от дня не зависит.
+        XCTAssertNil(ConversationMuteStore.nextWakeDelay(
+            untils: [MuteRules.foreverMs, lateMs - 1, nil], nowMs: lateMs, localNow: late, calendar: bucharest
+        ))
+        XCTAssertNil(ConversationMuteStore.nextWakeDelay(untils: [], nowMs: lateMs, localNow: late, calendar: bucharest))
+    }
+
+    private func ms(_ iso: String) -> Int64 {
+        Int64(ISO8601DateFormatter().date(from: iso)!.timeIntervalSince1970 * 1000)
+    }
+
     func testClockOffsetFromServerNow() {
         let s = store()
         // Телефон отстаёт на 30 с: serverNow = местное + 30 с.
@@ -484,6 +511,9 @@ final class BadgeAndExtensionTests: XCTestCase {
         let entries = ["g": MuteEntry(untilMs: NOW + HOUR, asOfMs: NOW + 2_000, setAtMs: NOW + 2_000)]
         let result = PushMuteDecision.decide(userInfo: push("g", "m1", sentAt: NOW), state: state(entries), localNowMs: NOW + 3_000)
         XCTAssertTrue(result.silence)
+        // Число такого пуша могли посчитать ещё с этой беседой — значок не трогаем (верное число ставит
+        // badge-only пуш сервера после смены «Без звука»).
+        XCTAssertTrue(result.keepBadge)
         // Без момента изменения (знаем из списка) или без sentAt (старый сервер) — верим серверу.
         let fromList = ["g": MuteEntry(untilMs: NOW + HOUR, asOfMs: NOW + 2_000, setAtMs: nil)]
         XCTAssertFalse(PushMuteDecision.decide(userInfo: push("g", "m1"), state: state(fromList), localNowMs: NOW).silence)

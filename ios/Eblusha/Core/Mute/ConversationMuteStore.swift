@@ -343,12 +343,26 @@ final class ConversationMuteStore: ObservableObject {
     private func scheduleExpiry() {
         expiryWork?.cancel()
         expiryWork = nil
-        let now = nowMs
-        guard let next = MuteRules.nextExpiry(state.entries.values.map(\.untilMs), nowMs: now) else { return }
+        guard let delay = Self.nextWakeDelay(
+            untils: state.entries.values.map(\.untilMs), nowMs: nowMs, localNow: localNow()
+        ) else { return }
         let work = DispatchWorkItem { [weak self] in self?.refreshClock() }
         expiryWork = work
-        // +50 мс: проснуться уже ПОСЛЕ срока, а не за миг до него.
-        DispatchQueue.main.asyncAfter(deadline: .now() + Double(next - now) / 1000 + 0.05, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    /// Через сколько секунд пересчитать «Без звука»: ближайший срок (+50 мс — проснуться уже ПОСЛЕ него,
+    /// а не за миг до) или ближайшая местная полночь, если до неё срок не наступит: подпись
+    /// «до завтра, 10:00» после полуночи должна стать «до 10:00», «до 14 окт., 18:30» — «до завтра, 18:30».
+    /// nil — будить незачем (ничего не заглушено или только «навсегда»: его подпись от дня не зависит).
+    static func nextWakeDelay(
+        untils: [Int64?], nowMs: Int64, localNow: Date, calendar: Calendar = .current
+    ) -> TimeInterval? {
+        guard let next = MuteRules.nextExpiry(untils, nowMs: nowMs) else { return nil }
+        let expiry = Double(next - nowMs) / 1000 + 0.05
+        guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: localNow) else { return expiry }
+        let midnight = calendar.startOfDay(for: tomorrow).timeIntervalSince(localNow) + 0.05
+        return min(expiry, max(0.05, midnight))
     }
 
     // MARK: - Внутренности
