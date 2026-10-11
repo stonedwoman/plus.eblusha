@@ -125,7 +125,7 @@ export function ProfileSection() {
             <Row
               id="p-ltime"
               title="Показывать моё местное время"
-              desc="Собеседники в личных чатах видят под вашим именем, который у вас час, и город по часовому поясу."
+              desc="Собеседники в личных чатах видят в шапке беседы, который у вас час, и город по часовому поясу."
               toggle={{ checked: lt.checked, onChange: (v) => void lt.toggle(v), disabled: lt.busy || lt.loading }}
               err={lt.err}
             >
