@@ -93,15 +93,9 @@ enum SettingsSearch {
         .init(id: "p-name", section: .profile, title: "Отображаемое имя",
               caption: "Под этим именем вас увидят другие пользователи.",
               keywords: "ник никнейм"),
-        .init(id: "p-bio", section: .profile, title: "О себе",
-              caption: "Пара строк в вашей карточке — её видит тот, кто откроет профиль.",
-              keywords: "био bio описание подпись"),
         .init(id: "p-eblid", section: .profile, title: "EBLID",
               caption: "Ваш номер в Еблуше — по нему вас находят в «Контактах».",
               keywords: "номер айди id идентификатор"),
-        .init(id: "p-status", section: .profile, title: "Показывать меня",
-              caption: "Применяется сразу: «В сети», «Отошёл», «Не беспокоить» или «Невидимка».",
-              keywords: "статус не беспокоить невидимка отошёл dnd онлайн"),
         .init(id: "p-ltime", section: .profile, title: "Показывать моё местное время",
               caption: "Собеседники в личных чатах видят под вашим статусом, который у вас час, и город по часовому поясу.",
               keywords: "время часы часовой пояс город таймзона timezone местное"),
@@ -343,26 +337,6 @@ enum SettingsText {
             version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String,
             buildTag: Bundle.main.infoDictionary?["EblushaBuildTag"] as? String
         )
-    }
-
-    /// Ручной статус (SPEC §1.3, p-status). Значения сервера, подписи, точка.
-    struct StatusOption: Equatable {
-        let value: String
-        let label: String
-        let color: Color
-    }
-
-    static let statusOptions: [StatusOption] = [
-        .init(value: "ONLINE", label: "В сети", color: Eb.online),
-        .init(value: "AWAY", label: "Отошёл", color: Eb.away),
-        .init(value: "DND", label: "Не беспокоить", color: Eb.danger),
-        .init(value: "OFFLINE", label: "Невидимка", color: Eb.offline),
-    ]
-
-    /// Неизвестное значение сервера сводим к «В сети»: иначе ни одна плитка-выбор не горела бы.
-    static func statusOption(_ raw: String?) -> StatusOption {
-        let up = raw?.uppercased() ?? "ONLINE"
-        return statusOptions.first { $0.value == up } ?? statusOptions[0]
     }
 
     // MARK: Итоги «Местного времени» и «Чата с Еблушей» (тексты натива)

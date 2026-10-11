@@ -16,9 +16,10 @@ import SwiftUI
 ///     -connectDemo settings-security[-ask|-askall|-failed|-nocurrent|-pairing]
 ///     -connectDemo settings-app[-denied]
 ///     -connectDemo settings-flip               обзор с переворачивающейся «Б» (по умолчанию стоит)
-///     -connectDemo settings-profile-ltime      раздел, прокрученный к строке (status / ltime / bot / sess / notif)
+///     -connectDemo settings-profile-ltime      раздел, прокрученный к строке (ltime / bot / sess / notif)
 ///     -connectDemo settings-motion             плашка с настройками доступности (Reduce Motion, размер шрифта)
 ///     -connectDemo settings-conn-qserver       раздел с подсветкой запроса (qserver / qmic / qsound)
+///     -connectDemo settings-qbio               обзор, запрос «о себе» (qbio) или «статус» (qstatus): «О себе» и выбора статуса в настройках больше нет
 struct SettingsDemo: View {
     enum Route: Hashable {
         case center
@@ -54,8 +55,8 @@ struct SettingsDemo: View {
         Self.seedServices()
         let api = DemoSettingsAPI(failSessions: flags.contains("failed"), failSave: flags.contains("savefail"), noCurrent: flags.contains("nocurrent"))
         let model = SettingsHostModel(api: api, permissions: perms)
-        // «status»/«ltime»/«bot»/«sess»/«notif» — раздел открывается прокрученным к этой строке.
-        let anchors = ["status": "p-status", "ltime": "p-ltime", "bot": "p-bot", "sess": "s-sess", "notif": "ap-notif"]
+        // «ltime»/«bot»/«sess»/«notif» — раздел открывается прокрученным к этой строке.
+        let anchors = ["ltime": "p-ltime", "bot": "p-bot", "sess": "s-sess", "notif": "ap-notif"]
         if let key = flags.first(where: { anchors[$0] != nil }) { model.nav.scrollTarget = anchors[key] }
         _host = StateObject(wrappedValue: model)
         _path = State(initialValue: section.map { [Route.center, Route.section($0)] } ?? [Route.center])
@@ -107,7 +108,7 @@ struct SettingsDemo: View {
         }
         if flags.contains("search") { host.nav.query = "звук" }
         // Раздел с подсветкой найденного: запрос задан в обзоре.
-        for (flag, word) in ["qserver": "сервер", "qmic": "микрофон", "qsound": "звук"] where flags.contains(flag) {
+        for (flag, word) in ["qserver": "сервер", "qmic": "микрофон", "qsound": "звук", "qbio": "о себе", "qstatus": "статус"] where flags.contains(flag) {
             host.nav.query = word
         }
         if flags.contains("searchnone") { host.nav.query = "ыыыы" }
@@ -148,8 +149,7 @@ private struct DemoAccessibilityBadge: View {
 /// «Сервер» в памяти: мгновенные ответы без сети.
 final class DemoSettingsAPI: SettingsProfileAPI {
     private var profile = UserProfile(
-        id: "demo-me", username: "roman", eblid: "2498", displayName: "Роман",
-        bio: "Пишу Еблушу по ночам. Если не отвечаю — значит, сплю.", avatarUrl: nil, status: "ONLINE"
+        id: "demo-me", username: "roman", eblid: "2498", displayName: "Роман", avatarUrl: nil
     )
     private var sessions: [DeviceSession]
     private let failSessions: Bool
@@ -174,20 +174,12 @@ final class DemoSettingsAPI: SettingsProfileAPI {
 
     func me() async -> ApiResult<UserProfile> { .success(profile) }
 
-    func updateProfile(displayName: String?, bio: String?, avatarUrl: String?) async -> ApiResult<UserProfile> {
+    func updateProfile(displayName: String?, avatarUrl: String?) async -> ApiResult<UserProfile> {
         if failSave { return .failure(message: "Нет соединения с сервером") }
         profile = UserProfile(
             id: profile.id, username: profile.username, eblid: profile.eblid,
-            displayName: displayName ?? profile.displayName, bio: bio ?? profile.bio,
-            avatarUrl: avatarUrl ?? profile.avatarUrl, status: profile.status
-        )
-        return .success(profile)
-    }
-
-    func updateStatus(_ status: String) async -> ApiResult<UserProfile> {
-        profile = UserProfile(
-            id: profile.id, username: profile.username, eblid: profile.eblid, displayName: profile.displayName,
-            bio: profile.bio, avatarUrl: profile.avatarUrl, status: status
+            displayName: displayName ?? profile.displayName,
+            avatarUrl: avatarUrl ?? profile.avatarUrl
         )
         return .success(profile)
     }

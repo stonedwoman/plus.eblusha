@@ -49,29 +49,18 @@ final class ProfileRepository {
 
     func updateProfile(
         displayName: String?,
-        bio: String?,
         avatarUrl: String?
     ) async -> ApiResult<UserProfile> {
         await safeApiCall {
             let response: MeResponse = try await api.patch(
                 "status/me",
-                body: UpdateProfileRequest(displayName: displayName, bio: bio, avatarUrl: avatarUrl)
+                body: UpdateProfileRequest(displayName: displayName, avatarUrl: avatarUrl)
             )
             let updated = toDomain(response.user)
             // Держим кешированного пользователя сессии (нижняя строка «я» в списке
             // чатов, аватары) в синхроне с правкой.
             session.updateProfile(displayName: updated.displayName, avatarUrl: updated.avatarUrl)
             return updated
-        }
-    }
-
-    /// Ручной статус присутствия (ONLINE/AWAY/DND/OFFLINE) — PATCH /status/me, веб-паритет.
-    func updateStatus(_ status: String) async -> ApiResult<UserProfile> {
-        await safeApiCall {
-            let response: MeResponse = try await api.patch(
-                "status/me", body: UpdateProfileRequest(status: status)
-            )
-            return toDomain(response.user)
         }
     }
 
@@ -163,9 +152,7 @@ final class ProfileRepository {
             username: dto.username,
             eblid: dto.eblid,
             displayName: dto.displayName,
-            bio: dto.bio,
-            avatarUrl: dto.avatarUrl,
-            status: dto.status
+            avatarUrl: dto.avatarUrl
         )
     }
 }

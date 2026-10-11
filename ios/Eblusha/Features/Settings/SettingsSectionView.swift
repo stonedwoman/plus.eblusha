@@ -167,13 +167,9 @@ struct SettingsSectionView: View {
             EbCard {
                 photoRow
                 nameRow
-                bioRow
                 eblidRow
             }
             .padding(.top, 16)
-            group("circle.inset.filled", "Статус") {
-                EbCard { statusRow }
-            }
             group("clock", "Местное время") {
                 EbCard { localTimeRow }
             }
@@ -247,19 +243,6 @@ struct SettingsSectionView: View {
         }
     }
 
-    private var bioRow: some View {
-        EbRow(id: "p-bio") {
-            VStack(alignment: .leading, spacing: 10) {
-                EbRowText(title: "О себе", desc: "Пара строк в вашей карточке — её видит тот, кто откроет профиль.")
-                EbField(
-                    placeholder: "Расскажите о себе",
-                    text: Binding(get: { vm.ui.bio }, set: { vm.onBioChange($0) }),
-                    multiline: true, edited: vm.bioChanged, accessibilityName: "О себе"
-                )
-            }
-        }
-    }
-
     private var eblidRow: some View {
         let eblid = vm.ui.profile?.eblid
         return EbRow(id: "p-eblid") {
@@ -283,22 +266,6 @@ struct SettingsSectionView: View {
                     }
                     Spacer(minLength: 0)
                 }
-            }
-        }
-    }
-
-    private var statusRow: some View {
-        let msg = vm.msgs["p-status"]
-        return EbRow(id: "p-status", isError: msg?.kind == .err) {
-            VStack(alignment: .leading, spacing: 12) {
-                EbRowText(title: "Показывать меня", desc: "Применяется сразу.")
-                EbChoiceTiles(
-                    options: SettingsText.statusOptions,
-                    selection: SettingsText.statusOption(vm.ui.profile?.status).value,
-                    accessibilityName: "Показывать меня",
-                    onSelect: { vm.setStatus($0) }
-                )
-                if let msg { EbMsgView(msg: msg) }
             }
         }
     }

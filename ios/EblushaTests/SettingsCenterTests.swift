@@ -15,7 +15,7 @@ final class SettingsSearchTests: XCTestCase {
     /// ошибка: поиск и прыжок к строке ищут строки по этим ключам.
     func testIndexIdsMatchSpec() {
         let expected: [String] = [
-            "p-photo", "p-name", "p-bio", "p-eblid", "p-status", "p-ltime", "p-bot",
+            "p-photo", "p-name", "p-eblid", "p-ltime", "p-bot",
             "c-server",
             "a-permmic", "a-permcam",
             "s-link", "s-sess",
@@ -37,6 +37,26 @@ final class SettingsSearchTests: XCTestCase {
         XCTAssertEqual(sections, Set(SettingsSectionID.allCases))
     }
 
+    /// Решение владельца: «О себе» и ручной выбор статуса убраны со всех клиентов. Поиск не должен
+    /// находить их как пункты ни по названию, ни по прежним синонимам.
+    func testIndexHasNoAboutOrManualStatusRows() {
+        let ids = Set(SettingsSearch.rows.map(\.id))
+        XCTAssertFalse(ids.contains("p-bio"))
+        XCTAssertFalse(ids.contains("p-status"))
+        XCTAssertNil(SettingsSearch.row("p-bio"))
+        XCTAssertNil(SettingsSearch.row("p-status"))
+        for query in ["о себе", "био", "bio", "описание", "подпись", "расскажите",
+                      "невидимка", "не беспокоить", "dnd", "отошёл", "показывать меня"] {
+            XCTAssertTrue(SettingsSearch.match(query).isEmpty, "«\(query)» ничего не должно находить, а нашло \(SettingsSearch.match(query).map(\.id))")
+        }
+        // «статус» осталось только в пояснении местного времени («под вашим статусом» — это строка
+        // присутствия «В сети / был(а)…», она автоматическая и остаётся): выбора статуса среди находок нет.
+        XCTAssertEqual(SettingsSearch.match("статус").map(\.id), ["p-ltime"])
+        // В «Профиле» — фото, имя, EBLID, местное время, чат с Еблушей.
+        let profile = SettingsSearch.rows.filter { $0.section == .profile }.map(\.id)
+        XCTAssertEqual(profile, ["p-photo", "p-name", "p-eblid", "p-ltime", "p-bot"])
+    }
+
     func testSectionOrderIsNativeOrder() {
         XCTAssertEqual(SettingsSectionID.allCases.map(\.rawValue), ["profile", "conn", "av", "security", "app"])
         XCTAssertEqual(SettingsSectionID.allCases.map(\.title), ["Профиль", "Соединение", "Звук и видео", "Безопасность", "Приложение"])
@@ -53,9 +73,9 @@ final class SettingsSearchTests: XCTestCase {
     }
 
     func testYoMatchesYe() {
-        // «Отошёл» лежит в синонимах строки статуса: ё = е в обе стороны.
-        XCTAssertEqual(SettingsSearch.match("отошел").map(\.id), ["p-status"])
-        XCTAssertEqual(SettingsSearch.match("ОТОШЁЛ").map(\.id), ["p-status"])
+        // «Моё» лежит в названии строки местного времени: ё = е в обе стороны.
+        XCTAssertEqual(SettingsSearch.match("мое местное").map(\.id), ["p-ltime"])
+        XCTAssertEqual(SettingsSearch.match("МОЁ МЕСТНОЕ").map(\.id), ["p-ltime"])
     }
 
     func testAllWordsMustMatch() {
@@ -177,13 +197,6 @@ final class SettingsTextTests: XCTestCase {
         XCTAssertEqual(AppConfig.Server.mirror.routeTitle, "Через СПб")
         XCTAssertEqual(AppConfig.Server.main.title, "eblusha.org")
         XCTAssertEqual(AppConfig.Server.mirror.title, "ru.eblusha.org")
-    }
-
-    func testStatusOptions() {
-        XCTAssertEqual(SettingsText.statusOptions.map(\.value), ["ONLINE", "AWAY", "DND", "OFFLINE"])
-        XCTAssertEqual(SettingsText.statusOption("dnd").label, "Не беспокоить")
-        XCTAssertEqual(SettingsText.statusOption("BACKGROUND").value, "ONLINE")
-        XCTAssertEqual(SettingsText.statusOption(nil).value, "ONLINE")
     }
 
     func testLocalTimeMessages() {
@@ -420,42 +433,30 @@ final class AmberStripeTests: XCTestCase {
 
 /// Подмена сети: ответы настраиваются, вызовы записываются.
 private final class FakeSettingsAPI: SettingsProfileAPI {
-    var profile = UserProfile(id: "me", username: "roman", eblid: "2498", displayName: "Роман", bio: "Привет", avatarUrl: nil, status: "ONLINE")
+    var profile = UserProfile(id: "me", username: "roman", eblid: "2498", displayName: "Роман", avatarUrl: nil)
     var sessions: [DeviceSession] = []
     var failProfile = false
     var failSessions = false
     var failUpdate = false
-    var failStatus = false
     var failRevoke = false
     var failRevokeOthers = false
     var failPairing = false
 
-    private(set) var updates: [(name: String?, bio: String?, avatar: String?)] = []
+    private(set) var updates: [(name: String?, avatar: String?)] = []
     private(set) var revoked: [String] = []
     private(set) var revokeOthersCalls = 0
-    private(set) var statusCalls: [String] = []
 
     func me() async -> ApiResult<UserProfile> {
         failProfile ? .failure(message: "сеть") : .success(profile)
     }
 
-    func updateProfile(displayName: String?, bio: String?, avatarUrl: String?) async -> ApiResult<UserProfile> {
-        updates.append((displayName, bio, avatarUrl))
+    func updateProfile(displayName: String?, avatarUrl: String?) async -> ApiResult<UserProfile> {
+        updates.append((displayName, avatarUrl))
         if failUpdate { return .failure(message: "сеть") }
         profile = UserProfile(
             id: profile.id, username: profile.username, eblid: profile.eblid,
-            displayName: displayName ?? profile.displayName, bio: bio ?? profile.bio,
-            avatarUrl: avatarUrl ?? profile.avatarUrl, status: profile.status
-        )
-        return .success(profile)
-    }
-
-    func updateStatus(_ status: String) async -> ApiResult<UserProfile> {
-        statusCalls.append(status)
-        if failStatus { return .failure(message: "сеть") }
-        profile = UserProfile(
-            id: profile.id, username: profile.username, eblid: profile.eblid, displayName: profile.displayName,
-            bio: profile.bio, avatarUrl: profile.avatarUrl, status: status
+            displayName: displayName ?? profile.displayName,
+            avatarUrl: avatarUrl ?? profile.avatarUrl
         )
         return .success(profile)
     }
@@ -510,7 +511,6 @@ final class SettingsViewModelTests: XCTestCase {
         let (vm, _) = await makeLoaded()
         XCTAssertEqual(vm.ui.profile?.name, "Роман")
         XCTAssertEqual(vm.ui.displayName, "Роман")
-        XCTAssertEqual(vm.ui.bio, "Привет")
         XCTAssertFalse(vm.isDirty)
         XCTAssertEqual(vm.saveBarState, .hidden)
     }
@@ -519,19 +519,15 @@ final class SettingsViewModelTests: XCTestCase {
         let (vm, _) = await makeLoaded()
         vm.onDisplayNameChange("Роман К.")
         XCTAssertEqual(vm.saveBarState, .dirty(detail: "Новое имя уйдёт одним запросом."))
-        vm.onBioChange("Другое")
-        XCTAssertEqual(vm.saveBarState, .dirty(detail: "Новые имя и «О себе» уйдут одним запросом."))
         // Возврат к прежнему — несохранённого нет (пробелы по краям не считаются).
         vm.onDisplayNameChange(" Роман ")
-        vm.onBioChange("Привет")
         XCTAssertFalse(vm.isDirty)
         XCTAssertEqual(vm.saveBarState, .hidden)
     }
 
-    func testSaveSendsNameAndBioInOneRequestThenShowsSaved() async {
+    func testSaveSendsNameThenShowsSaved() async {
         let (vm, api) = await makeLoaded()
         vm.onDisplayNameChange("Роман К.")
-        vm.onBioChange("Новое о себе")
         var result: Bool?
         vm.save { result = $0 }
         XCTAssertEqual(vm.saveBarState, .saving)
@@ -539,7 +535,7 @@ final class SettingsViewModelTests: XCTestCase {
         XCTAssertEqual(result, true)
         XCTAssertEqual(api.updates.count, 1)
         XCTAssertEqual(api.updates.first?.name, "Роман К.")
-        XCTAssertEqual(api.updates.first?.bio, "Новое о себе")
+        XCTAssertNil(api.updates.first?.avatar, "имя уходит без фото")
         XCTAssertEqual(vm.saveBarState, .saved)
         XCTAssertFalse(vm.isDirty)
         // «Изменения сохранены.» уходит сама через 2,8 с — проверяем только что состояние верное.
@@ -577,22 +573,11 @@ final class SettingsViewModelTests: XCTestCase {
         XCTAssertNil(vm.msgs["p-name"])
     }
 
-    func testClearingBioSendsEmptyString() async {
-        let (vm, api) = await makeLoaded()
-        vm.onBioChange("")
-        vm.save()
-        await settle()
-        XCTAssertEqual(api.updates.first?.bio, "", "стёртое «О себе» уходит пустой строкой — иначе его не стереть")
-        XCTAssertEqual(vm.ui.bio, "")
-    }
-
     func testDiscardRestoresServerValues() async {
         let (vm, api) = await makeLoaded()
         vm.onDisplayNameChange("Другое")
-        vm.onBioChange("Иное")
         vm.discardDraft()
         XCTAssertEqual(vm.ui.displayName, "Роман")
-        XCTAssertEqual(vm.ui.bio, "Привет")
         XCTAssertFalse(vm.isDirty)
         XCTAssertTrue(api.updates.isEmpty)
     }
@@ -621,41 +606,6 @@ final class SettingsViewModelTests: XCTestCase {
         XCTAssertNil(vm.ui.profile)
         XCTAssertTrue(vm.ui.profileFailed)
         XCTAssertEqual(vm.saveBarState, .hidden)
-    }
-
-    // Статус
-
-    func testStatusIsOptimisticAndRollsBackWithRowMessage() async {
-        let api = FakeSettingsAPI()
-        api.failStatus = true
-        let (vm, _) = await makeLoaded(api)
-        vm.setStatus("DND")
-        XCTAssertEqual(vm.ui.profile?.status, "DND", "оптимистично")
-        await settle()
-        XCTAssertEqual(vm.ui.profile?.status, "ONLINE", "сбой — вернулся прежний")
-        XCTAssertEqual(vm.msgs["p-status"], .err("Не удалось сохранить настройку. Попробуйте ещё раз."))
-        api.failStatus = false
-        vm.setStatus("AWAY")
-        await settle()
-        XCTAssertEqual(vm.ui.profile?.status, "AWAY")
-        XCTAssertNil(vm.msgs["p-status"])
-        XCTAssertEqual(api.statusCalls, ["DND", "AWAY"])
-    }
-
-    func testStatusSameValueDoesNothing() async {
-        let (vm, api) = await makeLoaded()
-        vm.setStatus("ONLINE")
-        await settle()
-        XCTAssertTrue(api.statusCalls.isEmpty)
-    }
-
-    func testStatusDoesNotTouchDraft() async {
-        let (vm, _) = await makeLoaded()
-        vm.onDisplayNameChange("Правка")
-        vm.setStatus("AWAY")
-        await settle()
-        XCTAssertEqual(vm.ui.displayName, "Правка")
-        XCTAssertTrue(vm.isDirty)
     }
 
     // Сеансы
@@ -796,26 +746,21 @@ final class SettingsViewModelTests: XCTestCase {
         XCTAssertEqual(api.updates.count, 1)
         XCTAssertEqual(api.updates.first?.avatar, "/media/new.jpg")
         XCTAssertNil(api.updates.first?.name, "имя с фото не уходит")
-        XCTAssertNil(api.updates.first?.bio, "«О себе» с фото не уходит")
         XCTAssertEqual(vm.ui.profile?.avatarUrl, "/media/new.jpg")
         XCTAssertEqual(vm.msgs["p-photo"], .ok("Фото сохранено."))
     }
 
-    /// Находка ревью: новое фото молча сохраняло вместе с собой несохранённые имя и «О себе», а панель сохранения пропадала.
-    func testAvatarUploadKeepsUnsavedNameAndBioUnsaved() async {
+    /// Находка ревью: новое фото молча сохраняло вместе с собой несохранённое имя, а панель сохранения пропадала.
+    func testAvatarUploadKeepsUnsavedNameUnsaved() async {
         let (vm, api) = await makeLoaded()
         vm.onDisplayNameChange("Роман Новый")
-        vm.onBioChange("Другое «О себе»")
         XCTAssertTrue(vm.isDirty)
         vm.uploadAvatar(bytes: Data([1, 2, 3]), mime: "image/jpeg")
         await settle()
         XCTAssertEqual(api.updates.count, 1)
         XCTAssertNil(api.updates.first?.name)
-        XCTAssertNil(api.updates.first?.bio)
         XCTAssertEqual(api.profile.displayName, "Роман", "на сервере имя прежнее")
-        XCTAssertEqual(api.profile.bio, "Привет", "на сервере «О себе» прежнее")
         XCTAssertEqual(vm.ui.displayName, "Роман Новый", "черновик остался в поле")
-        XCTAssertEqual(vm.ui.bio, "Другое «О себе»")
         XCTAssertTrue(vm.isDirty, "панель сохранения на месте")
         XCTAssertEqual(vm.ui.profile?.avatarUrl, "/media/new.jpg")
         // «Сохранить» потом отправляет именно черновик.
@@ -823,7 +768,42 @@ final class SettingsViewModelTests: XCTestCase {
         await settle()
         XCTAssertEqual(api.updates.count, 2)
         XCTAssertEqual(api.updates.last?.name, "Роман Новый")
-        XCTAssertEqual(api.updates.last?.bio, "Другое «О себе»")
         XCTAssertFalse(vm.isDirty)
+    }
+}
+
+// MARK: - «О себе» и ручной статус убраны
+
+/// Решение владельца: поле «О себе» и выбор статуса убраны со всех клиентов. Сервер их пока хранит и
+/// присылает — клиент должен спокойно пережить лишние поля в ответах и не слать их в запросах.
+final class ProfileFieldsRemovedTests: XCTestCase {
+
+    private func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
+        try JSONDecoder().decode(T.self, from: Data(json.utf8))
+    }
+
+    /// Запрос профиля несёт только имя и фото: ни `bio`, ни `status` (сервер не получит
+    /// ни пустой «О себе», ни ручного статуса от этого клиента).
+    func testUpdateRequestHasOnlyNameAndAvatar() throws {
+        func keys(_ request: UpdateProfileRequest) throws -> Set<String> {
+            let data = try JSONEncoder().encode(request)
+            let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            return Set((object ?? [:]).keys)
+        }
+        XCTAssertEqual(try keys(UpdateProfileRequest(displayName: "Роман", avatarUrl: nil)), ["displayName"])
+        XCTAssertEqual(try keys(UpdateProfileRequest(displayName: nil, avatarUrl: "/media/a.jpg")), ["avatarUrl"])
+        XCTAssertEqual(try keys(UpdateProfileRequest(displayName: "Р", avatarUrl: "/m")), ["displayName", "avatarUrl"])
+    }
+
+    /// Старый сервер ещё присылает `bio` и ручной `status` — лишние ключи не ломают разбор.
+    func testServerStillSendingBioAndStatusDecodes() throws {
+        let me = try decode(MeResponse.self, #"{"user":{"id":"u","username":"roman","eblid":"2498","displayName":"Роман","bio":"Пишу по ночам","avatarUrl":null,"status":"DND"}}"#)
+        XCTAssertEqual(me.user.displayName, "Роман")
+        XCTAssertEqual(me.user.eblid, "2498")
+
+        let card = try decode(UserCardResponse.self, #"{"user":{"id":"u","eblid":"1","displayName":"Аня","bio":"О себе","avatarUrl":null,"status":"ONLINE","isBot":false}}"#)
+        XCTAssertEqual(card.user.displayName, "Аня")
+        // Автоматическое присутствие чужого профиля по-прежнему читается.
+        XCTAssertEqual(card.user.status, "ONLINE")
     }
 }

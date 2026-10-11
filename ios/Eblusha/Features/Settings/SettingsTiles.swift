@@ -156,23 +156,12 @@ struct TileMiniRow: View {
 
 // MARK: - Содержимое плиток
 
-/// «Профиль»: баннер, аватар 60, имя 20 сливками, капсулы EBLID и ручного статуса.
+/// «Профиль»: баннер, аватар 60, имя 20 сливками, капсула EBLID.
 struct ProfileTileContent: View {
     let name: String
     let avatarUrl: String?
     let eblid: String?
-    let status: SettingsText.StatusOption
     var hint: String?
-
-    private var eblidCapsule: some View { EbEblidCapsule(eblid: eblid, height: 26) }
-
-    private var statusCapsule: some View {
-        EbCapsule(height: 26) {
-            Circle().fill(status.color).frame(width: 8, height: 8)
-            Text(status.label).ebFont(12.5).foregroundStyle(Eb.textMuted).lineLimit(1).fixedSize()
-        }
-        .accessibilityHidden(true)
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -185,11 +174,7 @@ struct ProfileTileContent: View {
                         .tracking(-0.3)
                         .foregroundStyle(Eb.logoCream)
                         .lineLimit(1)
-                    // Крупный шрифт: капсулы встают друг под другом, а не ломают строку.
-                    ViewThatFits(in: .horizontal) {
-                        HStack(spacing: 6) { eblidCapsule; statusCapsule }
-                        VStack(alignment: .leading, spacing: 6) { eblidCapsule; statusCapsule }
-                    }
+                    EbEblidCapsule(eblid: eblid, height: 26)
                 }
                 Spacer(minLength: 0)
             }

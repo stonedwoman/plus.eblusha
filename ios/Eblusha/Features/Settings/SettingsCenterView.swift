@@ -285,7 +285,6 @@ struct SettingsCenterView: View {
             ) {
                 ProfileTileContent(
                     name: shown, avatarUrl: ui.profile?.avatarUrl, eblid: ui.profile?.eblid,
-                    status: SettingsText.statusOption(ui.profile?.status),
                     hint: vm.isDirty ? "Сохраните изменения" : nil
                 )
             }
@@ -476,7 +475,6 @@ struct SettingsCenterView: View {
         case "p-photo": return host.vm.ui.profile?.avatarUrl == nil ? "нет фото" : "есть фото"
         case "p-name": return host.vm.ui.profile?.name ?? ""
         case "p-eblid": return host.vm.ui.profile?.eblid ?? ""
-        case "p-status": return SettingsText.statusOption(host.vm.ui.profile?.status).label
         case "p-ltime": return (host.localTime.share?.share ?? true) ? "Вкл" : "Выкл"
         case "p-bot": return host.bot.botChat.enabled ? "Вкл" : "Выкл"
         case "c-server": return i.server.routeTitle

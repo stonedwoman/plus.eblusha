@@ -169,7 +169,6 @@ final class SettingsHostModel: ObservableObject {
         return SettingsInputs(
             profileName: profile?.name,
             eblid: profile?.eblid,
-            manualStatus: profile?.status,
             hasUnsaved: vm.isDirty || vm.ui.saveStatus == .failed,
             saveFailed: vm.ui.saveStatus == .failed,
             profileMessageIsError: profileHasError,
@@ -203,7 +202,6 @@ final class SettingsHostModel: ObservableObject {
 struct SettingsInputs: Equatable {
     var profileName: String?
     var eblid: String?
-    var manualStatus: String?
     var hasUnsaved = false
     var saveFailed = false
     var profileMessageIsError = false

@@ -66,7 +66,6 @@ struct UserCardDto: Decodable {
     let id: String
     var eblid: String?
     var displayName: String?
-    var bio: String?
     var avatarUrl: String?
     var avatars: [String] = [] // текущий + прошлые аватары, свежие первыми
     var status: String?
@@ -76,7 +75,7 @@ struct UserCardDto: Decodable {
     var isBot = false
 
     private enum CodingKeys: String, CodingKey {
-        case id, eblid, displayName, bio, avatarUrl, avatars, status, lastSeenAt, createdAt, isBot
+        case id, eblid, displayName, avatarUrl, avatars, status, lastSeenAt, createdAt, isBot
     }
 
     init(from decoder: Decoder) throws {
@@ -84,7 +83,6 @@ struct UserCardDto: Decodable {
         id = try c.decode(String.self, forKey: .id)
         eblid = try c.decodeIfPresent(String.self, forKey: .eblid)
         displayName = try c.decodeIfPresent(String.self, forKey: .displayName)
-        bio = try c.decodeIfPresent(String.self, forKey: .bio)
         avatarUrl = try c.decodeIfPresent(String.self, forKey: .avatarUrl)
         avatars = try c.decodeIfPresent([String].self, forKey: .avatars) ?? []
         status = try c.decodeIfPresent(String.self, forKey: .status)
@@ -94,7 +92,7 @@ struct UserCardDto: Decodable {
     }
 }
 
-// MARK: - Профиль / статус
+// MARK: - Профиль
 
 struct MeResponse: Decodable {
     let user: UserProfileDto
@@ -105,16 +103,12 @@ struct UserProfileDto: Decodable {
     let username: String
     var eblid: String?
     var displayName: String?
-    var bio: String?
     var avatarUrl: String?
-    var status: String?
     var lastSeenAt: String?
 }
 
 struct UpdateProfileRequest: Encodable {
     var displayName: String?
-    var bio: String?
-    var status: String?
     var avatarUrl: String?
 }
 

@@ -644,7 +644,6 @@ struct EbAsk: View {
 struct EbField: View {
     let placeholder: String
     @Binding var text: String
-    var multiline = false
     var edited = false
     var isError = false
     var submitLabel: SubmitLabel = .done
@@ -652,34 +651,26 @@ struct EbField: View {
     @FocusState private var focused: Bool
 
     var body: some View {
-        Group {
-            if multiline {
-                TextField("", text: $text, prompt: Text(placeholder).foregroundStyle(Eb.textDim), axis: .vertical)
-                    .lineLimit(2...5)
-            } else {
-                TextField("", text: $text, prompt: Text(placeholder).foregroundStyle(Eb.textDim))
-                    .submitLabel(submitLabel)
-            }
-        }
-        .focused($focused)
-        .ebFont(15)
-        .foregroundStyle(Eb.textPrimary)
-        .tint(Eb.brand600)
-        .padding(.horizontal, 12)
-        .padding(.vertical, multiline ? 10 : 0)
-        .frame(minHeight: 40)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Eb.field))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(isError ? Eb.danger.opacity(0.6) : ((focused || edited) ? Eb.brand600 : Eb.borderStrong), lineWidth: 1)
-        )
-        .contentShape(Rectangle())
-        .onTapGesture { focused = true }
-        .accessibilityLabel(accessibilityName)
+        TextField("", text: $text, prompt: Text(placeholder).foregroundStyle(Eb.textDim))
+            .submitLabel(submitLabel)
+            .focused($focused)
+            .ebFont(15)
+            .foregroundStyle(Eb.textPrimary)
+            .tint(Eb.brand600)
+            .padding(.horizontal, 12)
+            .frame(minHeight: 40)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Eb.field))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(isError ? Eb.danger.opacity(0.6) : ((focused || edited) ? Eb.brand600 : Eb.borderStrong), lineWidth: 1)
+            )
+            .contentShape(Rectangle())
+            .onTapGesture { focused = true }
+            .accessibilityLabel(accessibilityName)
     }
 }
 
-// MARK: - Сегменты и плитки-выбор
+// MARK: - Сегменты
 
 struct EbSegments<Value: Hashable>: View {
     let options: [(value: Value, title: String)]
@@ -720,53 +711,6 @@ struct EbSegments<Value: Hashable>: View {
         .opacity(disabled ? 0.45 : 1)
         .disabled(disabled)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: selection)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(accessibilityName)
-    }
-}
-
-/// Плитки-выбор 2 × N: «Показывать меня». Выбранная — янтарь в полоску, точка цвета статуса.
-struct EbChoiceTiles: View {
-    let options: [SettingsText.StatusOption]
-    let selection: String
-    var accessibilityName: String
-    let onSelect: (String) -> Void
-
-    var body: some View {
-        LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
-            ForEach(options, id: \.value) { option in
-                let selected = option.value == selection
-                Button { onSelect(option.value) } label: {
-                    HStack(spacing: 9) {
-                        Circle()
-                            .fill(option.color)
-                            .frame(width: 9, height: 9)
-                            .overlay(Circle().strokeBorder(selected ? Eb.ink.opacity(0.35) : .clear, lineWidth: 1))
-                        Text(option.label)
-                            .ebFont(14, selected ? .bold : .semibold)
-                            .foregroundStyle(selected ? Eb.ink : Eb.textPrimary)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.8)
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, 12)
-                    .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
-                    .background {
-                        if selected {
-                            AmberStripe(cornerRadius: 12)
-                                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Eb.brand600, lineWidth: 1))
-                        } else {
-                            RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Eb.surface100)
-                                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Eb.borderStrong, lineWidth: 1))
-                        }
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(option.label)
-                .accessibilityAddTraits(selected ? .isSelected : [])
-            }
-        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilityName)
     }
@@ -885,14 +829,8 @@ struct EbSaveBar: View {
     }
 }
 
-/// Какое пояснение у панели: что именно уйдёт одним запросом.
-func saveBarDetail(nameChanged: Bool, bioChanged: Bool) -> String {
-    switch (nameChanged, bioChanged) {
-    case (true, true): return "Новые имя и «О себе» уйдут одним запросом."
-    case (false, true): return "Новое «О себе» уйдёт одним запросом."
-    default: return "Новое имя уйдёт одним запросом."
-    }
-}
+/// Пояснение у панели сохранения: правится одно только имя.
+let saveBarDetail = "Новое имя уйдёт одним запросом."
 
 /// Подпись, нарисованная как малая обычная кнопка: для PhotosPicker, который не берёт наш ButtonStyle.
 struct EbPillLabel: View {

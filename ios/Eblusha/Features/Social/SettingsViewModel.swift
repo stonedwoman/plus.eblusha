@@ -4,7 +4,7 @@ import Combine
 /// Порт `feature/social/SettingsViewModel.kt`, переписанный под «Центр управления»
 /// (Features/Settings). Запросы и порядок действий те же, что были; новое — только у вида:
 ///  - итог у СВОЕЙ строки (`msgs[id]`) вместо одной общей ошибки на весь экран;
-///  - панель сохранения для имени и «О себе» (`saveStatus`, `isDirty`);
+///  - панель сохранения для имени (`saveStatus`, `isDirty`);
 ///  - вопрос «на месте» перед отключением сеанса и «Все другие» (`askRevokeID`,
 ///    `askRevokeOthers`) и защита «Все другие»: пока своего устройства в списке нет,
 ///    `POST /devices/revoke-others` отозвал бы ВСЕ устройства, включая сам телефон;
@@ -14,8 +14,7 @@ import Combine
 
 protocol SettingsProfileAPI {
     func me() async -> ApiResult<UserProfile>
-    func updateProfile(displayName: String?, bio: String?, avatarUrl: String?) async -> ApiResult<UserProfile>
-    func updateStatus(_ status: String) async -> ApiResult<UserProfile>
+    func updateProfile(displayName: String?, avatarUrl: String?) async -> ApiResult<UserProfile>
     func uploadAvatar(bytes: Data, mime: String) async -> ApiResult<String>
     func startDevicePairing() async -> ApiResult<DevicePairing>
     func listSessions() async -> ApiResult<[DeviceSession]>
@@ -36,7 +35,6 @@ final class SettingsViewModel: ObservableObject {
         var profileLoading = false
         var profileFailed = false
         var displayName = ""
-        var bio = ""
         var saveStatus: SaveStatus = .idle
         var avatarBusy = false
         var pairing: DevicePairing?
@@ -52,7 +50,7 @@ final class SettingsViewModel: ObservableObject {
     }
 
     @Published private(set) var ui = UiState()
-    /// Итог у строки по её `id` из указателя поиска («p-status», «s-sess»…).
+    /// Итог у строки по её `id` из указателя поиска («p-name», «s-sess»…).
     @Published private(set) var msgs: [String: RowMessage] = [:]
 
     private let api: SettingsProfileAPI
@@ -89,7 +87,6 @@ final class SettingsViewModel: ObservableObject {
                 // Правку пользователя поверх свежего профиля не затираем.
                 if !hadDraft {
                     ui.displayName = profile.displayName ?? ""
-                    ui.bio = profile.bio ?? ""
                 }
             case .failure:
                 ui.profileLoading = false
@@ -123,14 +120,12 @@ final class SettingsViewModel: ObservableObject {
         if let message { msgs[id] = message } else { msgs.removeValue(forKey: id) }
     }
 
-    // MARK: - Имя и «О себе»: панель сохранения
+    // MARK: - Имя: панель сохранения
 
     private var baselineName: String { (ui.profile?.displayName ?? "").trimmed() }
-    private var baselineBio: String { (ui.profile?.bio ?? "").trimmed() }
 
     var nameChanged: Bool { ui.profile != nil && ui.displayName.trimmed() != baselineName }
-    var bioChanged: Bool { ui.profile != nil && ui.bio.trimmed() != baselineBio }
-    var isDirty: Bool { nameChanged || bioChanged }
+    var isDirty: Bool { nameChanged }
 
     var saveBarState: SaveBarState {
         switch ui.saveStatus {
@@ -138,7 +133,7 @@ final class SettingsViewModel: ObservableObject {
         case .failed: return isDirty ? .failed : .hidden
         case .saved: return .saved
         case .idle:
-            return isDirty ? .dirty(detail: saveBarDetail(nameChanged: nameChanged, bioChanged: bioChanged)) : .hidden
+            return isDirty ? .dirty(detail: saveBarDetail) : .hidden
         }
     }
 
@@ -147,12 +142,6 @@ final class SettingsViewModel: ObservableObject {
         draftTouched = true
         touchDraft()
         if msgs["p-name"]?.kind == .err { setMsg("p-name", nil) }
-    }
-
-    func onBioChange(_ value: String) {
-        ui.bio = value
-        draftTouched = true
-        touchDraft()
     }
 
     private func touchDraft() {
@@ -167,19 +156,16 @@ final class SettingsViewModel: ObservableObject {
         savedResetTask?.cancel()
         draftTouched = false
         ui.displayName = ui.profile?.displayName ?? ""
-        ui.bio = ui.profile?.bio ?? ""
         ui.saveStatus = .idle
         setMsg("p-name", nil)
     }
 
-    /// Имя и «О себе» уходят одним запросом, как и раньше. Новое: пустое имя при имени на сервере
-    /// не отправляется (сервер его не принимает — поле просто не уходило, и «Сохранено» врало),
-    /// а «О себе», стёртое целиком, уходит пустой строкой — иначе его не стереть.
+    /// Новое имя уходит запросом `PATCH /status/me`. Пустое имя при имени на сервере не отправляется
+    /// (сервер его не принимает — поле просто не уходило, и «Сохранено» врало).
     /// `completion` — после ответа: true — сохранено.
     func save(completion: ((Bool) -> Void)? = nil) {
         guard ui.saveStatus != .saving, let profile = ui.profile else { completion?(false); return }
         let name = ui.displayName.trimmed()
-        let bio = ui.bio.trimmed()
         if name.isEmpty && !baselineName.isEmpty {
             setMsg("p-name", .err("Введите отображаемое имя."))
             completion?(false)
@@ -188,18 +174,15 @@ final class SettingsViewModel: ObservableObject {
         setMsg("p-name", nil)
         savedResetTask?.cancel()
         ui.saveStatus = .saving
-        let clearsBio = bio.isEmpty && !baselineBio.isEmpty
         Task {
             let result = await api.updateProfile(
                 displayName: name.isEmpty ? nil : name,
-                bio: bio.isEmpty ? (clearsBio ? "" : nil) : bio,
                 avatarUrl: profile.avatarUrl
             )
             switch result {
             case .success(let updated):
                 ui.profile = updated
                 ui.displayName = updated.displayName ?? ""
-                ui.bio = updated.bio ?? ""
                 draftTouched = false
                 ui.saveStatus = .saved
                 scheduleSavedReset()
@@ -222,9 +205,9 @@ final class SettingsViewModel: ObservableObject {
 
     // MARK: - Фото
 
-    /// Фото сохраняется сразу — как и раньше: загрузка, затем `PATCH /status/me` с одним фото. Набранные, но не
-    /// сохранённые имя и «О себе» вместе с ним НЕ уходят (как на вебе и Android): подтверждать их человек будет
-    /// сам, панелью сохранения, а строка «Фото сохранено.» не должна молча сохранить ещё и их.
+    /// Фото сохраняется сразу — как и раньше: загрузка, затем `PATCH /status/me` с одним фото. Набранное, но не
+    /// сохранённое имя вместе с ним НЕ уходит (как на вебе и Android): подтверждать его человек будет
+    /// сам, панелью сохранения, а строка «Фото сохранено.» не должна молча сохранить ещё и его.
     func uploadAvatar(bytes: Data, mime: String) {
         guard !ui.avatarBusy else { return }
         Task {
@@ -232,9 +215,9 @@ final class SettingsViewModel: ObservableObject {
             setMsg("p-photo", .busy("Загружаем фото…"))
             switch await api.uploadAvatar(bytes: bytes, mime: mime) {
             case .success(let url):
-                switch await api.updateProfile(displayName: nil, bio: nil, avatarUrl: url) {
+                switch await api.updateProfile(displayName: nil, avatarUrl: url) {
                 case .success(let profile):
-                    // Черновик имени и «О себе» не трогаем: он остаётся несохранённым, панель сохранения на месте.
+                    // Черновик имени не трогаем: он остаётся несохранённым, панель сохранения на месте.
                     ui.profile = profile
                     setMsg("p-photo", .ok("Фото сохранено."))
                 case .failure:
@@ -244,35 +227,6 @@ final class SettingsViewModel: ObservableObject {
                 setMsg("p-photo", .err("Не удалось загрузить фото. Попробуйте ещё раз."))
             }
             ui.avatarBusy = false
-        }
-    }
-
-    // MARK: - Ручной статус
-
-    /// Применяется сразу, без «Сохранить»; при сбое возвращается прежний.
-    func setStatus(_ status: String) {
-        guard let prev = ui.profile, prev.status?.uppercased() != status else { return }
-        // Оптимистично — плитки-выбор не мигают.
-        ui.profile = UserProfile(
-            id: prev.id, username: prev.username, eblid: prev.eblid,
-            displayName: prev.displayName, bio: prev.bio,
-            avatarUrl: prev.avatarUrl, status: status
-        )
-        setMsg("p-status", nil)
-        Task {
-            switch await api.updateStatus(status) {
-            case .success(let profile):
-                // Ответ сервера несёт и имя с «О себе»: драфт полей не трогаем.
-                ui.profile = UserProfile(
-                    id: profile.id, username: profile.username, eblid: profile.eblid,
-                    displayName: ui.profile?.displayName ?? profile.displayName,
-                    bio: ui.profile?.bio ?? profile.bio,
-                    avatarUrl: profile.avatarUrl, status: profile.status ?? status
-                )
-            case .failure:
-                ui.profile = prev
-                setMsg("p-status", .err("Не удалось сохранить настройку. Попробуйте ещё раз."))
-            }
         }
     }
 

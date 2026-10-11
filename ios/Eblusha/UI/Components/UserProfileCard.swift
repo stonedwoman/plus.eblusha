@@ -3,7 +3,7 @@ import UIKit
 
 /// Универсальная карточка пользователя (порт `ui/components/UserProfileCard.kt`, который
 /// сам — порт веб-`UserProfileCard.tsx`, v1–v4): баннер с градиентом из палитры аватара
-/// (или из id), аватар с кольцом поверх баннера, имя + живой статус + био, EBLID (копия),
+/// (или из id), аватар с кольцом поверх баннера, имя + живое присутствие, EBLID (копия),
 /// «В Еблуше с», кнопки «Написать»/«К беседе» + «Секретный чат», заявка в друзья,
 /// общие беседы, полноэкранный просмотр аватаров с историей.
 ///
@@ -87,7 +87,6 @@ struct UserCardSheet: View {
                     avatarCount: avatars.count,
                     status: status,
                     lastSeenMs: profile?.lastSeenMs,
-                    bio: profile?.bio,
                     onClose: onDismiss,
                     onOpenAvatar: currentAvatar != nil ? { viewer = ViewerStart(index: 0) } : nil
                 )
@@ -319,7 +318,7 @@ struct UserCardSheet: View {
     }
 }
 
-// MARK: - Герой: баннер + аватар с кольцом + имя/статус/био
+// MARK: - Герой: баннер + аватар с кольцом + имя/присутствие
 
 private struct CardHero: View {
     let userId: String
@@ -328,7 +327,6 @@ private struct CardHero: View {
     let avatarCount: Int
     let status: String?
     let lastSeenMs: Int64?
-    let bio: String?
     let onClose: () -> Void
     let onOpenAvatar: (() -> Void)?
 
@@ -407,13 +405,6 @@ private struct CardHero: View {
                     Text(line.text)
                         .font(.system(size: 13))
                         .foregroundStyle(line.color)
-                }
-                if let bio, !bio.trimmed().isEmpty {
-                    Spacer().frame(height: 6)
-                    Text(bio)
-                        .font(.system(size: 14))
-                        .foregroundStyle(Eb.textPrimary.opacity(0.92))
-                        .lineSpacing(3)
                 }
             }
             .padding(EdgeInsets(top: 6, leading: 20, bottom: 10, trailing: 20))
@@ -732,7 +723,7 @@ private func rgbToHSL(_ r: Double, _ g: Double, _ b: Double) -> (Double, Double,
 
 // MARK: - Карточка бота «Еблуша»
 
-/// Карточка системного бота (docs/bot-system.md §6): «Б», «бот», описание и EBLID; без дружбы,
+/// Карточка системного бота (docs/bot-system.md §6): «Б», «бот» и EBLID; без дружбы,
 /// «написать», звонка и секретного чата. Вместо них — «Открыть чат с Еблушей»: включает
 /// настройку (личный чат с ботом) и ведёт туда.
 private struct BotCardContent: View {
@@ -745,7 +736,6 @@ private struct BotCardContent: View {
 
     var body: some View {
         let name = profile?.name ?? bot.profile?.displayName ?? SystemBotStore.displayName
-        let bio = profile?.bio ?? bot.profile?.bio
         let eblid = profile?.eblid ?? bot.profile?.eblid
 
         ScrollView {
@@ -788,13 +778,6 @@ private struct BotCardContent: View {
                             .foregroundStyle(Eb.textPrimary)
                             .lineLimit(1)
                         BotTag()
-                    }
-                    if let bio, !bio.trimmed().isEmpty {
-                        Text(bio)
-                            .font(.system(size: 14))
-                            .foregroundStyle(Eb.textPrimary.opacity(0.92))
-                            .lineSpacing(3)
-                            .padding(.top, 4)
                     }
                 }
                 .padding(EdgeInsets(top: 6, leading: 20, bottom: 10, trailing: 20))
