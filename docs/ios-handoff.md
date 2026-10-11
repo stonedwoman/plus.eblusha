@@ -1060,6 +1060,10 @@ Keychain это не трогает: без `keychain-access-groups` групп�
 Проверено 2026-10-11 (номер 1034): с расширением — ARCHIVE FAILED («Authentication failed … bearer token» у ASC-ключа в
 Xcode и профиль `org.eblusha.plus` без App Groups), `--without-nse` — ARCHIVE и EXPORT SUCCEEDED. Значит, первую
 сборку с расширением выпускает человек: завести идентификаторы на developer.apple.com (выше) и повторить.
+**Выпущено сборкой 1036** (2026-10-11, после того как владелец завёл идентификаторы; дальше автоподпись справилась сама):
+расширение в `PlugIns/`, группа `group.org.eblusha.plus` у приложения и расширения, `keychain-access-groups` нет — как у 1034.
+«Authentication failed … bearer token» при archive означал «у App ID нет нужной способности, а ключом её не включить».
+Подробности и проверки — `docs/release-2026-10-11.md` §6.
 
 **Совместимость.** Старый сервер: в списке нет полей — «Без звука» не трогается; POST → 404 → «Не удалось
 изменить звук беседы»; `message:notify` без `muted` — своё правило. iOS ≤ 995 у пользователей: пуши по
