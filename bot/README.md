@@ -547,3 +547,23 @@ backend, `build backend worker` + `up -d --no-deps --no-build backend worker` (�
 4. Откат: образы `deploy-backend`/`deploy-worker`/`eblusha-bot` с меткой до выкладки (как в прошлых выкладках).
    Таблицы `memory`/`memory_skip` в `bot.sqlite` старому боту не мешают; привязки (SQLite бота) формат не меняли.
    Таблица `BotMemoryChange` старому серверу не мешает (откатывать миграцию не нужно).
+
+## Выкладка единого выпуска 2026-10-11 (карточки, «Подумай лучше», справочник, летопись; НЕ выложено)
+
+Полный порядок со всеми платформами, точками отката и откатом — `docs/release-2026-10-11.md`. Для бота:
+
+1. До всего — метки `deploy-backend`, `deploy-worker`, `eblusha-bot` → `:pre-rel1011-e6438fbe`, дамп Postgres, копии
+   `bot.sqlite` (`sqlite3 … ".backup …"`), `.env` и `.env.bot` (шаг 0 документа).
+2. Backend первым: `build backend worker` и `up -d --no-deps --no-build backend worker` — миграция
+   `20261011150000_bot_cards` (пустые `PromiseTimer`, `BotShare`), маршруты `/api/bot/promises*` и `/api/bot/share*`,
+   контракт задач rev 4; в `.env` сразу `APNS_BADGE=on`.
+3. Бот: `--profile bot build eblusha-bot`, затем `--profile bot up -d --no-deps --no-build --force-recreate eblusha-bot`
+   (без `--no-deps` и имени сервиса compose пересоздаст весь стек). В журнале — `knowledge.loaded`
+   (`checked: 2026-10-11`) и `valheim.start` с `history`; каталог `/DATA/valheim-history/export` монтируется только на
+   чтение.
+4. После публикации Android 0.3.42 и iOS-сборки — номера в `knowledge/eblusha-app.md` и `sources.json`, коммит и снова
+   шаг 3 (шаг 7 документа). Номер iOS закреплять `EBLUSHA_BUILD_NUMBER` до этого коммита.
+5. Выключатели без отката: `.env` — `PROMISE_TIMERS=off`, `BOT_SHARE=off` (+ перезапуск backend/worker); `.env.bot` —
+   `BOT_DEEP=off` («Подумай лучше» честно отказывает), `BOT_KNOWLEDGE_FILE=off` (+ пересоздать бота).
+6. Откат — метки `pre-rel1011-e6438fbe` (шаг 9 документа). Миграцию не откатывать; таблицы `memory` и прочее в
+   `bot.sqlite` старому боту не мешают.
