@@ -202,7 +202,7 @@
   {
    "id": "ios.version-capsule",
    "section": "2",
-   "claim": "Капсула «v 1.0 · 1036» в строке со своим именем; внизу «Настроек» — «Еблуша для iPhone 1.0 · сборка 1036»; важен номер сборки",
+   "claim": "Капсула «v 1.0 · 1057» в строке со своим именем; внизу «Настроек» — «Еблуша для iPhone 1.0 · сборка 1057»; важен номер сборки",
    "src": [
     "ios:Features/Chat/ChatListView.swift:283-330",
     "ios:Features/Settings/SettingsContent.swift:326-332"
