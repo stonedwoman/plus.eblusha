@@ -341,6 +341,17 @@ describe('«Подумай лучше» под ответом бота', () => {
     expect(botThinkBetterTarget(list2, 2, BOT, 'me')).toBeNull()
   })
 
+  it('не под ответом команды (kind "command": пунктуальность, «Отменил.», Valheim) — «Уточнить» остаётся', () => {
+    // Бот над такими не думает (DEEP_NOT_ANSWER) и ответил бы в беседу отказом «Тут думать нечего».
+    const list = [human('q1'), ans('c1', 'q1', {}, 'command')]
+    expect(botThinkBetterTarget(list, 1, BOT, 'me')).toBeNull()
+    expect(botClarifyTarget(list, 1, BOT)?.id).toBe('c1')
+    // Ответ модели рядом — кнопка у него есть.
+    const list2 = [human('q1'), ans('c1', 'q1', {}, 'command'), human('q2'), ans('a2', 'q2')]
+    expect(botThinkBetterTarget(list2, 1, BOT, 'me')).toBeNull()
+    expect(botThinkBetterTarget(list2, 3, BOT, 'me')?.id).toBe('a2')
+  })
+
   it('не под карточками, подтверждениями и уведомлениями', () => {
     const list = [human('q1'), ans('c1', 'q1', {}, 'card'), ans('k1', null, {}, 'confirm'), ans('n1', null, {}, 'notice')]
     expect(botThinkBetterTarget(list, 1, BOT, 'me')).toBeNull()

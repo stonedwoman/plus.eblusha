@@ -199,10 +199,14 @@ enum ThinkBetter {
     }
 
     /// Где рисовать «Подумай лучше»: там же, где «Уточнить» (`clarifyTargets`: строка → первая
-    /// часть ответа), кроме ответов, уже «подумавших лучше», и ответов, где я уже попросил
+    /// часть ответа), но только под ответом модели (botKind "answer"; под ответом команды —
+    /// пунктуальность, «Отменил.», Valheim — бот не думает и ответил бы отказом, docs/bot-cards.md
+    /// §2.5 и §4), кроме ответов, уже «подумавших лучше», и ответов, где я уже попросил
     /// (иначе второе нажатие тратит дневной лимит самой дорогой модели впустую).
     static func targets(_ messages: [Message], clarifyTargets: [String: Message]) -> [String: Message] {
         guard !clarifyTargets.isEmpty else { return [:] }
+        var kindById: [String: String] = [:]
+        for message in messages { kindById[message.id] = message.botKind ?? "" }
         var deepAnswers = Set<String>()
         for message in messages where message.botIsDeep {
             deepAnswers.insert(message.botTriggerId ?? message.id)
@@ -213,6 +217,7 @@ enum ThinkBetter {
         }
         var result: [String: Message] = [:]
         for (rowId, target) in clarifyTargets {
+            guard target.botKind == "answer", (kindById[rowId] ?? "answer") == "answer" else { continue }
             if deepAnswers.contains(target.botTriggerId ?? target.id) || target.botIsDeep { continue }
             if asked.contains(target.id) || asked.contains(rowId) { continue }
             result[rowId] = target

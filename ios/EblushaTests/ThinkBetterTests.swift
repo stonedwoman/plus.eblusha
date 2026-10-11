@@ -80,6 +80,20 @@ final class ThinkBetterRulesTests: XCTestCase {
         XCTAssertTrue(targets([q, card, confirm, notice]).isEmpty)
     }
 
+    func testNotUnderCommandAnswersButClarifyStays() {
+        // Ответ команды (пунктуальность, «Отменил.», Valheim): бот над ним не думает (DEEP_NOT_ANSWER) —
+        // кнопка ушла бы в беседу «Еблуша, подумай лучше» и получила отказ. «Уточнить» остаётся.
+        let q = human("q1", mine: true, text: "Еблуша, кто самый пунктуальный?")
+        let command = bot("c1", kind: "command", trigger: "q1")
+        var byId: [String: Message] = [:]
+        for m in [q, command] { byId[m.id] = m }
+        XCTAssertEqual(MessageListView.botClarifyTargets([q, command], byId: byId).mapValues(\.id), ["c1": "c1"])
+        XCTAssertTrue(targets([q, command]).isEmpty)
+        let q2 = human("q2", mine: true, text: "Еблуша, сколько весит облако?")
+        let a2 = bot("a2", trigger: "q2")
+        XCTAssertEqual(targets([q, command, q2, a2]), ["a2": "a2"], "ответ модели рядом — кнопка у него есть")
+    }
+
     func testBadgeSkippedWhenBotMarksTextItself() {
         let deep = bot("d1", trigger: "q2", depth: "deep", text: "🧠 Подумал лучше\n\nТочнее: …")
         XCTAssertTrue(ThinkBetter.badgeIds([deep]).isEmpty)

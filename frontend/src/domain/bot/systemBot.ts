@@ -299,12 +299,16 @@ export function isThinkBetterRequestText(text: unknown): boolean {
 /**
  * «Подумай лучше» — там же и по тем же правилам, что «Уточнить»: под последней частью ответа, ответ
  * уходит на ПЕРВУЮ часть (у неё replyToId → вопрос, сервер соберёт цепочку). Не показываем: под
- * карточками и не-ответами (их «Уточнить» тоже не получает), под ответом, который уже «подумал лучше»
- * (depth="deep" у любой его части), и если я уже попросил (моё «подумай лучше» ответом на этот ответ).
+ * карточками и не-ответами (их «Уточнить» тоже не получает), под ответами команд (kind "command":
+ * пунктуальность, «Отменил.», Valheim — бот над ними не думает и ответил бы отказом, docs/bot-cards.md
+ * §2.5 и §4), под ответом, который уже «подумал лучше» (depth="deep" у любой его части), и если я уже
+ * попросил (моё «подумай лучше» ответом на этот ответ).
  */
 export function botThinkBetterTarget(list: any[], index: number, botId?: string | null, meId?: string | null): any | null {
   const target = botClarifyTarget(list, index, botId)
   if (!target) return null
+  // Только ответ модели: «Уточнить» есть и у ответа команды, «Подумай лучше» — нет (DEEP_NOT_ANSWER бота).
+  if (botMessageInfo(target).kind !== 'answer' || botMessageInfo(list[index]).kind !== 'answer') return null
   const start = list.indexOf(target)
   for (let j = start >= 0 ? start : index; j <= index; j++) {
     const x = list[j]
