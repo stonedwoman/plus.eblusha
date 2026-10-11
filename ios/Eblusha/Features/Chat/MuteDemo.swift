@@ -11,8 +11,9 @@ import UserNotifications
 /// заглушённая навсегда группа с идущим звонком — кант горит от звонка, личка «до завтра» без
 /// непрочитанного, «Чат с Еблушей» на неделю); `mute-toast` — то же с подтверждением «Без звука на
 /// 1 час»; `mute-error` — с ошибкой «Не удалось изменить звук беседы»; `mute-push` — спросить
-/// разрешение на уведомления и положить журнал значка (значок = 2: непрочитанное незаглушённой
-/// лички) — проверка Notification Service Extension через `xcrun simctl push` (handoff §16).
+/// разрешение на уведомления, считать, что число ведёт сервер, и положить базу значка (значок = 2:
+/// непрочитанное незаглушённой лички) — проверка Notification Service Extension и badge-only пуша
+/// настоящим sandbox-пушем (handoff §16).
 /// Меню (долгое нажатие) и свайп — через пульт симулятора (scripts/ios-drive.sh, `press:`, `drag:`).
 /// Шапка заглушённой беседы — `-connectDemo header-muted` (ChatHeaderDemo).
 struct MuteDemo: View {
@@ -101,6 +102,7 @@ struct MuteDemo: View {
             let unread = [ids.group: 3, ids.dm: 2, ids.callGroup: 7, ids.bot: 1]
             UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { _, _ in
                 DispatchQueue.main.async {
+                    AppBadge.shared.setServerMaintained(true)
                     AppBadge.shared.listLoaded(owner: "demo-owner", unread: unread, atMs: nowMs)
                 }
             }

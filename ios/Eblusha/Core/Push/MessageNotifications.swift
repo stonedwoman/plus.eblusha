@@ -200,6 +200,11 @@ final class MessageNotifications: NSObject, UNUserNotificationCenterDelegate {
             completionHandler([])
             return
         }
+        // Только число на значке (src/push/badge.ts): показывать нечего, число — применить.
+        if kind == "badge" {
+            completionHandler([.badge])
+            return
+        }
         completionHandler([.banner, .list, .sound])
     }
 

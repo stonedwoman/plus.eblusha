@@ -25,6 +25,8 @@ final class PushRepository {
     private let api: APIClient
     private let session: SessionStore
     private let deviceIdProvider: DeviceIdProvider
+    /// Ответ регистрации alert-токена: ведёт ли сервер число на значке (AppBadge). Зовётся на main.
+    private let onBadgeAuthority: (Bool) -> Void
 
     // Системные колбэки выдают токены КОГДА захотят — часто до логина (PushKit отдаёт
     // кэшированный токен сразу после установки desiredPushTypes). Кешируем и шлём,
@@ -34,10 +36,16 @@ final class PushRepository {
     private var alertTokenValue: String?
     private var voipTokenValue: String?
 
-    init(api: APIClient, session: SessionStore, deviceIdProvider: DeviceIdProvider) {
+    init(
+        api: APIClient,
+        session: SessionStore,
+        deviceIdProvider: DeviceIdProvider,
+        onBadgeAuthority: ((Bool) -> Void)? = nil
+    ) {
         self.api = api
         self.session = session
         self.deviceIdProvider = deviceIdProvider
+        self.onBadgeAuthority = onBadgeAuthority ?? { AppBadge.shared.setServerMaintained($0) }
     }
 
     // MARK: - Приём токенов от системы
@@ -94,11 +102,21 @@ final class PushRepository {
     }
 
     private func register(token: String, provider: String) async {
+        // Alert-токен объявляет caps "badge": эта сборка сама сбрасывает значок, и сервер может вести его
+        // число (src/push/badge.ts; без caps — старые сборки — сервер числа не шлёт). В ответе badge:true —
+        // «ведёт»: только тогда значок вообще показывается (AppBadge). Старый сервер поля не знает → false.
+        let isAlert = provider == "apns"
         do {
-            try await api.postIgnoringResponse(
+            let data = try await api.postRaw(
                 "devices/\(deviceIdProvider.deviceId())/push",
-                body: PushTokenRequest(token: token, provider: provider)
+                body: PushTokenRequest(token: token, provider: provider, caps: isAlert ? [Self.badgeCap] : nil)
             )
+            if isAlert {
+                let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+                let serverBadge = (json?["badge"] as? Bool) == true
+                let sink = onBadgeAuthority
+                await MainActor.run { sink(serverBadge) }
+            }
         } catch {
             // 404 здесь — устройство ещё не прошло /devices/register (бутстрап ключей
             // не успел); не ошибка: следующий syncTokens доедет. Порт Log.i из Kotlin.
@@ -122,10 +140,15 @@ final class PushRepository {
 
     // MARK: - Wire-формат
 
-    /// Тело POST /devices/{deviceId}/push — байт-в-байт с Android PushTokenRequest.
-    private struct PushTokenRequest: Encodable {
+    /// Возможность «сервер ведёт число на значке» (caps регистрации alert-токена).
+    static let badgeCap = "badge"
+
+    /// Тело POST /devices/{deviceId}/push — как Android PushTokenRequest, плюс caps у alert-токена
+    /// (nil не кодируется — у VoIP поля нет вовсе).
+    struct PushTokenRequest: Encodable {
         let token: String
         let provider: String
+        var caps: [String]?
     }
 
     /// Ответ `{ ok: true }` обоих push-эндпоинтов.

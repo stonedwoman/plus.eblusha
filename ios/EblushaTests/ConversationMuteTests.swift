@@ -299,15 +299,51 @@ final class ConversationMuteStoreTests: XCTestCase {
         XCTAssertFalse(s.isMuted("c"))
     }
 
-    func testSetAtSurvivesSameValueAndResetsOnNewValue() {
+    func testSetAtIsStartOfContinuousMute() {
         var state = MuteSharedState()
+        // Заглушили событием в NOW.
         ConversationMuteStore.merge(&state, id: "g", untilMs: NOW + HOUR, asOfMs: NOW, setAtMs: NOW)
+        XCTAssertEqual(state.entries["g"]?.setAtMs, NOW)
+        // Список с тем же сроком, повтор того же срока событием, другой срок — момент начала не сдвигается:
+        // сервер всё это время резал пуши, и пробившийся ответ на моё глушить нельзя.
         ConversationMuteStore.merge(&state, id: "g", untilMs: NOW + HOUR, asOfMs: NOW + 10, setAtMs: nil)
-        XCTAssertEqual(state.entries["g"]?.setAtMs, NOW, "список с тем же сроком момент изменения не теряет")
-        ConversationMuteStore.merge(&state, id: "g", untilMs: NOW + 2 * HOUR, asOfMs: NOW + 20, setAtMs: nil)
-        XCTAssertNil(state.entries["g"]?.setAtMs, "новое значение без момента — момент неизвестен")
+        ConversationMuteStore.merge(&state, id: "g", untilMs: NOW + HOUR, asOfMs: NOW + 20, setAtMs: NOW + 20)
+        ConversationMuteStore.merge(&state, id: "g", untilMs: MuteRules.foreverMs, asOfMs: NOW + 30, setAtMs: NOW + 30)
+        XCTAssertEqual(state.entries["g"]?.setAtMs, NOW, "пока беседа заглушена, момент начала не сдвигается")
+        // Включили звук — момент стёрт; заглушили снова — новый момент.
+        ConversationMuteStore.merge(&state, id: "g", untilMs: nil, asOfMs: NOW + 40, setAtMs: NOW + 40)
+        XCTAssertNil(state.entries["g"]?.setAtMs)
+        ConversationMuteStore.merge(&state, id: "g", untilMs: NOW + HOUR, asOfMs: NOW + 50, setAtMs: NOW + 50)
+        XCTAssertEqual(state.entries["g"]?.setAtMs, NOW + 50)
+        // Срок истёк, потом заглушили заново — тоже новый момент.
+        ConversationMuteStore.merge(&state, id: "e", untilMs: NOW + 100, asOfMs: NOW, setAtMs: NOW)
+        ConversationMuteStore.merge(&state, id: "e", untilMs: NOW + HOUR, asOfMs: NOW + 200, setAtMs: NOW + 200)
+        XCTAssertEqual(state.entries["e"]?.setAtMs, NOW + 200)
+        // Узнали о заглушении из списка — момент неизвестен (расширение верит серверу), и событие с другим
+        // сроком его не придумывает.
+        ConversationMuteStore.merge(&state, id: "l", untilMs: NOW + HOUR, asOfMs: NOW, setAtMs: nil)
+        ConversationMuteStore.merge(&state, id: "l", untilMs: NOW + 2 * HOUR, asOfMs: NOW + 10, setAtMs: NOW + 10)
+        XCTAssertNil(state.entries["l"]?.setAtMs)
+        // Старое знание не применяется.
         ConversationMuteStore.merge(&state, id: "g", untilMs: nil, asOfMs: NOW + 5, setAtMs: NOW + 5)
-        XCTAssertEqual(state.entries["g"]?.untilMs, NOW + 2 * HOUR, "старое знание не применяется")
+        XCTAssertEqual(state.entries["g"]?.untilMs, NOW + HOUR, "старое знание не применяется")
+    }
+
+    func testSnapshotFloorStopsOlderListForUnknownConversation() {
+        let s = store()
+        // Снапшот (asOf NOW+5 с) пришёл раньше ответа списка, посчитанного в NOW: «x» в снапшоте нет — звук
+        // включён, хотя в карте её ещё не было.
+        s.applySnapshot(ConversationMuteSnapshot(items: [:], serverNowMs: NOW + 5_000))
+        s.applyList(owner: ME, items: ["x": NOW + HOUR, "y": nil], serverNowMs: NOW, requestedAtMs: NOW)
+        XCTAssertFalse(s.isMuted("x"), "список старше снапшота не заглушает беседу, которой не было в карте")
+        // Более свежий список — применяется.
+        s.applyList(owner: ME, items: ["x": NOW + HOUR], serverNowMs: NOW + 6_000, requestedAtMs: NOW)
+        XCTAssertTrue(s.isMuted("x"))
+        XCTAssertEqual(MuteSharedState.load(from: defaults).snapshotAsOfMs, NOW + 5_000, "граница переживает перезапуск")
+        // Другой аккаунт — своя история: граница прошлого не действует.
+        s.applyList(owner: "someone-else", items: ["z": NOW + HOUR], serverNowMs: NOW + 1, requestedAtMs: NOW)
+        XCTAssertTrue(s.isMuted("z"))
+        XCTAssertNil(s.state.snapshotAsOfMs)
     }
 
     func testExpiryIsComparisonWithNow() {
@@ -424,12 +460,6 @@ final class BadgeAndExtensionTests: XCTestCase {
         return s
     }
 
-    private func ledger(_ baseline: [String: Int], at: Int64 = NOW - 60_000) -> BadgeLedger {
-        var l = BadgeLedger()
-        l.applyList(owner: ME, unread: baseline, atMs: at)
-        return l
-    }
-
     private func push(_ conv: String, _ msg: String, sentAt: Int64? = NOW, secret: Bool = false) -> [AnyHashable: Any] {
         var info: [AnyHashable: Any] = ["kind": "message", "conversationId": conv, "messageId": msg, "senderId": "s", "senderName": "Костя"]
         if let sentAt { info["sentAt"] = NSNumber(value: sentAt) }
@@ -438,101 +468,63 @@ final class BadgeAndExtensionTests: XCTestCase {
     }
 
     func testLedgerTotalsExcludeMuted() {
-        var l = ledger(["g": 3, "d": 2, "z": 0])
+        var l = BadgeLedger()
+        l.applyList(owner: ME, unread: ["g": 3, "d": 2, "z": 0], atMs: NOW)
         XCTAssertEqual(l.baseline, ["g": 3, "d": 2], "нули не храним")
-        XCTAssertTrue(l.addPush(conversationId: "d", messageId: "m1", sentAtMs: NOW))
-        XCTAssertFalse(l.addPush(conversationId: "d", messageId: "m1", sentAtMs: NOW), "повтор того же пуша")
-        XCTAssertFalse(l.addPush(conversationId: "d", messageId: "old", sentAtMs: NOW - 120_000), "старше списка — уже в базе")
-        XCTAssertEqual(l.total { _ in false }, 6)
-        XCTAssertEqual(l.total { $0 == "g" }, 3, "заглушённая беседа в общий счётчик не входит")
-        // Прочитали «d» до момента m1 включительно.
-        l.markRead(conversationId: "d", upToMs: NOW)
+        XCTAssertEqual(l.total { _ in false }, 5)
+        XCTAssertEqual(l.total { $0 == "g" }, 2, "заглушённая беседа в общий счётчик не входит")
+        l.markRead(conversationId: "d")
         XCTAssertEqual(l.total { _ in false }, 3)
-        // Новый список: пуши, которые он уже учёл, уходят.
-        XCTAssertTrue(l.addPush(conversationId: "g", messageId: "m2", sentAtMs: NOW + 1_000))
         l.applyList(owner: ME, unread: ["g": 4], atMs: NOW + 2_000)
-        XCTAssertEqual(l.total { _ in false }, 4)
-    }
-
-    func testLedgerIsBounded() {
-        var l = ledger([:])
-        for i in 0..<(BadgeLedger.pendingLimit + 20) {
-            l.addPush(conversationId: "c\(i % 7)", messageId: "m\(i)", sentAtMs: NOW + Int64(i))
-        }
-        XCTAssertEqual(l.pending.values.reduce(0) { $0 + $1.count }, BadgeLedger.pendingLimit)
-        XCTAssertNil(l.pending.values.first { $0["m0"] != nil }, "выбрасываются самые старые")
-    }
-
-    func testExtensionCountsPushAndSetsBadge() {
-        let result = PushMuteDecision.decide(
-            userInfo: push("d", "m1"), serverBadge: nil,
-            state: state([:]), ledger: ledger(["g": 3, "d": 1]), localNowMs: NOW
-        )
-        XCTAssertFalse(result.silence)
-        XCTAssertEqual(result.badge, 5)
-        XCTAssertNotNil(result.ledger)
-    }
-
-    func testExtensionMutedConversationNotCounted() {
-        // Пуш пробился (ответ на моё в заглушённой группе): сервер решил верно — не глушим, но в
-        // общий счётчик заглушённая беседа не входит.
-        let entries = ["g": MuteEntry(untilMs: NOW + HOUR, asOfMs: NOW - 10_000, setAtMs: NOW - 10_000)]
-        let result = PushMuteDecision.decide(
-            userInfo: push("g", "m1"), serverBadge: nil,
-            state: state(entries), ledger: ledger(["g": 3, "d": 1]), localNowMs: NOW
-        )
-        XCTAssertFalse(result.silence, "заглушили до сообщения — сервер уже учёл, пуш пробился по праву")
-        XCTAssertEqual(result.badge, 1)
-        XCTAssertNil(result.ledger)
+        XCTAssertEqual(l.total { _ in false }, 4, "новый список заменяет базу целиком")
     }
 
     func testExtensionSilencesRaceWithMute() {
         // Сообщение создано в NOW, заглушили через 2 с — сервер ставил пуш по старому состоянию.
         let entries = ["g": MuteEntry(untilMs: NOW + HOUR, asOfMs: NOW + 2_000, setAtMs: NOW + 2_000)]
-        let result = PushMuteDecision.decide(
-            userInfo: push("g", "m1", sentAt: NOW), serverBadge: nil,
-            state: state(entries), ledger: ledger([:]), localNowMs: NOW + 3_000
-        )
+        let result = PushMuteDecision.decide(userInfo: push("g", "m1", sentAt: NOW), state: state(entries), localNowMs: NOW + 3_000)
         XCTAssertTrue(result.silence)
         // Без момента изменения (знаем из списка) или без sentAt (старый сервер) — верим серверу.
         let fromList = ["g": MuteEntry(untilMs: NOW + HOUR, asOfMs: NOW + 2_000, setAtMs: nil)]
-        XCTAssertFalse(PushMuteDecision.decide(
-            userInfo: push("g", "m1"), serverBadge: nil, state: state(fromList), ledger: ledger([:]), localNowMs: NOW
-        ).silence)
-        XCTAssertFalse(PushMuteDecision.decide(
-            userInfo: push("g", "m1", sentAt: nil), serverBadge: nil, state: state(entries), ledger: ledger([:]), localNowMs: NOW
-        ).silence)
+        XCTAssertFalse(PushMuteDecision.decide(userInfo: push("g", "m1"), state: state(fromList), localNowMs: NOW).silence)
+        XCTAssertFalse(PushMuteDecision.decide(userInfo: push("g", "m1", sentAt: nil), state: state(entries), localNowMs: NOW).silence)
         // Истёкший срок — не заглушено.
-        XCTAssertFalse(PushMuteDecision.decide(
-            userInfo: push("g", "m1"), serverBadge: nil, state: state(entries), ledger: ledger([:]), localNowMs: NOW + 2 * HOUR
+        XCTAssertFalse(PushMuteDecision.decide(userInfo: push("g", "m1"), state: state(entries), localNowMs: NOW + 2 * HOUR).silence)
+        // Секретка в той же гонке — тоже тихо.
+        XCTAssertTrue(PushMuteDecision.decide(
+            userInfo: push("g", "m1", sentAt: NOW, secret: true), state: state(entries), localNowMs: NOW + 3_000
         ).silence)
     }
 
-    func testExtensionSecretAndServerBadgeAndForeignPushes() {
-        let secret = PushMuteDecision.decide(
-            userInfo: push("s", "m1", secret: true), serverBadge: nil,
-            state: state([:]), ledger: ledger(["g": 2]), localNowMs: NOW
-        )
-        XCTAssertEqual(secret.badge, 2, "секретки в общий счётчик не входят (как у сервера)")
-        XCTAssertNil(secret.ledger)
+    func testExtensionTrustsBreakthroughAndIgnoresOtherPushes() {
+        // Пуш пробился (ответ на моё в заглушённой группе): заглушили ДО сообщения — сервер уже учёл.
+        let entries = ["g": MuteEntry(untilMs: NOW + HOUR, asOfMs: NOW - 10_000, setAtMs: NOW - 10_000)]
+        XCTAssertEqual(PushMuteDecision.decide(userInfo: push("g", "m1"), state: state(entries), localNowMs: NOW), .init())
+        // Звонок, badge-only пуш и прочее расширение не трогает.
+        XCTAssertEqual(PushMuteDecision.decide(
+            userInfo: ["kind": "call", "conversationId": "g"], state: state(entries), localNowMs: NOW
+        ), .init())
+        XCTAssertEqual(PushMuteDecision.decide(userInfo: ["kind": "badge"], state: state(entries), localNowMs: NOW), .init())
+    }
 
-        let server = PushMuteDecision.decide(
-            userInfo: push("d", "m1"), serverBadge: 9,
-            state: state([:]), ledger: ledger(["g": 2]), localNowMs: NOW
-        )
-        XCTAssertEqual(server.badge, 9, "число сервера (APNS_BADGE=on) точнее нашего")
+    func testAppBadgeIsEmptyUnlessServerMaintainsIt() {
+        let suite = "eb-badge-tests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let clock = Date(timeIntervalSince1970: Double(NOW) / 1000)
+        let mutes = ConversationMuteStore(defaults: defaults, api: { nil }, currentUser: { ME }, now: { clock })
+        var applied: [Int] = []
+        let badge = AppBadge(defaults: defaults, mutes: mutes) { applied.append($0) }
 
-        let loggedOut = PushMuteDecision.decide(
-            userInfo: push("d", "m1"), serverBadge: nil,
-            state: state([:], owner: nil), ledger: BadgeLedger(), localNowMs: NOW
-        )
-        XCTAssertNil(loggedOut.badge, "без своего аккаунта значок не трогаем")
-
-        let call = PushMuteDecision.decide(
-            userInfo: ["kind": "call", "conversationId": "d"], serverBadge: nil,
-            state: state([:]), ledger: ledger(["g": 2]), localNowMs: NOW
-        )
-        XCTAssertEqual(call, PushMuteDecision.Result(), "звонок и прочее расширение не трогает")
+        XCTAssertFalse(badge.serverMaintained)
+        badge.listLoaded(owner: ME, unread: ["g": 3, "d": 2], atMs: NOW)
+        XCTAssertEqual(applied.last, 0, "сервер числа не ведёт — значок пустой: у выгруженного приложения он залип бы")
+        badge.setServerMaintained(true)
+        XCTAssertEqual(applied.last, 5)
+        XCTAssertTrue(AppBadge(defaults: defaults, mutes: mutes) { _ in }.serverMaintained, "переживает перезапуск")
+        badge.setServerMaintained(false)
+        XCTAssertEqual(applied.last, 0, "сервер перестал вести (APNS_BADGE=off, старый сервер) — значок гаснет")
+        XCTAssertFalse(AppBadge(defaults: defaults, mutes: mutes) { _ in }.serverMaintained)
     }
 
     func testAppBadgeFollowsListReadsAndMute() {
@@ -543,10 +535,11 @@ final class BadgeAndExtensionTests: XCTestCase {
         let mutes = ConversationMuteStore(defaults: defaults, api: { nil }, currentUser: { ME }, now: { clock })
         var applied: [Int] = []
         let badge = AppBadge(defaults: defaults, mutes: mutes) { applied.append($0) }
+        badge.setServerMaintained(true)
 
         badge.listLoaded(owner: ME, unread: ["g": 3, "d": 2], atMs: NOW)
         XCTAssertEqual(applied.last, 5)
-        badge.conversationRead("d", upToMs: NOW + 1_000)
+        badge.conversationRead("d")
         XCTAssertEqual(applied.last, 3)
 
         // Заглушили «g» (событие с другого устройства) — значок пересчитывается сам.
@@ -564,8 +557,58 @@ final class BadgeAndExtensionTests: XCTestCase {
         badge.reset()
         XCTAssertEqual(applied.last, 0)
         XCTAssertEqual(BadgeLedger.load(from: defaults), BadgeLedger())
-        badge.conversationRead("g", upToMs: nil)
-        XCTAssertEqual(applied.last, 0, "после выхода журнал пуст — прочтения ничего не трогают")
+        XCTAssertFalse(badge.serverMaintained, "после выхода объявление на сервере снято — число не ведётся")
+        badge.conversationRead("g")
+        XCTAssertEqual(applied.last, 0, "после выхода база пуста — прочтения ничего не трогают")
+    }
+}
+
+/// Регистрация alert-токена объявляет caps "badge" и принимает ответ сервера «число ведёт сервер».
+@MainActor
+final class PushRegistrationBadgeTests: XCTestCase {
+    private func waitUntil(_ cond: () -> Bool) async {
+        for _ in 0..<150 where !cond() {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
+    func testAlertTokenDeclaresBadgeCapAndAppliesServerAnswer() async {
+        let rig = SecretTestRig()
+        defer { rig.tearDown() }
+        let path = "devices/\(rig.deviceIds.deviceId())/push"
+        var reply: [String: Any] = ["ok": true, "badge": true]
+        rig.server.extraRoute = { method, p, _ in
+            guard method == "POST", p == path else { return nil }
+            return (200, FakeServer.data(reply))
+        }
+        var answers: [Bool] = []
+        let repo = PushRepository(
+            api: rig.api, session: rig.session, deviceIdProvider: rig.deviceIds,
+            onBadgeAuthority: { answers.append($0) }
+        )
+        repo.updateVoipToken(Data([0x01, 0x02, 0x03]))
+        repo.updateAlertToken(Data([0xab, 0xcd, 0xef]))
+        await waitUntil { !answers.isEmpty }
+        await repo.syncTokens()
+
+        let bodies = rig.server.calls("POST", path).compactMap { $0.json as? [String: Any] }
+        let alert = bodies.filter { $0["provider"] as? String == "apns" }
+        let voip = bodies.filter { $0["provider"] as? String == "apns-voip" }
+        XCTAssertFalse(alert.isEmpty)
+        XCTAssertFalse(voip.isEmpty)
+        XCTAssertTrue(alert.allSatisfy { $0["caps"] as? [String] == ["badge"] && $0["token"] as? String == "abcdef" })
+        XCTAssertTrue(voip.allSatisfy { $0["caps"] == nil }, "у VoIP-токена caps нет")
+        XCTAssertEqual(answers.last, true, "badge:true — число ведёт сервер")
+        XCTAssertTrue(answers.allSatisfy { $0 }, "ответ только на alert-регистрацию")
+
+        // Старый сервер (или APNS_BADGE=off) — поля нет или false: значок не ведётся.
+        reply = ["ok": true]
+        await repo.syncTokens()
+        XCTAssertEqual(answers.last, false)
+        reply = ["ok": true, "badge": false]
+        answers = []
+        await repo.syncTokens()
+        XCTAssertEqual(answers, [false])
     }
 }
 

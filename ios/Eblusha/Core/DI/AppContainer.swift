@@ -77,9 +77,7 @@ final class AppContainer {
             )
         }
         chatRepository.onConversationRead = { conversationId in
-            // Всё, что пришло до «сейчас» (+ допуск на часы), прочитано.
-            let upTo = ConversationMuteStore.shared.nowMs + Int64(ReadPush.clockTolerance * 1000)
-            AppBadge.shared.conversationRead(conversationId, upToMs: upTo)
+            AppBadge.shared.conversationRead(conversationId)
         }
     }
 

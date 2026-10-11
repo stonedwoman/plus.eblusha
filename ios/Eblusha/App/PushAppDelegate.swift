@@ -70,11 +70,9 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate {
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
         if let read = ReadPush.parse(userInfo) {
-            // Значок: прочитанная беседа выходит из общего счётчика (сам пуш числа нести не может).
-            AppBadge.shared.conversationRead(
-                read.conversationId,
-                upToMs: read.deliveredUpTo.map { Int64($0.timeIntervalSince1970 * 1000) }
-            )
+            // Значок: прочитанная беседа выходит из общего счётчика (число на иконке выгруженного
+            // приложения поправит badge-only пуш сервера, идущий следом).
+            AppBadge.shared.conversationRead(read.conversationId)
             MessageNotifications.shared.clearDelivered(
                 conversationId: read.conversationId, deliveredBefore: read.deliveredUpTo
             ) { removed in

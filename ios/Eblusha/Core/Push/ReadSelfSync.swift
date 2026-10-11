@@ -67,8 +67,8 @@ final class ReadSelfBanners {
         scheduled = false
         guard !batch.isEmpty else { return }
         // Значок: прочитанные (где угодно) беседы выходят из общего счётчика.
-        for (conversationId, upTo) in batch {
-            AppBadge.shared.conversationRead(conversationId, upToMs: Int64(upTo.timeIntervalSince1970 * 1000))
+        for conversationId in batch.keys {
+            AppBadge.shared.conversationRead(conversationId)
         }
         MessageNotifications.shared.clearDelivered(upTo: batch) { removed in
             if removed > 0 {

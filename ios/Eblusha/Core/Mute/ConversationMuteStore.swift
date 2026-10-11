@@ -222,7 +222,9 @@ final class ConversationMuteStore: ObservableObject {
         commit(next)
     }
 
-    /// Снапшот при подключении сокета — замена целиком.
+    /// Снапшот при подключении сокета — замена целиком. Про беседы, которых здесь ещё нет, он тоже
+    /// говорит «звук включён»: его asOf становится нижней границей (snapshotAsOfMs), и список, посчитанный
+    /// раньше снапшота, такую беседу уже не заглушит.
     func applySnapshot(_ snapshot: ConversationMuteSnapshot) {
         if let ms = snapshot.serverNowMs { addClockSample(ms) }
         let asOf = snapshot.serverNowMs ?? nowMs
@@ -230,6 +232,7 @@ final class ConversationMuteStore: ObservableObject {
         for id in Set(next.entries.keys).union(snapshot.items.keys) {
             Self.merge(&next, id: id, untilMs: snapshot.items[id], asOfMs: asOf, setAtMs: nil)
         }
+        next.snapshotAsOfMs = max(next.snapshotAsOfMs ?? asOf, asOf)
         commit(next)
     }
 
@@ -254,18 +257,25 @@ final class ConversationMuteStore: ObservableObject {
         commit(next)
     }
 
-    /// Применить знание о беседе, если оно не старее сохранённого. Момент изменения переживает
-    /// повторы того же значения (список после события), а новое значение без момента его сбрасывает.
+    /// Применить знание о беседе, если оно не старее сохранённого (для беседы, которой ещё нет, — не
+    /// старее последнего снапшота: он объявил её незаглушённой).
+    ///
+    /// setAtMs — момент, с которого беседа непрерывно заглушена (MuteEntry.setAtMs): его даёт только
+    /// событие или ответ POST, которые её ЗАГЛУШИЛИ. Пока беседа остаётся заглушённой (повтор, другой срок,
+    /// список, снапшот), момент не сдвигается — иначе расширение глушило бы законно пробившиеся пуши
+    /// (ответ на моё), созданные до перестановки срока. Включили звук — момент стирается.
     static func merge(_ state: inout MuteSharedState, id: String, untilMs: Int64?, asOfMs: Int64, setAtMs: Int64?) {
         let known = state.entries[id]
-        if let known, known.asOfMs > asOfMs { return }
+        if let floor = known?.asOfMs ?? state.snapshotAsOfMs, floor > asOfMs { return }
+        let wasMuted = known.map { MuteRules.isMuted(untilMs: $0.untilMs, nowMs: asOfMs) } ?? false
+        let nowMuted = MuteRules.isMuted(untilMs: untilMs, nowMs: asOfMs)
         let setAt: Int64?
-        if let setAtMs {
-            setAt = setAtMs
-        } else if let known, known.untilMs == untilMs {
-            setAt = known.setAtMs
-        } else {
+        if !nowMuted {
             setAt = nil
+        } else if wasMuted {
+            setAt = known?.setAtMs
+        } else {
+            setAt = setAtMs
         }
         state.entries[id] = MuteEntry(untilMs: untilMs, asOfMs: asOfMs, setAtMs: setAt)
     }
