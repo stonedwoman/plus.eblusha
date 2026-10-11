@@ -1027,6 +1027,13 @@ struct MessageRow: View {
     /// «Уточнить» под ответом бота: показывается, только когда задан (лента ставит его одному
     /// сообщению ответа — последнему, см. MessageRowModel.botClarifyTarget).
     var onClarify: (() -> Void)? = nil
+    /// «Подумай лучше» рядом с «Уточнить» (ThinkBetter): показывается, только когда задан.
+    var onThinkBetter: (() -> Void)? = nil
+    /// Метка «🧠 Подумал лучше» над текстом ответа.
+    var deepBadge = false
+    /// Карточка бота вместо текста (таймер обещания, «поделиться перепиской»).
+    var cardRow: CardRowState? = nil
+    var onCardEvent: ((BotCardEvent) -> Void)? = nil
     /// Быстрые «Да»/«Нет» под вопросом-подтверждением бота: текст уходит ответом на него.
     var onBotQuickReply: ((String) -> Void)? = nil
     /// Тап по карточке карты Valheim — живая карта вместо просмотрщика.
@@ -1146,7 +1153,8 @@ struct MessageRow: View {
 
     /// Под пузырём есть кнопки бота («Уточнить» или «Да»/«Нет»).
     private var hasBotActions: Bool {
-        isBotIncoming && !selectionMode && (onClarify != nil || (m.botIsConfirm && onBotQuickReply != nil))
+        isBotIncoming && !selectionMode
+            && (onClarify != nil || onThinkBetter != nil || (m.botIsConfirm && onBotQuickReply != nil))
     }
 
     /// Пузырь, сообщающий свою рамку: по ней лента решает, лёг ли палец на сообщение (рамка —
@@ -1164,9 +1172,17 @@ struct MessageRow: View {
     @ViewBuilder
     private var botActions: some View {
         if isBotIncoming, !selectionMode {
-            if let onClarify {
-                BotActionButton(title: "Уточнить", icon: "arrowshape.turn.up.left.fill", action: onClarify)
-                    .accessibilityHint("Ответить Еблуше на это сообщение")
+            if onClarify != nil || onThinkBetter != nil {
+                HStack(spacing: 6) {
+                    if let onClarify {
+                        BotActionButton(title: "Уточнить", icon: "arrowshape.turn.up.left.fill", action: onClarify)
+                            .accessibilityHint("Ответить Еблуше на это сообщение")
+                    }
+                    if let onThinkBetter {
+                        BotActionButton(title: ThinkBetter.title, icon: "brain", action: onThinkBetter)
+                            .accessibilityHint("Еблуша ответит ещё раз, подумав как следует")
+                    }
+                }
             } else if m.botIsConfirm, let onBotQuickReply {
                 HStack(spacing: 6) {
                     BotActionButton(title: "Да", icon: "checkmark") { onBotQuickReply("да") }
@@ -1226,7 +1242,13 @@ struct MessageRow: View {
             // фон и полоса тоном АВТОРА ЦИТАТЫ, как в вебе. Что именно показать (картинка
             // или текст), считает лента: серверный replyTo вложений не отдаёт, оригинал
             // виден только ей — карточка берёт это из окружения replyQuotePreviews.
-            ForEach(m.replyTo, id: \.id) { reply in
+            if deepBadge && isBotIncoming {
+                ThinkBetterBadge()
+            }
+
+            // У карточки таймера цитаты обращения нет: она сама говорит «попросил Рома» и цитирует
+            // обещание (SPEC.md §4.2). У «поделиться перепиской» вопрос остаётся над карточкой.
+            ForEach(cardRow?.card.knownType == .promise ? [] : m.replyTo, id: \.id) { reply in
                 ReplyQuoteCard(
                     reply: reply,
                     authorName: replyAuthorName(reply),
@@ -1327,15 +1349,33 @@ struct MessageRow: View {
     /// плиток, которыми просмотрщик открывается и закрывается.
     @ViewBuilder
     private var payloadView: some View {
-        attachmentsView
+        if let cardRow, isBotIncoming {
+            // Карточка бота вместо текста: `content` — запасной текст для старых клиентов.
+            BotCardView(message: m, card: cardRow.card, context: cardContext(cardRow))
+        } else {
+            attachmentsView
 
-        if let content = m.content, !content.isEmpty {
-            MessageTextView(content: content, deleted: m.deleted)
-        }
+            if let content = m.content, !content.isEmpty {
+                MessageTextView(content: content, deleted: m.deleted)
+            }
 
-        if let preview = m.linkPreview {
-            linkPreviewCard(preview)
+            if let preview = m.linkPreview {
+                linkPreviewCard(preview)
+            }
         }
+    }
+
+    private func cardContext(_ row: CardRowState) -> BotCardContext {
+        BotCardContext(
+            viewerId: row.viewerId,
+            busyAction: row.busyAction,
+            shareSelection: row.shareSelection,
+            // «—» — заглушка ленты для отправителя без имени: снимок сервера лучше неё.
+            names: senderNames.filter { $0.value != "—" },
+            promiserAvatarUrl: row.promiserAvatarUrl,
+            width: BotCardView.contentWidth(for: row.card, screenWidth: screenSize.width),
+            onEvent: { onCardEvent?($0) }
+        )
     }
 
     /// Шапка конверта «Роман из переписки с Настей» (nil — не рисуем). У пачки шапку несёт
@@ -1658,6 +1698,19 @@ struct BotActionButton: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// Метка ответа «Подумай лучше»: «🧠 Подумал лучше» над текстом (если бот сам ею не начал).
+struct ThinkBetterBadge: View {
+    var body: some View {
+        Text(ThinkBetter.badge)
+            .font(.system(size: 11, weight: .bold))
+            .foregroundStyle(CardPalette.tag)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(CardPalette.tagBackground, in: Capsule())
+            .accessibilityLabel("Ответ после «Подумай лучше»")
     }
 }
 

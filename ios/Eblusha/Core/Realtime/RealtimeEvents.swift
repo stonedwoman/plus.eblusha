@@ -8,7 +8,9 @@ enum RealtimeEvent {
     /// `muted` — «Без звука» ЭТОГО получателя, посчитанный сервером (docs/conversation-mute.md §3):
     /// true — не звенеть. nil — старый сервер без поля: решать своим правилом (MuteRules.shouldAlert).
     case messageNotify(conversationId: String, messageId: String, senderId: String, message: MessageDto?, muted: Bool?)
-    case messageUpdate(conversationId: String, messageId: String)
+    /// `message:update`: правка, удаление, превью ссылки, смена карточки бота. `info` — что сервер
+    /// приложил (причина, само сообщение, карточка, его часы); у старого сервера — пусто.
+    case messageUpdate(conversationId: String, messageId: String, info: MessageUpdateInfo)
     case messageReaction(conversationId: String, messageId: String)
     case receipts(conversationId: String, messageIds: [String], userId: String?, status: String?)
     /// `isBot` — печатает системный бот «Еблуша» (он не участник беседы).
@@ -81,6 +83,45 @@ struct MessageEventPayload: Decodable {
     var message: MessageDto?
     /// Только у `message:notify` нового сервера («Без звука» получателя).
     var muted: Bool?
+}
+
+/// Что несёт `message:update` сверх адреса (SPEC-share §2.4):
+/// `{ conversationId, messageId, reason, message?, cardType?, card?, serverNow? }`.
+struct MessageUpdateInfo {
+    var reason: String?
+    var message: MessageDto?
+    var cardType: String?
+    var card: JSONValue?
+    var serverNow: Date?
+
+    static let empty = MessageUpdateInfo()
+}
+
+/// `message:update`. Отдельно от MessageEventPayload: у этого события НЕТ `senderId` (сервер шлёт
+/// `{conversationId, messageId, reason, message?}`), и общий разбор с обязательным senderId молча
+/// выбрасывал каждое такое событие — правки и удаления на айфоне не приходили вживую вовсе.
+/// Всё, кроме адреса, необязательно и разбирается терпимо: кривое `message` не роняет событие.
+struct MessageUpdatePayload: Decodable {
+    let conversationId: String
+    let messageId: String
+    var info = MessageUpdateInfo.empty
+
+    private enum CodingKeys: String, CodingKey {
+        case conversationId, messageId, reason, message, cardType, card, serverNow
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        conversationId = try c.decode(String.self, forKey: .conversationId)
+        messageId = try c.decode(String.self, forKey: .messageId)
+        info = MessageUpdateInfo(
+            reason: try? c.decodeIfPresent(String.self, forKey: .reason),
+            message: try? c.decodeIfPresent(MessageDto.self, forKey: .message),
+            cardType: try? c.decodeIfPresent(String.self, forKey: .cardType),
+            card: try? c.decodeIfPresent(JSONValue.self, forKey: .card),
+            serverNow: (try? c.decodeIfPresent(JSONValue.self, forKey: .serverNow))?.dateValue
+        )
+    }
 }
 
 struct ReceiptsPayload: Decodable {

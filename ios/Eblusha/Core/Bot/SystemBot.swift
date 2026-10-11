@@ -166,6 +166,73 @@ extension Message {
 
     /// Вопрос-подтверждение владельцу («Ответь «да» на это сообщение…»): быстрые «Да»/«Нет».
     var botIsConfirm: Bool { isBot && !deleted && !isMine && botKind == "confirm" }
+
+    /// Ответ «Подумай лучше» (metadata.bot.depth = "deep") — самая мощная модель уже подумала.
+    var botIsDeep: Bool { isBot && botDepth == ThinkBetter.deepDepth }
+}
+
+// MARK: - «Подумай лучше»
+
+/// Кнопка «Подумай лучше» рядом с «Уточнить» (решение владельца, выпуск с таймером): нажатие СРАЗУ
+/// шлёт ответом на ответ бота «Еблуша, подумай лучше» (в «Чате с Еблушей» — «Подумай лучше»), без
+/// нового API. Бот берёт исходный вопрос и отвечает заново самой мощной моделью; его ответ
+/// помечен metadata.bot.depth = "deep" — под таким кнопки уже нет. Показ — по правилам «Уточнить»:
+/// одна на ответ, под последней частью, ответ уходит на первую; у карточек и «да/нет» её нет.
+enum ThinkBetter {
+    static let deepDepth = "deep"
+    static let title = "Подумай лучше"
+    /// Метка ответа-«подумал лучше» (если бот сам не начал ею текст).
+    static let badge = "🧠 Подумал лучше"
+
+    static func requestText(inBotChat: Bool) -> String {
+        inBotChat ? "Подумай лучше" : "Еблуша, подумай лучше"
+    }
+
+    /// Текст — просьба подумать лучше (то, что шлёт кнопка, и то, что бот понимает словами).
+    static func isRequest(_ text: String?) -> Bool {
+        guard let text else { return false }
+        let body = (BotAddress.stripNamePrefix(text) ?? text)
+            .lowercased()
+            .replacingOccurrences(of: "ё", with: "е")
+            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters))
+        return ["подумай лучше", "подумай еще", "подумай как следует", "глубже", "подумай глубже"].contains(body)
+    }
+
+    /// Где рисовать «Подумай лучше»: там же, где «Уточнить» (`clarifyTargets`: строка → первая
+    /// часть ответа), кроме ответов, уже «подумавших лучше», и ответов, где я уже попросил
+    /// (иначе второе нажатие тратит дневной лимит самой дорогой модели впустую).
+    static func targets(_ messages: [Message], clarifyTargets: [String: Message]) -> [String: Message] {
+        guard !clarifyTargets.isEmpty else { return [:] }
+        var deepAnswers = Set<String>()
+        for message in messages where message.botIsDeep {
+            deepAnswers.insert(message.botTriggerId ?? message.id)
+        }
+        var asked = Set<String>()
+        for message in messages where message.isMine && !message.deleted && isRequest(message.content) {
+            for reply in message.replyTo { asked.insert(reply.id) }
+        }
+        var result: [String: Message] = [:]
+        for (rowId, target) in clarifyTargets {
+            if deepAnswers.contains(target.botTriggerId ?? target.id) || target.botIsDeep { continue }
+            if asked.contains(target.id) || asked.contains(rowId) { continue }
+            result[rowId] = target
+        }
+        return result
+    }
+
+    /// Строки, над текстом которых нужна метка «🧠 Подумал лучше»: первая часть каждого
+    /// «глубокого» ответа, если бот сам не начал текст с 🧠.
+    static func badgeIds(_ messages: [Message]) -> Set<String> {
+        var seen = Set<String>()
+        var result = Set<String>()
+        for message in messages where message.botIsDeep && !message.deleted {
+            let key = message.botTriggerId ?? message.id
+            guard seen.insert(key).inserted else { continue }
+            let text = message.content?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !text.hasPrefix("🧠") { result.insert(message.id) }
+        }
+        return result
+    }
 }
 
 // MARK: - Удаление ответа бота

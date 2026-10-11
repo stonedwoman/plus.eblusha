@@ -63,6 +63,13 @@ final class ChatRepository {
 
     func currentUserId() -> String? { session.currentUserId() }
 
+    /// Тот же APIClient для расширений в других файлах (карточки бота, ChatRepositoryCards):
+    /// AppContainer.shared.api в тестах был бы настоящей сетью, а не подменным транспортом.
+    var apiClient: APIClient { api }
+
+    /// Кто я — имя для оптимистичного вида карточек («отменил Рома»).
+    var sessionUser: SessionStore.StoredUser? { session.currentUser() }
+
     // MARK: - Список бесед
 
     func listConversations() async -> ApiResult<[Conversation]> {
@@ -490,7 +497,13 @@ final class ChatRepository {
             botAskerId: isBot
                 ? dto.metadata?["bot"]?["askerId"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
                 : nil,
-            botAsk: askedBot
+            botAsk: askedBot,
+            // Карточка — только у сообщений бота с видом «card»: у людей ключ `card` вырезает
+            // сервер, а если он всё же есть — это подделка, рисуется обычный текст.
+            card: isBot && !isDeleted && dto.metadata?["bot"]?["kind"]?.stringValue == "card"
+                ? BotCard.parse(dto.metadata?["card"])
+                : nil,
+            botDepth: isBot ? dto.metadata?["bot"]?["depth"]?.stringValue : nil
         )
     }
 

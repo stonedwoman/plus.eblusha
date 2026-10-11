@@ -68,7 +68,9 @@ struct MessageListView: View {
                 onDelete: { vm.delete(messageId: $0.id) },
                 onOutgoing: { id, action in vm.handleOutgoing(id, action) },
                 onClarify: { vm.clarify($0) },
+                onThinkBetter: { vm.thinkBetter($0) },
                 onBotQuickReply: { message, text in vm.quickReply(text, to: message) },
+                onCardEvent: { message, event in handleCardEvent(message, event) },
                 onOpenBotMap: { UIApplication.shared.open($0) },
                 decryptSecretAttachment: vm.ui.isSecret ? { await vm.decryptSecretAttachment($0) } : nil
             ),
@@ -168,7 +170,10 @@ struct MessageListView: View {
         // (scroll(to:)) и рамки плиток. Синтетическая строка сдвинула бы всё это.
         let unreadAnchorId = vm.ui.unreadAnchorId
         let clarifyTargets = Self.botClarifyTargets(messages, byId: byId)
+        let thinkTargets = ThinkBetter.targets(messages, clarifyTargets: clarifyTargets)
+        let deepBadges = ThinkBetter.badgeIds(messages)
         let answeredConfirms = Self.botAnsweredConfirms(messages)
+        let viewerId = vm.currentUserId
 
         return messages.enumerated().map { index, message in
             let earlier = index > 0 ? messages[index - 1] : nil
@@ -196,8 +201,39 @@ struct MessageListView: View {
                 quickSlots: quickSlots,
                 outgoingUpload: vm.ui.outgoing[message.id],
                 botClarifyTarget: clarifyTargets[message.id],
-                botConfirmAnswered: answeredConfirms.contains(message.id)
+                botConfirmAnswered: answeredConfirms.contains(message.id),
+                botThinkTarget: thinkTargets[message.id],
+                botDeepBadge: deepBadges.contains(message.id),
+                card: cardRow(message, viewerId: viewerId)
             )
+        }
+    }
+
+    /// Данные строки для карточки бота (nil — не карточка или рисовать нельзя: запасной текст).
+    private func cardRow(_ message: Message, viewerId: String?) -> CardRowState? {
+        guard let card = message.renderableCard else { return nil }
+        var promiserAvatar: String?
+        if case .promise(let data) = card.payload {
+            promiserAvatar = (vm.ui.senderAvatars[data.promiser.id] ?? nil) ?? data.promiser.avatarUrl
+        }
+        return CardRowState(
+            card: card,
+            viewerId: viewerId,
+            busyAction: vm.ui.cardBusy[message.id],
+            shareSelection: vm.shareSelection(for: message),
+            promiserAvatarUrl: promiserAvatar
+        )
+    }
+
+    /// Карточка бота попросила: действие маршрута, выбор периода и галки, переход к ответу.
+    private func handleCardEvent(_ message: Message, _ event: BotCardEvent) {
+        switch event {
+        case .act(let action): vm.actOnCard(messageId: message.id, action: action)
+        case .share: vm.shareChat(messageId: message.id)
+        case .selectPeriod(let period): vm.selectSharePeriod(messageId: message.id, period: period)
+        case .togglePhotos: vm.toggleSharePhotos(messageId: message.id)
+        case .jump(let id): jumpToQuote(id)
+        case .shown: vm.refreshCardOnce(messageId: message.id)
         }
     }
 
@@ -363,6 +399,13 @@ struct MessageRowModel: Identifiable, Equatable {
     var botClarifyTarget: Message? = nil
     /// Вопрос бота «да/нет», на который я уже ответил: «Да»/«Нет» не показываем.
     var botConfirmAnswered = false
+    /// Рядом с «Уточнить» — «Подумай лучше», ответ уйдёт на это сообщение бота (nil — кнопки нет:
+    /// ответ уже «подумал лучше» или я уже попросил).
+    var botThinkTarget: Message? = nil
+    /// Над текстом — метка «🧠 Подумал лучше» (первая часть «глубокого» ответа).
+    var botDeepBadge = false
+    /// Карточка бота вместо текста (таймер, «поделиться перепиской»).
+    var card: CardRowState? = nil
 
     var id: String { message.id }
 
@@ -377,6 +420,16 @@ struct MessageRowModel: Identifiable, Equatable {
         outgoingUpload != nil || ChatViewModel.isOutgoingId(message.id)
             || SecretOutbox.isPending(message.id)
     }
+}
+
+/// Состояние карточки бота в строке ленты: всё, от чего зависит её вид, кроме времени (время
+/// тикает внутри карточки и строку не переконфигурирует).
+struct CardRowState: Equatable {
+    let card: BotCard
+    let viewerId: String?
+    let busyAction: String?
+    let shareSelection: ShareSelection?
+    let promiserAvatarUrl: String?
 }
 
 /// Замыкания живут в контроллере и не участвуют в сравнении строк — иначе каждая ячейка
@@ -404,8 +457,12 @@ struct MessageRowActions {
     let onOutgoing: (String, OutgoingUploadAction) -> Void
     /// «Уточнить» под ответом бота (сообщение — то, на которое пойдёт ответ).
     let onClarify: (Message) -> Void
+    /// «Подумай лучше» рядом с «Уточнить» — сразу отправляет просьбу ответом на это сообщение.
+    let onThinkBetter: (Message) -> Void
     /// «Да»/«Нет» под вопросом-подтверждением бота.
     let onBotQuickReply: (Message, String) -> Void
+    /// Карточка бота (таймер, «поделиться перепиской»): действие, выбор, переход к ответу.
+    let onCardEvent: (Message, BotCardEvent) -> Void
     /// Карточка карты Valheim → живая карта.
     let onOpenBotMap: (URL) -> Void
     let decryptSecretAttachment: ((MessageAttachment) async -> URL?)?
@@ -1318,6 +1375,8 @@ extension MessageListController: UIGestureRecognizerDelegate {
               !row.selectionMode, !row.isPending,
               !row.message.isSystem, !row.message.deleted,
               row.message.attachments.isEmpty, row.message.linkPreview == nil,
+              // У карточки бота свои кнопки и чипы: два быстрых тапа по ним — не реакция.
+              row.card == nil,
               bubbleContains(row: row, collectionPoint: point),
               // Полоса реакций — часть пузыря, но у неё свои кнопки: два тапа по чипу
               // означают «поставил и снял», а не «быстрая реакция».
@@ -1661,6 +1720,12 @@ private struct MessageCell: View {
                 onClarify: model.botClarifyTarget.map { target -> () -> Void in
                     { actions?.onClarify(target) }
                 },
+                onThinkBetter: model.botThinkTarget.map { target -> () -> Void in
+                    { actions?.onThinkBetter(target) }
+                },
+                deepBadge: model.botDeepBadge,
+                cardRow: model.card,
+                onCardEvent: { actions?.onCardEvent(model.message, $0) },
                 onBotQuickReply: model.message.botIsConfirm && !model.botConfirmAnswered
                     ? { (text: String) -> Void in actions?.onBotQuickReply(model.message, text) }
                     : nil,
