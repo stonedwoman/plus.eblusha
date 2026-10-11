@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // Порт `ui/theme/Color.kt` из eblusha-mobile. Те же дизайн-токены из веб-приложения
 // (frontend/src/style.css :root) — это источник правды, компоненты берут их напрямую.
@@ -28,6 +29,27 @@ enum Eb {
 
     static let logoCream = Color(hex: 0xF4E8C9)    // логотип «Еблуша»
     static let logoB = Color(hex: 0xE25C2A)        // перевёрнутая «Б»
+
+    // Токены «Центра управления» (Features/Settings): значения — `Themes/Brand.xaml` натива,
+    // те же, что у веба и Android. Имена по ролям, а не по оттенкам: светлой темы в приложении
+    // нет (RootView: .preferredColorScheme(.dark)), но когда она появится, менять придётся
+    // только эти определения.
+    static let rail = Color(hex: 0x171A21)         // колонка разделов
+    static let field = Color(hex: 0x141820)        // поле ввода, поиск, дорожка сегментов
+    static let borderHover = Color(hex: 0x4A5160)  // рамка при нажатии
+    /// Мелкий текст, подсказка, плейсхолдер (3,1:1 на плитке — не для смысла). С «Увеличением
+    /// контраста» в iOS светлеет до #9AA0A8 (SPEC §5).
+    static let textDim = Color(UIColor { traits in
+        traits.accessibilityContrast == .high
+            ? UIColor(red: 0x9A / 255, green: 0xA0 / 255, blue: 0xA8 / 255, alpha: 1)
+            : UIColor(red: 0x6B / 255, green: 0x72 / 255, blue: 0x80 / 255, alpha: 1)
+    })
+    static let danger = Color(hex: 0xEF4444)       // «!», полоса ошибки, красная кнопка (НЕ `error` #F87171)
+    static let dangerHover = Color(hex: 0xDC2626)  // нажатие опасной кнопки
+    static let dangerText = Color(hex: 0xFECACA)   // текст ошибки
+    static let dangerSoft = Color(hex: 0xFCA5A5)   // опасная текстовая кнопка («Выйти», «Все другие»)
+    static let ink = Color(hex: 0x0A0A0A)          // текст на янтаре
+    static let ok = Color(hex: 0x86EFAC)           // «Это устройство» (на rgba(34,197,94,.12))
 }
 
 /// Порт шкалы отступов (`ui/theme/Spacing`-аналог). Приложение всегда тёмное —

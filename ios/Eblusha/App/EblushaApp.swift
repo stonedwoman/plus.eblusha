@@ -21,6 +21,9 @@ struct EblushaApp: App {
                 } else if scenario.hasPrefix("cards") {
                     // Стенд карточек бота (таймер обещания, «поделиться перепиской») и «Подумай лучше».
                     BotCardsDemo(scenarioId: scenario)
+                } else if scenario.hasPrefix("settings") {
+                    // Стенд «Центра управления» (настройки): без сети и без входа, состояния по сценарию.
+                    SettingsDemo(scenarioId: scenario)
                 } else if scenario.hasPrefix("bot") {
                     // Стенд бота «Еблуша»: пузыри, «Уточнить», карточка карты, режим «Спросить».
                     BotChatDemo(scenarioId: scenario)

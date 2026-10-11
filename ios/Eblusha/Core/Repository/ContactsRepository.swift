@@ -41,7 +41,6 @@ final class ContactsRepository {
                 id: u.id,
                 eblid: u.eblid,
                 name: (u.displayName?.trimmed().isEmpty == false) ? u.displayName! : "Без имени",
-                bio: (u.bio?.trimmed().isEmpty == false) ? u.bio : nil,
                 avatarUrl: u.avatarUrl,
                 avatars: avatars,
                 status: u.status,
@@ -219,8 +218,7 @@ final class ContactsRepository {
             let u = response.user
             return UserProfile(
                 id: u.id, username: u.username, eblid: u.eblid,
-                displayName: u.displayName, bio: u.bio,
-                avatarUrl: u.avatarUrl, status: u.status
+                displayName: u.displayName, avatarUrl: u.avatarUrl
             )
         }
     }

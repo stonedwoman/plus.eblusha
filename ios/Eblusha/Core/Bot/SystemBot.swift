@@ -300,7 +300,6 @@ struct BotProfile: Codable, Equatable {
     var displayName: String
     var avatarUrl: String?
     var eblid: String?
-    var bio: String?
 }
 
 /// «Чат с Еблушей»: включён ли и какая это беседа.
@@ -316,7 +315,6 @@ struct SystemBotResponse: Decodable {
         var displayName: String?
         var avatarUrl: String?
         var eblid: String?
-        var bio: String?
     }
 
     let bot: Bot
@@ -414,8 +412,7 @@ final class SystemBotStore: ObservableObject {
             id: response.bot.id,
             displayName: (name?.isEmpty == false) ? name! : Self.displayName,
             avatarUrl: response.bot.avatarUrl,
-            eblid: response.bot.eblid,
-            bio: response.bot.bio
+            eblid: response.bot.eblid
         )
         if profile != next { profile = next }
         if configured != true { configured = true }

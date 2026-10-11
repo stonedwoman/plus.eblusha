@@ -26,9 +26,7 @@ struct UserProfile: Equatable {
     let username: String
     let eblid: String?
     let displayName: String?
-    let bio: String?
     let avatarUrl: String?
-    let status: String?
 
     var name: String {
         if let displayName, !displayName.trimmed().isEmpty { return displayName }
@@ -41,7 +39,6 @@ struct UserCardProfile: Equatable {
     let id: String
     let eblid: String?
     let name: String
-    let bio: String?
     let avatarUrl: String?
     let avatars: [String]
     let status: String?
