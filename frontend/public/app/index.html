@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Еблуша — скачать мессенджер</title>
-<meta name="description" content="Еблуша — свой мессенджер: переписка, звонки и секретные чаты. Браузер, Windows, Android.">
+<meta name="description" content="Еблуша — свой мессенджер: переписка, звонки и секретные чаты. Браузер, Windows, Android, iPhone.">
 <meta property="og:title" content="Еблуша — здесь мы общаемся">
-<meta property="og:description" content="Мессенджер со звонками и секретными чатами. Браузер, Windows, Android.">
+<meta property="og:description" content="Мессенджер со звонками и секретными чатами. Браузер, Windows, Android, iPhone.">
 <link rel="icon" href="/icon.png">
 <style>
   :root{
@@ -86,6 +86,33 @@
 
   .foot{position:relative; z-index:2; text-align:center; color:var(--txt-2); font-size:12px; padding:26px 20px 38px; line-height:1.6}
   .foot a{color:var(--txt-2)}
+  /* Заявка на iPhone (как на /get): TestFlight по приглашениям.
+     overflow-y:auto + margin:auto у модалки — чтобы с открытой клавиатурой кнопку можно было докрутить. */
+  .ov{position:fixed; inset:0; z-index:50; display:none; justify-content:center;
+      overflow-y:auto; -webkit-overflow-scrolling:touch;
+      background:rgba(8,10,14,.62); backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px); padding:18px}
+  .ov.open{display:flex}
+  .modal{position:relative; width:100%; max-width:430px; margin:auto; background:var(--surface); border:1px solid var(--border);
+         border-radius:20px; padding:24px 22px 20px; box-shadow:0 24px 60px rgba(0,0,0,.55); animation:rise .35s cubic-bezier(.2,.8,.2,1) both}
+  .modal h3{margin:0 0 8px; font-size:20px; color:#fff}
+  .modal p{margin:0 0 14px; font-size:13.5px; line-height:1.5; color:var(--txt-2)}
+  .modal label{display:block; font-size:12px; font-weight:700; color:var(--txt-2); margin:12px 0 5px}
+  .modal input{width:100%; border-radius:11px; border:1px solid rgba(255,255,255,.18); background:rgba(255,255,255,.07);
+               color:var(--txt); padding:11px 12px; font-size:16px; font-family:inherit; outline:none}  /* 16px: иначе iOS Safari зумит страницу */
+  .modal input:focus{border-color:rgba(217,119,6,.7)}
+  .hp{position:absolute; left:-9999px; top:-9999px; height:1px; width:1px; overflow:hidden}
+  .m-btn{margin-top:18px; width:100%; border:0; cursor:pointer; font-family:inherit; font-weight:800; border-radius:12px; padding:13px 8px;
+         font-size:15px; color:#1b1207; background:linear-gradient(180deg,var(--brand-2),var(--brand));
+         box-shadow:inset 0 1px 0 rgba(255,255,255,.35)}
+  .m-btn:disabled{opacity:.55; cursor:default}
+  .m-x{position:absolute; top:10px; right:14px; background:none; border:0; color:var(--txt-2); font-size:26px; cursor:pointer; line-height:1}
+  .m-note{font-size:12px; line-height:1.45; color:var(--txt-2); margin:-2px 0 12px}
+  .m-err{display:none; margin-top:10px; font-size:12.5px; color:#ff9d7a}
+  .m-ok{display:none; text-align:center}
+  .m-ok .big{font-size:40px; margin:4px 0 10px}
+  .m-ok a.tf{display:block; margin-top:16px; text-decoration:none; font-weight:800; border-radius:12px; padding:13px 8px;
+             color:#1b1207; background:linear-gradient(180deg,var(--brand-2),var(--brand)); box-shadow:inset 0 1px 0 rgba(255,255,255,.35)}
+  .m-ok .small{font-size:11.5px; margin-top:12px; margin-bottom:0}
 </style>
 </head>
 <body>
@@ -119,6 +146,33 @@
     © 2026 Еблуша · <a href="/">открыть мессенджер</a>
   </p>
 
+<div class="ov" id="ios-ov" role="dialog" aria-modal="true" aria-labelledby="ios-h">
+  <div class="modal">
+    <button class="m-x" id="ios-x" aria-label="Закрыть">×</button>
+    <div id="ios-form-view">
+      <h3 id="ios-h">Еблуша для iPhone</h3>
+      <p>Приложение раздаётся через TestFlight по приглашениям. Оставьте почту <b>вашего Apple ID</b> — я добавлю вас вручную, и Apple пришлёт на неё письмо-приглашение. Обычно в течение суток.</p>
+      <form id="ios-form" novalidate>
+        <label for="ios-name">Как вас зовут <span style="font-weight:400">(необязательно)</span></label>
+        <input id="ios-name" name="name" type="text" maxlength="80" autocomplete="name" placeholder="Вася">
+        <label for="ios-email">E-mail вашего Apple ID</label>
+        <input id="ios-email" name="email" type="email" maxlength="120" required autocomplete="email" inputmode="email" placeholder="vasya@icloud.com">
+        <div class="m-note">Это должна быть та почта, под которой вы входите на айфоне: <b>Настройки → ваше имя</b>, адрес под ним. На любую другую приглашение просто не сработает — TestFlight попросит код, которого нет.</div>
+        <div class="hp" aria-hidden="true"><label>Не заполняйте<input name="website" type="text" tabindex="-1" autocomplete="off"></label></div>
+        <button class="m-btn" id="ios-send" type="submit">Отправить заявку</button>
+        <div class="m-err" id="ios-err"></div>
+      </form>
+    </div>
+    <div class="m-ok" id="ios-ok-view">
+      <div class="big">✅</div>
+      <h3>Заявка отправлена</h3>
+      <p>Я обрабатываю заявки вручную — на ваш e-mail придёт письмо-приглашение от Apple. Примите его, а пока установите TestFlight: Еблуша появится именно там.</p>
+      <a class="tf" href="https://apps.apple.com/app/testflight/id899247664" target="_blank" rel="noopener">Установить TestFlight</a>
+      <p class="small">Письмо не пришло за пару дней? Отправьте заявку ещё раз. А пока можно пользоваться <a href="/" style="color:var(--txt-2)">браузерной версией</a>.</p>
+    </div>
+  </div>
+</div>
+
 <script>
 const PLATS = [
   { id:"web", name:"Браузер", url:"/", label:"Открыть", ghost:true, ver:"без установки",
@@ -130,15 +184,16 @@ const PLATS = [
   { id:"android", name:"Android", manifest:"/updates/android/latest.yml", kind:"apk",
     icon:'<svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 10.5h12V17a1.3 1.3 0 0 1-1.3 1.3h-.7v2.2a1 1 0 0 1-2 0v-2.2h-4v2.2a1 1 0 0 1-2 0v-2.2h-.7A1.3 1.3 0 0 1 6 17zM4.6 11a1.2 1.2 0 0 1 2.4 0v4.2a1.2 1.2 0 0 1-2.4 0zM17 11a1.2 1.2 0 0 1 2.4 0v4.2a1.2 1.2 0 0 1-2.4 0zM7.7 9.5a4.35 4.35 0 0 1 8.6 0zm2.1-1.7a.5.5 0 1 0-.5-.5.5.5 0 0 0 .5.5zm4.4 0a.5.5 0 1 0-.5-.5.5.5 0 0 0 .5.5z"/></svg>',
     hint:"Скачайте файл и разрешите установку из этого источника." },
-  { id:"ios", name:"iPhone", ver:"в разработке", label:"Скоро", locked:true, ghost:true,
+  { id:"ios", name:"iPhone", ver:"по приглашению", label:"Запросить доступ", request:true,
     icon:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="7" y="2.6" width="10" height="18.8" rx="2.8"/><path d="M10.6 5.2h2.8"/><path d="M10.2 18.4h3.6"/></svg>',
-    hint:"Пока пользуйтесь браузерной версией — она работает и на iPhone." },
+    hint:"Заполните короткую анкету — придёт приглашение в TestFlight." },
 ];
 
 function detect(){
   const ua = navigator.userAgent;
   if(/android/i.test(ua)) return "android";
-  if(/iphone|ipod|ipad/i.test(ua)) return "web";           // на iPhone приложения пока нет — ведём в браузер
+  if(/iphone|ipod|ipad/i.test(ua)) return "ios";
+  if(/macintosh|mac os x/i.test(ua) && navigator.maxTouchPoints > 1) return "ios";   // iPad с «настольным» Safari
   if(/macintosh|mac os x|linux/i.test(ua) && !/android/i.test(ua)) return "web";
   if(/windows/i.test(ua)) return "windows";
   return "web";
@@ -193,16 +248,57 @@ function setCTA(){
   const p = PLATS.find(x => x.id === me);
   const dl = document.getElementById("dl-" + me);
   const cta = document.getElementById("cta");
-  document.getElementById("cta-lbl").textContent = me === "web" ? "Открыть в браузере" : "Скачать для " + p.name;
+  document.getElementById("cta-lbl").textContent = me === "web" ? "Открыть в браузере" : me === "ios" ? "Запросить доступ" : "Скачать для " + p.name;
   const ver = document.getElementById("ver-" + me).textContent;
-  document.getElementById("cta-sub").textContent = me === "web" ? "без установки" : ver.replace("Версия", "верс.");
+  document.getElementById("cta-sub").textContent = me === "web" ? "без установки" : me === "ios" ? "iPhone — через TestFlight" : ver.replace("Версия", "верс.");
   cta.onclick = (e) => {
     e.preventDefault();
+    if(me === "ios"){ openIos(); return; }
     if(dl && !dl.classList.contains("disabled")) location.href = dl.href;
     else cards[me].scrollIntoView({behavior:"smooth", block:"center"});
   };
 }
 setCTA();
+
+// --- Заявка на iPhone: та же очередь, что у /get (nginx → ios-invites → бот в Telegram); app отличает мессенджер ---
+const ov = document.getElementById("ios-ov");
+function openIos(){
+  document.getElementById("ios-form-view").style.display = "";
+  document.getElementById("ios-ok-view").style.display = "";
+  ov.classList.add("open");
+  setTimeout(() => document.getElementById("ios-email").focus(), 80);
+}
+function closeIos(){ ov.classList.remove("open"); }
+document.getElementById("ios-x").onclick = closeIos;
+let ovDown = false;   // закрываем по подложке, только если и нажали, и отпустили на ней
+ov.addEventListener("mousedown", e => { ovDown = (e.target === ov); });
+ov.addEventListener("click", e => { if(e.target === ov && ovDown) closeIos(); ovDown = false; });
+document.addEventListener("keydown", e => { if(e.key === "Escape") closeIos(); });
+document.getElementById("dl-ios").addEventListener("click", e => { e.preventDefault(); openIos(); });
+document.getElementById("ios-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const err = document.getElementById("ios-err"), btn = document.getElementById("ios-send");
+  const email = document.getElementById("ios-email").value.trim();
+  if(!/^[^@\s]+@[^@\s]+\.[^@\s]{2,}$/.test(email)){
+    err.textContent = "Похоже, в e-mail опечатка — проверьте."; err.style.display = "block"; return;
+  }
+  err.style.display = "none"; btn.disabled = true; btn.textContent = "Отправляем…";
+  const id = (crypto.randomUUID && crypto.randomUUID()) || Date.now() + "-" + Math.random().toString(16).slice(2);
+  try{
+    const r = await fetch("/api/ios-request/" + id + ".json", { method:"PUT",
+      headers:{ "X-Eblusha-Invite":"c8cbcd45985b6bc6ae59a0d8af4cc507", "Content-Type":"application/json" },
+      body: JSON.stringify({ app:"messenger", email, name:document.getElementById("ios-name").value.trim(),
+        website:document.querySelector("#ios-form [name=website]").value,
+        ua:navigator.userAgent, ts:new Date().toISOString() }) });
+    if(!r.ok) throw r.status;
+    document.getElementById("ios-form-view").style.display = "none";
+    document.getElementById("ios-ok-view").style.display = "block";
+    btn.disabled = false; btn.textContent = "Отправить заявку";
+  }catch(st){
+    err.textContent = st === 429 ? "Слишком много запросов — попробуйте через минуту." : "Не получилось отправить. Проверьте интернет и попробуйте ещё раз.";
+    err.style.display = "block"; btn.disabled = false; btn.textContent = "Отправить заявку";
+  }
+});
 </script>
 </body>
 </html>
