@@ -27,7 +27,6 @@ export type SystemBotProfile = {
   displayName: string
   avatarUrl: string | null
   eblid: string | null
-  bio: string | null
   isBot: true
 }
 
@@ -59,7 +58,6 @@ export function normalizeSystemBotInfo(raw: unknown): SystemBotInfo | null {
       displayName: str(b.displayName) ?? BOT_DEFAULT_NAME,
       avatarUrl: str(b.avatarUrl),
       eblid: str(b.eblid),
-      bio: str(b.bio),
       isBot: true,
     },
     botChat: normalizeBotChatState(r.botChat),

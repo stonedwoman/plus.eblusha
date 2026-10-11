@@ -587,7 +587,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     if (!u || typeof u !== 'object' || !u.id) return
     if (me?.id && String(u.id) === String(me.id)) { settingsNavRef.current.open({ kind: 'section', id: 'profile' }); return }
     setUserCardUser(u)
-    // Enrich with bio/createdAt from the public mini-profile endpoint (best-effort).
+    // Enrich with createdAt/avatars from the public mini-profile endpoint (best-effort).
     void api.get(`/users/${encodeURIComponent(String(u.id))}`)
       .then((r) => {
         const full = r.data?.user
@@ -2874,7 +2874,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     // профиля, иначе его сообщения, цитаты и «печатает» подписывались бы «User» / «Участник».
     if (systemBot && !map[systemBot.bot.id]) {
       const b = systemBot.bot
-      map[b.id] = { id: b.id, displayName: b.displayName, avatarUrl: b.avatarUrl, bio: b.bio, isBot: true }
+      map[b.id] = { id: b.id, displayName: b.displayName, avatarUrl: b.avatarUrl, isBot: true }
     }
     return map
   }, [activeConversation, me, systemBot])

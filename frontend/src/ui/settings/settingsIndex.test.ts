@@ -14,7 +14,7 @@ import {
 
 // Строки веба из SPEC §1.3 (колонка «Веб» не «—»). Сверка с таблицей — отдельный тест на каждой платформе.
 const SPEC_WEB_IDS = [
-  'p-photo', 'p-name', 'p-bio', 'p-eblid', 'p-ltime', 'p-bot',
+  'p-photo', 'p-name', 'p-eblid', 'p-ltime', 'p-bot',
   'c-server', 'c-relay',
   'a-mic', 'a-spk', 'a-cam', 'a-permmic', 'a-permcam', 'a-echo', 'a-ns', 'a-agc', 'a-shres', 'a-shfps', 'a-shaud',
   's-pass', 's-link', 's-sess',
@@ -34,6 +34,15 @@ describe('указатель поиска веба', () => {
   it('«Чат с Еблушей» есть в указателе, только если бот заведён', () => {
     expect(buildIndex({ hasBot: false }).some((r) => r.id === 'p-bot')).toBe(false)
     expect(buildIndex({ hasBot: true }).some((r) => r.id === 'p-bot')).toBe(true)
+  })
+
+  it('«О себе» и выбора статуса в указателе нет (решение владельца 2026-10-11)', () => {
+    for (const d of INDEX_DEFS) {
+      expect(d.id).not.toMatch(/^p-(bio|status)$/)
+      expect(d.title).not.toMatch(/о себе|статус|не беспокоить|невидимк/i)
+    }
+    expect(WEB_INDEX_IDS).not.toContain('p-bio')
+    expect(WEB_INDEX_IDS).not.toContain('p-status')
   })
 
   it('у строк «Звука и видео» есть вкладка, у остальных нет', () => {
@@ -72,6 +81,17 @@ describe('совпадение', () => {
     expect(ids('безопасность')).toEqual(expect.arrayContaining(['s-pass', 's-link', 's-sess']))
     expect(ids('timezone')).toContain('p-ltime')
     expect(ids('webcam')).toContain('a-cam')
+  })
+
+  it('поиск «о себе» / «био» / «статус» / «не беспокоить» / «невидимка» ничего не находит', () => {
+    for (const q of ['о себе', 'обо мне', 'био', 'bio', 'описание', 'статус', 'статус онлайн', 'не беспокоить', 'невидимка', 'отошёл', 'dnd', 'показывать меня']) {
+      expect(ids(q), q).toEqual([])
+    }
+  })
+
+  it('поиск по «имя» и «время» по-прежнему находит свои строки', () => {
+    expect(ids('имя')).toContain('p-name')
+    expect(ids('время')).toContain('p-ltime')
   })
 
   it('поиск по «микрофон» находит и доступ, и строку устройства', () => {

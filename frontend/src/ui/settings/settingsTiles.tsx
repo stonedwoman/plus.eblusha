@@ -146,7 +146,6 @@ function ProfileTile({ ctx, span }: { ctx: TilesCtx; span?: 1 | 2 }) {
   const presence = model.input.presence as any
   const eblid = meInfo?.eblid ?? '— — — —'
   const sizeAva = phone ? 60 : mode === 'cmp' ? 72 : 100
-  const bio = String(meInfo?.bio ?? '').trim()
   return (
     <TileShell id="profile" ctx={ctx} span={phone ? 2 : span}>
       <div className="ebs-tp__banner" aria-hidden="true" />
@@ -180,7 +179,6 @@ function ProfileTile({ ctx, span }: { ctx: TilesCtx; span?: 1 | 2 }) {
                 </span>
               </div>
             ) : null}
-            {bio && mode !== 'cmp' ? <div className="ebs-tp__bio">{bio}</div> : null}
             <span className="ebs-cap" style={{ marginTop: 4 }}>
               EBLID <b className="ebs-num">{eblid}</b>
             </span>

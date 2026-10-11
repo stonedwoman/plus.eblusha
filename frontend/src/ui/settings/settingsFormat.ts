@@ -211,6 +211,14 @@ export function sessionTileLine(r: SessionRow, now: Date = new Date()): string {
 
 // ───────────────────────────── прочее ─────────────────────────────
 
+/**
+ * Тело PATCH /status/me из «Профиля»: только имя. «О себе» и ручного статуса в интерфейсе больше нет
+ * (решение владельца 2026-10-11), поэтому ни `bio`, ни `status` не уходят — сервер непришедшие поля не трогает.
+ */
+export function profilePatchBody(name: string): { displayName: string } {
+  return { displayName: String(name ?? '').trim() }
+}
+
 /** Подпись пары «разрешение показа экрана» для строки плитки: «1080p · 30 кадр/с · со звуком». */
 export function shareSummary(resolutionLabel: string, fps: number, audio: boolean): string {
   return `${resolutionLabel} · ${fps} кадр/с${audio ? ' · со звуком' : ''}`

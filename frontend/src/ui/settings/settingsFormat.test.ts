@@ -7,6 +7,7 @@ import {
   hasOwnDevice,
   lastSeenLabel,
   platformLabel,
+  profilePatchBody,
   seenShort,
   serverHint,
   serverRoute,
@@ -144,5 +145,15 @@ describe('сводки', () => {
     expect(cleanDeviceLabel('Default - Микрофон (Realtek) (0bda:0567)')).toBe('Микрофон (Realtek)')
     expect(cleanDeviceLabel('По умолчанию - Динамики')).toBe('Динамики')
     expect(cleanDeviceLabel('Камера (10d6:')).toBe('Камера')
+  })
+})
+
+describe('сохранение профиля', () => {
+  it('в PATCH /status/me уходит только имя: ни «О себе», ни статуса', () => {
+    const body = profilePatchBody('  Валя  ')
+    expect(body).toEqual({ displayName: 'Валя' })
+    expect(Object.keys(body)).toEqual(['displayName'])
+    expect(body).not.toHaveProperty('bio')
+    expect(body).not.toHaveProperty('status')
   })
 })

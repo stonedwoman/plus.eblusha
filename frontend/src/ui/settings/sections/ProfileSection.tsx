@@ -1,6 +1,7 @@
 /**
- * Раздел «Профиль»: фото, имя, «О себе», EBLID, «Местное время», «Чат с Еблушей» + панель сохранения.
- * Имя и «О себе» (раньше — только на мёртвой /settings) уходят одним запросом по «Сохранить изменения».
+ * Раздел «Профиль»: фото, имя, EBLID, «Местное время», «Чат с Еблушей» + панель сохранения.
+ * Имя (раньше — только на мёртвой /settings) уходит по «Сохранить изменения». Поля «О себе» и выбора статуса в
+ * интерфейсе нет (решение владельца 2026-10-11): присутствие определяется само.
  * Фото на вебе — прежний редактор кадра ChatsPage: «Заменить фото» открывает выбор файла, а в самом редакторе —
  * кнопка «Загрузить», как и раньше. Щелчок по кругу — прежняя галерея с удалением прошлых снимков.
  */
@@ -47,9 +48,7 @@ export function ProfileSection() {
 
   const saveState = profile.flow === 'saving' ? 'saving' : profile.flow === 'error' ? 'error' : profile.flow === 'done' ? 'done' : 'dirty'
   const showBar = profile.dirty || profile.flow !== 'idle'
-  const nameChanged = profile.name.trim() !== profile.srvName.trim()
-  const bioChanged = profile.bio.trim() !== profile.srvBio.trim()
-  const saveHint = nameChanged && bioChanged ? 'Новое имя и «О себе» уйдут одним запросом.' : nameChanged ? 'Новое имя уйдёт одним запросом.' : 'Новый текст «О себе» уйдёт одним запросом.'
+  const saveHint = 'Новое имя увидят другие пользователи.'
 
   return (
     <>
@@ -101,16 +100,6 @@ export function ProfileSection() {
           >
             {profile.nameErr ? <Msg kind="err">Введите отображаемое имя.</Msg> : null}
           </Row>
-          <Row id="p-bio" title="О себе" desc="Пара строк в вашей карточке — её видит тот, кто откроет профиль.">
-            <textarea
-              className={`ebs-field ebs-field--block${bioChanged ? ' is-edited' : ''}`}
-              rows={2}
-              value={profile.bio}
-              maxLength={1000}
-              aria-label="О себе"
-              onChange={(e) => profile.setBio(e.target.value)}
-            />
-          </Row>
           <Row
             id="p-eblid"
             title="EBLID"
@@ -136,7 +125,7 @@ export function ProfileSection() {
             <Row
               id="p-ltime"
               title="Показывать моё местное время"
-              desc="Собеседники в личных чатах видят под вашим статусом, который у вас час, и город по часовому поясу."
+              desc="Собеседники в личных чатах видят под вашим именем, который у вас час, и город по часовому поясу."
               toggle={{ checked: lt.checked, onChange: (v) => void lt.toggle(v), disabled: lt.busy || lt.loading }}
               err={lt.err}
             >

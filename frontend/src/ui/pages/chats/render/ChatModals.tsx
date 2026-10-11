@@ -289,7 +289,7 @@ export function renderChatModals(ctx: ChatModalsCtx) {
               : []
             return (
               <UserProfileCard
-                user={{ ...userCardUser, displayName: userCardUser.displayName || systemBot?.bot.displayName || 'Еблуша', bio: userCardUser.bio || systemBot?.bot.bio || null }}
+                user={{ ...userCardUser, displayName: userCardUser.displayName || systemBot?.bot.displayName || 'Еблуша' }}
                 isBot
                 statusText="бот"
                 eblid={null}

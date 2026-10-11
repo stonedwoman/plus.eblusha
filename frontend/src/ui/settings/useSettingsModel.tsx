@@ -35,6 +35,7 @@ import {
   deviceCount,
   groupSessions,
   hasOwnDevice,
+  profilePatchBody,
   serverRoute,
   voiceSummary,
   type DeviceRecord,
@@ -100,23 +101,20 @@ function useMediaPermission(name: 'microphone' | 'camera'): PermState {
   return state
 }
 
-// ───────────────────────────── профиль: правка имени и «О себе» ─────────────────────────────
+// ───────────────────────────── профиль: правка имени ─────────────────────────────
 
 export type SaveFlow = 'idle' | 'saving' | 'error' | 'done'
 
 function useProfileDraft(meInfo: any | undefined, meId: string | undefined) {
   const qc = useQueryClient()
   const [nameDraft, setNameDraft] = useState<string | null>(null)
-  const [bioDraft, setBioDraft] = useState<string | null>(null)
   const [flow, setFlow] = useState<SaveFlow>('idle')
   const [nameErr, setNameErr] = useState(false)
   const doneTimer = useRef<number | null>(null)
 
   const srvName = String(meInfo?.displayName ?? '')
-  const srvBio = String(meInfo?.bio ?? '')
   const name = nameDraft ?? srvName
-  const bio = bioDraft ?? srvBio
-  const dirty = (nameDraft !== null && nameDraft.trim() !== srvName.trim()) || (bioDraft !== null && bioDraft.trim() !== srvBio.trim())
+  const dirty = nameDraft !== null && nameDraft.trim() !== srvName.trim()
 
   useEffect(() => () => {
     if (doneTimer.current) window.clearTimeout(doneTimer.current)
@@ -127,14 +125,9 @@ function useProfileDraft(meInfo: any | undefined, meId: string | undefined) {
     setNameErr(false)
     setFlow((f) => (f === 'done' ? 'idle' : f))
   }, [])
-  const setBio = useCallback((v: string) => {
-    setBioDraft(v)
-    setFlow((f) => (f === 'done' ? 'idle' : f))
-  }, [])
 
   const discard = useCallback(() => {
     setNameDraft(null)
-    setBioDraft(null)
     setNameErr(false)
     setFlow('idle')
   }, [])
@@ -148,13 +141,10 @@ function useProfileDraft(meInfo: any | undefined, meId: string | undefined) {
     }
     setFlow('saving')
     try {
-      const body: { displayName?: string; bio?: string } = {}
-      // имя и «О себе» уходят одним запросом, как и прежде (мёртвая /settings слала всё вместе)
-      body.displayName = nextName
-      body.bio = bio.trim()
-      const res = await api.patch('/status/me', body)
+      // уходит только имя: «О себе» и ручного статуса в интерфейсе больше нет, сервер непришедшие поля не трогает
+      const res = await api.patch('/status/me', profilePatchBody(nextName))
       const user = res?.data?.user
-      qc.setQueryData(['me-info'], (old: any) => ({ ...(old ?? {}), ...(user ?? { displayName: nextName, bio: body.bio }) }))
+      qc.setQueryData(['me-info'], (old: any) => ({ ...(old ?? {}), ...(user ?? { displayName: nextName }) }))
       void qc.invalidateQueries({ queryKey: ['me-info'] })
       // своё имя в сессии — его показывает плитка в списке бесед
       try {
@@ -164,7 +154,6 @@ function useProfileDraft(meInfo: any | undefined, meId: string | undefined) {
         // сессия не обновилась — имя подтянется при следующем входе
       }
       setNameDraft(null)
-      setBioDraft(null)
       setNameErr(false)
       setFlow('done')
       if (doneTimer.current) window.clearTimeout(doneTimer.current)
@@ -174,9 +163,9 @@ function useProfileDraft(meInfo: any | undefined, meId: string | undefined) {
       setFlow('error')
       return false
     }
-  }, [flow, name, bio, qc, meId])
+  }, [flow, name, qc, meId])
 
-  return { name, bio, setName, setBio, dirty, flow, nameErr, save, discard, srvName, srvBio }
+  return { name, setName, dirty, flow, nameErr, save, discard, srvName }
 }
 
 // ───────────────────────────── «Местное время» ─────────────────────────────
