@@ -12,6 +12,7 @@
 import prisma from "./prisma";
 import logger from "../config/logger";
 import { getIO } from "../realtime/socket";
+import { enqueueBadgeRefresh } from "../push/badge";
 import { isMutedAt, muteView, shouldAlert, type MuteView } from "./conversationMuteRules";
 
 export * from "./conversationMuteRules";
@@ -131,6 +132,17 @@ export async function setConversationMute(
     getIO()?.to(userRoom(userId)).emit("conversation:mute", event);
   } catch (error) {
     logger.warn({ error, userId, conversationId }, "mute: failed to emit conversation:mute");
+  }
+  // Значок iOS (push/badge.ts): беседа вышла из общего счётчика или вернулась в него — число на выгруженных
+  // айфонах меняет только сервер. Сразу и ещё раз в момент истечения срока: сервер ничего не убирает, а
+  // выгруженное приложение срок не отследит. (Без APNS_BADGE=on — ничего.)
+  enqueueBadgeRefresh(userId);
+  if (view.mutedUntil && !view.mutedForever) {
+    const untilMs = Date.parse(view.mutedUntil);
+    enqueueBadgeRefresh(userId, {
+      delayMs: untilMs - at + 1_000,
+      dedupeKey: `badge-exp-${userId}-${conversationId}-${untilMs}`,
+    });
   }
   return { conversationId, ...view, serverNow: atIso };
 }

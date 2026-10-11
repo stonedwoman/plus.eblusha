@@ -22,8 +22,13 @@
  *      «Звонок продлился» → muted:false. «Чат с Еблушей»: ответ бота → нет. Секретка: пуша нет, но
  *      secret:notify есть; после «Включить звук» — пуш есть.
  *      Истечение: until = now+1,5 с → пуша нет; после срока → есть, muted:false.
- *   F. Значок APNs: buildRequest с/без badge; sendPushToUsers при APNS_BADGE=on считает непрочитанное без
- *      заглушённых (= totalUnread списка), при off — без badge.
+ *      У пуша «Групповой звонок» есть sentAt (момент записи, часы сервера).
+ *   F. Значок APNs (число ведёт сервер, только устройствам с caps "badge"): buildRequest — badge в alert-пуше
+ *      о сообщении, badge-only пуш (alert без alert/sound, collapse-id badge), read — никогда; регистрация
+ *      токена с caps → {badge:true} при APNS_BADGE=on, без caps — объявление снято, DELETE снимает, VoIP и FCM
+ *      без поля; sendPushToUsers: message — число только устройству с caps (= totalUnread списка), kind badge —
+ *      только ему, read — следом badge-only пуш ему же; при off — ни числа, ни badge-пушей; POST mute ставит
+ *      badge-задачу сразу и к истечению срока («навсегда» и «Включить звук» — только сразу), при off — ничего.
  *
  * Запускать ТОЛЬКО в изолированной среде (guard.ts не пустит к боевым БД/Redis):
  *   test/secret-env/secret-test.sh run test/conversation-mute.integration.test.ts
@@ -111,6 +116,25 @@ async function mkUser(tag: string, devices = 1): Promise<U> {
     devs.push(dev);
   }
   return { id: user.id, username, token, dev: devs[0] ?? "", devs };
+}
+
+/** Ещё одно устройство человека (как mkUser). */
+async function addDevice(u: U, tag: string): Promise<string> {
+  const dev = `${RUN}-${tag}-${crypto.randomBytes(3).toString("hex")}`;
+  const r = await call("POST", "/api/devices/register", {
+    token: u.token,
+    device: dev,
+    body: {
+      deviceId: dev,
+      name: `${RUN} ${tag}`,
+      platform: "test",
+      publicKey: b64(),
+      identityPublicKey: b64(),
+      prekeys: [{ keyId: `${dev}-pk`, publicKey: b64(), oneTimePreKeyId: `${dev}-opk`, oneTimePreKeyPublic: b64() }],
+    },
+  });
+  assert.ok(r.status < 300, `register ${dev}: ${r.status} ${JSON.stringify(r.body)}`);
+  return dev;
 }
 
 const mute = (u: U, conversationId: string, body: unknown, device?: string) =>
@@ -576,6 +600,9 @@ async function main() {
       const nu = await notifyOf(sU1, nw.messageId);
       assert.equal(nu.muted, true);
       await expectMessagePush(nw.messageId, GO);
+      // sentAt — момент записи (часы сервера): по нему клиенты ловят гонку «заглушили сразу после постановки пуша».
+      const callJob = await jobById(`msg-${nw.messageId}`);
+      assert.equal(callJob.data.payload.sentAt, new Date(nw.message.createdAt).getTime(), "sentAt пуша «Групповой звонок»");
       sV.s.emit("call:end", { conversationId: G });
       const endU = await waitEv(sU1, "message:notify", (p) => p.conversationId === G && p.message?.metadata?.ended === true);
       assert.equal(endU.muted, true);
@@ -648,15 +675,92 @@ async function main() {
       const read = buildRequest(cfg, tgt, { kind: "read", conversationId: G }, { badge: 3 })!.body;
       assert.ok(!read.includes('"badge"'), "в тихий read-пуш значок не кладём");
     });
-    await step("sendPushToUsers: APNS_BADGE=on — badge = непрочитанное без заглушённых; off — без badge", async () => {
+    await step("buildRequest kind badge: alert без alert/sound, только aps.badge, priority 10, collapse-id badge; без числа и на VoIP — нет", async () => {
+      const req = buildRequest(cfg, tgt, { kind: "badge" }, { badge: 4 })!;
+      assert.equal(req.headers["apns-push-type"], "alert");
+      assert.equal(req.headers["apns-priority"], "10");
+      assert.equal(req.headers["apns-collapse-id"], "badge");
+      assert.equal(req.headers["apns-topic"], cfg.bundleId);
+      assert.deepEqual(JSON.parse(req.body), { aps: { badge: 4 }, kind: "badge" });
+      assert.equal(buildRequest(cfg, tgt, { kind: "badge" }), null, "без числа слать нечего");
+      assert.equal(buildRequest(cfg, tgt, { kind: "badge" }, { badge: -1 }), null);
+      assert.equal(buildRequest(cfg, { ...tgt, provider: "apns-voip" }, { kind: "badge" }, { badge: 4 }), null, "VoIP — нет");
+    });
+
+    // Устройства U для значка: uNew — сборка с поддержкой (caps badge), uOld — старая сборка (без caps); у uPhone
+    // токен вписан прямо в БД (тоже без caps — как у всех, кто ещё на 995). uPc получит FCM-токен.
+    const uNew = await addDevice(U, "inew");
+    const uOld = await addDevice(U, "iold");
+    const capKey = `push:badge:${U.id}`;
+    const regPush = (dev: string, body: unknown) => call("POST", `/api/devices/${dev}/push`, { token: U.token, device: dev, body });
+    const tokNew = crypto.randomBytes(32).toString("hex");
+    const tokOld = crypto.randomBytes(32).toString("hex");
+    const flag0 = (env as any).APNS_BADGE;
+    await step("регистрация токена: caps badge → {badge:true} при on; без caps — false и объявление снято; off — false; DELETE снимает; VoIP/FCM — без поля", async () => {
+      const redis = await getRedisClient();
+      try {
+        (env as any).APNS_BADGE = "on";
+        const a = await regPush(uNew, { token: tokNew, provider: "apns", caps: ["badge", "что-то-новое"] });
+        assert.equal(a.status, 200, JSON.stringify(a.body));
+        assert.deepEqual(a.body, { ok: true, badge: true });
+        assert.ok(await redis.hExists(capKey, uNew), "объявление в Redis");
+        assert.ok((await redis.pTTL(capKey)) > 100 * 24 * HOUR, "живёт долго (обновляется при каждой регистрации)");
+        const b = await regPush(uOld, { token: tokOld, provider: "apns" });
+        assert.deepEqual(b.body, { ok: true, badge: false }, "старая сборка — без значка");
+        assert.ok(!(await redis.hExists(capKey, uOld)));
+        // Откат на старую сборку: та же регистрация без caps снимает объявление.
+        const c = await regPush(uNew, { token: tokNew, provider: "apns" });
+        assert.deepEqual(c.body, { ok: true, badge: false });
+        assert.ok(!(await redis.hExists(capKey, uNew)), "без caps — объявление снято");
+        // off: объявление запоминается, но «число ведёт сервер» не обещаем.
+        (env as any).APNS_BADGE = "off";
+        const d = await regPush(uNew, { token: tokNew, provider: "apns", caps: ["badge"] });
+        assert.deepEqual(d.body, { ok: true, badge: false });
+        assert.ok(await redis.hExists(capKey, uNew));
+        // Выход: DELETE снимает токены и объявление.
+        const del = await call("DELETE", `/api/devices/${uNew}/push`, { token: U.token, device: uNew });
+        assert.equal(del.status, 200);
+        assert.ok(!(await redis.hExists(capKey, uNew)), "DELETE снимает объявление");
+        // VoIP и FCM — без поля badge; VoIP-регистрация объявление не ставит.
+        const voip = await regPush(uNew, { token: crypto.randomBytes(32).toString("hex"), provider: "apns-voip", caps: ["badge"] });
+        assert.deepEqual(voip.body, { ok: true });
+        assert.ok(!(await redis.hExists(capKey, uNew)), "VoIP-регистрация объявление не ставит");
+        const fcm = await call("POST", `/api/devices/${uPc}/push`, { token: U.token, device: uPc, body: { token: `fcm_${b64()}`, provider: "fcm" } });
+        assert.deepEqual(fcm.body, { ok: true });
+        // Итог для следующих шагов: uNew — с caps, uOld — без.
+        (env as any).APNS_BADGE = "on";
+        const e = await regPush(uNew, { token: tokNew, provider: "apns", caps: ["badge"] });
+        assert.deepEqual(e.body, { ok: true, badge: true });
+      } finally {
+        (env as any).APNS_BADGE = flag0;
+      }
+    });
+
+    /** Заглушки транспортов: записываем вызовы, никуда не шлём. */
+    async function withTransports(fn: (calls: { apns: any[][]; fcm: any[][] }) => Promise<void>) {
       const orig = { apns: apnsExports.sendApns, fcm: fcmExports.sendFcm, flag: (env as any).APNS_BADGE };
-      const calls: any[][] = [];
+      const calls = { apns: [] as any[][], fcm: [] as any[][] };
       apnsExports.sendApns = async (...args: any[]) => {
-        calls.push(args);
+        calls.apns.push(args);
         return { sent: args[0].length, dead: [] };
       };
-      fcmExports.sendFcm = async (targets: any[]) => ({ sent: targets.length, dead: [] });
+      fcmExports.sendFcm = async (...args: any[]) => {
+        calls.fcm.push(args);
+        return { sent: args[0].length, dead: [] };
+      };
       try {
+        await fn(calls);
+      } finally {
+        apnsExports.sendApns = orig.apns;
+        fcmExports.sendFcm = orig.fcm;
+        (env as any).APNS_BADGE = orig.flag;
+      }
+    }
+    const ids = (targets: any[]) => targets.map((t: any) => t.deviceId).sort();
+    const nonEmpty = (cs: any[][]) => cs.filter((c) => c[0].length > 0);
+
+    await step("sendPushToUsers message: APNS_BADGE=on — число (без заглушённых, = totalUnread) только устройству с caps; off — ни у кого", async () => {
+      await withTransports(async (calls) => {
         await mute(U, D, { until: null });
         const all = await unreadTotalExcludingMuted(U.id);
         await mute(U, D, { for: "forever" });
@@ -664,19 +768,90 @@ async function main() {
         assert.ok(withoutD < all, `заглушённая D не считается (${withoutD} < ${all})`);
         (env as any).APNS_BADGE = "on";
         await sendPushToUsers([U.id], msgPayload);
-        assert.equal(calls.length, 1);
-        assert.deepEqual(calls[0]![0].map((t: any) => t.deviceId), [uPhone]);
-        assert.equal(calls[0]![2]?.badgeByUser?.get(U.id), withoutD);
+        assert.equal(calls.apns.length, 1);
+        assert.deepEqual(ids(calls.apns[0]![0]), [uNew, uOld, uPhone].sort(), "пуш о сообщении — всем iOS");
+        const byDev: ReadonlyMap<string, number> = calls.apns[0]![2]?.badgeByDevice;
+        assert.deepEqual([...byDev.keys()], [uNew], "число — только сборке с caps badge");
+        assert.equal(byDev.get(uNew), withoutD);
         const list = await call("GET", "/api/conversations", { token: U.token });
         assert.equal(list.body.totalUnread, withoutD, "значок = totalUnread списка");
         (env as any).APNS_BADGE = "off";
         await sendPushToUsers([U.id], msgPayload);
-        assert.equal(calls.length, 2);
-        assert.equal(calls[1]![2], undefined, "off — без badge");
+        assert.equal(calls.apns.length, 2);
+        assert.equal(calls.apns[1]![2], undefined, "off — без badge");
+      });
+    });
+    await step("sendPushToUsers kind badge: только устройству с caps (FCM и старым сборкам — нет); off — никому", async () => {
+      await withTransports(async (calls) => {
+        (env as any).APNS_BADGE = "on";
+        const expected = await unreadTotalExcludingMuted(U.id);
+        const r = await sendPushToUsers([U.id], { kind: "badge" });
+        assert.equal(r.sent, 1);
+        assert.equal(nonEmpty(calls.fcm).length, 0, "FCM badge-пуш не получает");
+        assert.equal(calls.apns.length, 1);
+        assert.deepEqual(ids(calls.apns[0]![0]), [uNew]);
+        assert.equal(calls.apns[0]![1].kind, "badge");
+        assert.equal(calls.apns[0]![2]?.badgeByDevice?.get(uNew), expected);
+        (env as any).APNS_BADGE = "off";
+        const r2 = await sendPushToUsers([U.id], { kind: "badge" });
+        assert.equal(r2.sent, 0);
+        assert.equal(nonEmpty(calls.apns).length, 1, "off — badge-пушей нет");
+      });
+    });
+    await step("sendPushToUsers read: read-пуш всем (iOS и Android) + следом badge-only пуш устройству с caps; off — без него", async () => {
+      await withTransports(async (calls) => {
+        (env as any).APNS_BADGE = "on";
+        await sendPushToUsers([U.id], { kind: "read", conversationId: G, readAt: Date.now() });
+        assert.equal(calls.fcm.length, 1);
+        assert.deepEqual(ids(calls.fcm[0]![0]), [uPc], "read — Android");
+        const apns = nonEmpty(calls.apns);
+        assert.equal(apns.length, 2, "read-пуш и следом badge-пуш");
+        assert.equal(apns[0]![1].kind, "read");
+        assert.deepEqual(ids(apns[0]![0]), [uNew, uOld, uPhone].sort());
+        assert.equal(apns[0]![2], undefined, "в read-пуше числа нет");
+        assert.equal(apns[1]![1].kind, "badge");
+        assert.deepEqual(ids(apns[1]![0]), [uNew]);
+        assert.equal(apns[1]![2]?.badgeByDevice?.get(uNew), await unreadTotalExcludingMuted(U.id));
+        // Устройство, которое само прочитало (исключено из read-пуша), badge-пуш тоже не получает: оно на экране.
+        calls.apns.length = 0;
+        await sendPushToUsers([U.id], { kind: "read", conversationId: G }, { excludeDeviceIds: [uNew] });
+        assert.deepEqual(nonEmpty(calls.apns).map((c) => c[1].kind), ["read"]);
+        calls.apns.length = 0;
+        (env as any).APNS_BADGE = "off";
+        await sendPushToUsers([U.id], { kind: "read", conversationId: G });
+        assert.deepEqual(nonEmpty(calls.apns).map((c) => c[1].kind), ["read"], "off — без badge-пуша");
+      });
+    });
+    await step("POST mute (on): badge-задача сразу и к истечению срока; «навсегда»/«Включить звук» — только сразу; off — ничего", async () => {
+      await resetMuteRate(U);
+      const badgeJobs = async () => jobsWhere((j) => j.data?.payload?.kind === "badge" && j.data.userIds?.[0] === U.id);
+      try {
+        (env as any).APNS_BADGE = "on";
+        const before = (await badgeJobs()).map((j: any) => j.id);
+        const r = await mute(U, G, { for: "1h" });
+        assert.equal(r.status, 200);
+        await sleep(400); // enqueuePush — fire-and-forget
+        const fresh = (await badgeJobs()).filter((j: any) => !before.includes(j.id));
+        const untilMs = Date.parse(r.body.mutedUntil);
+        const exp = fresh.find((j: any) => j.id === `badge-exp-${U.id}-${G}-${untilMs}`);
+        assert.ok(exp, `задача к истечению: ${JSON.stringify(fresh.map((j: any) => j.id))}`);
+        const delay = Number(exp.opts?.delay ?? exp.delay);
+        assert.ok(Math.abs(delay - (untilMs - Date.parse(r.body.serverNow) + 1000)) < 50, `delay ${delay}`);
+        assert.equal(fresh.filter((j: any) => !String(j.id).startsWith("badge-exp-")).length, 1, "и одна — сразу");
+        const before2 = (await badgeJobs()).map((j: any) => j.id);
+        await mute(U, G, { for: "forever" });
+        await mute(U, G, { until: null });
+        await sleep(400);
+        const fresh2 = (await badgeJobs()).filter((j: any) => !before2.includes(j.id));
+        assert.equal(fresh2.length, 2, `две немедленные: ${JSON.stringify(fresh2.map((j: any) => [j.id, j.opts?.delay]))}`);
+        assert.ok(fresh2.every((j: any) => !String(j.id).startsWith("badge-exp-")), "без задачи к истечению");
+        (env as any).APNS_BADGE = "off";
+        const before3 = (await badgeJobs()).length;
+        await mute(U, G, { for: "8h" });
+        await sleep(400);
+        assert.equal((await badgeJobs()).length, before3, "off — badge-задач нет");
       } finally {
-        apnsExports.sendApns = orig.apns;
-        fcmExports.sendFcm = orig.fcm;
-        (env as any).APNS_BADGE = orig.flag;
+        (env as any).APNS_BADGE = flag0;
       }
     });
 

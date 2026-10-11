@@ -145,10 +145,16 @@ export type PreparedRequest = {
 /**
  * Дополнения к одному запросу, которых нет в общем PushPayload (FCM их не получает).
  * badge — число на значке приложения: общий счётчик непрочитанного БЕЗ заглушённых бесед
- * (push/badge.ts). Ставится только в alert-пуш о сообщении и только при APNS_BADGE=on.
+ * (push/badge.ts). Ставится в alert-пуш о сообщении и в badge-only пуш — только устройствам с
+ * caps "badge" и только при APNS_BADGE=on (решает push/index.ts: у кого нет числа — без badge).
  */
 export type ApnsRequestExtras = { badge?: number };
-export type ApnsSendExtras = { badgeByUser?: ReadonlyMap<string, number> };
+/** deviceId → число на значке (только устройства, которым сервер ведёт значок). */
+export type ApnsSendExtras = { badgeByDevice?: ReadonlyMap<string, number> };
+
+function validBadge(value: number | undefined): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
 
 /** Экспорт — для теста полезной нагрузки (test/read-sync.integration.test.ts). */
 export function buildRequest(
@@ -159,11 +165,14 @@ export function buildRequest(
 ): PreparedRequest | null {
   const now = Math.floor(Date.now() / 1000);
   const urgent = isUrgent(payload);
+  const rawBadge = extras?.badge;
+  const badge = validBadge(rawBadge) ? Math.floor(rawBadge) : undefined;
 
   if (target.provider === "apns-voip") {
     // VoIP-пуши живут только для звонков: iOS 13+ требует от приложения немедленно показать
     // CallKit-экран, иначе система перестаёт доставлять пуши вовсе. Сообщения сюда не шлём.
-    if (!urgent) return null;
+    // (Проверка по kind, а не только isUrgent: так TypeScript видит conversationId у звонка.)
+    if (!urgent || (payload.kind !== "call" && payload.kind !== "call-cancel")) return null;
     return {
       headers: {
         "apns-topic": `${config.bundleId}.voip`,
@@ -205,12 +214,29 @@ export function buildRequest(
           sound: "default",
           "mutable-content": 1,
           "thread-id": payload.conversationId,
-          ...(typeof extras?.badge === "number" && Number.isFinite(extras.badge) && extras.badge >= 0
-            ? { badge: Math.floor(extras.badge) }
-            : {}),
+          ...(badge !== undefined ? { badge } : {}),
         },
         ...data,
       }),
+    };
+  }
+
+  if (payload.kind === "badge") {
+    // Только число на значке (push/badge.ts): alert-тип без alert и sound — число применяет сама система,
+    // приложение не будится и ничего не показывает, в том числе выгруженное свайпом (background-пуш до
+    // него не дошёл бы). Priority 10, как у сообщений: «5» Apple вправе придержать или не доставить, а
+    // недоставленное число так и висело бы. collapse-id один: пока телефон без сети, ждёт только
+    // последнее число. Числа нет — слать нечего.
+    if (badge === undefined) return null;
+    return {
+      headers: {
+        "apns-topic": config.bundleId,
+        "apns-push-type": "alert",
+        "apns-priority": "10",
+        "apns-expiration": String(now + 86400),
+        "apns-collapse-id": "badge",
+      },
+      body: JSON.stringify({ aps: { badge }, ...data }),
     };
   }
 
@@ -474,7 +500,7 @@ export async function sendApns(
   // Запросы по очереди: устройств у пользователя единицы, мультиплексирование тут
   // ничего не выиграет (ср. цикл в fcm.ts). Соединения переиспользуются — см. getSession.
   for (const target of targets) {
-    const badge = extras?.badgeByUser?.get(target.userId);
+    const badge = extras?.badgeByDevice?.get(target.deviceId);
     const prepared = buildRequest(config, target, payload, badge !== undefined ? { badge } : undefined);
     if (!prepared) continue; // например, message на voip-токен — туда нельзя
     // Порядок кластеров: сначала тот, где токен уже отвечал; в режиме auto при

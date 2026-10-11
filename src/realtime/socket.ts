@@ -2525,6 +2525,9 @@ export async function initSocket(
               senderId: userId,
               senderName: name,
               preview: video ? "Групповой видеозвонок" : "Групповой звонок",
+              // Момент записи по часам сервера — как у пушей о сообщениях: по нему клиенты ловят гонку
+              // «заглушили сразу после постановки пуша» (docs/conversation-mute.md §5) и read-sync.
+              sentAt: new Date(msg.createdAt).getTime(),
             },
             `msg-${msg.id}`,
           );
