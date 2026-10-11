@@ -359,6 +359,8 @@ export class EblushaApi implements ChatApi {
   async fetchFile(url: string, opts: { thumb?: boolean; maxBytes?: number } = {}) {
     // Только свои файлы backend: относительный /api/files/… Чужие адреса сюда не попадают.
     if (!/^\/api\/files\/[A-Za-z0-9._\/-]+$/.test(url)) return null;
+    // «..» и «.» в пути new URL нормализует: /api/files/../bot/… ушёл бы с токеном бота на другой маршрут backend.
+    if (url.split("/").some((seg) => seg === ".." || seg === ".")) return null;
     const s = await this.ensureSession();
     const full = `${this.baseUrl}${url}${opts.thumb ? "?thumb=1" : ""}`;
     const res = await this.fetchImpl(full, { headers: { Authorization: `Bearer ${s.access}` }, signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS) });

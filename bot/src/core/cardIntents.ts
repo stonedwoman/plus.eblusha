@@ -49,7 +49,8 @@ export function parseShareChoice(text: string): ShareChoice | null {
   const rest = t.replace(/(?:^|\s)(?:с|\+|и|вместе\s+с)\s*(?:фото|фотками|фотографиями|картинками|картинки|фотки)(?:\s|$)/u, " ").replace(/^(?:да|давай|ок|окей)[,\s]+/u, "").trim();
   if (/^(?:за\s+)?(?:сегодня|сегодняшн\S*|день|за\s+день)$/u.test(rest)) return { decline: false, period: "today", photos };
   if (/^(?:за\s+)?(?:эту\s+)?(?:неделю|неделя|за\s+неделю|эта\s+неделя)$/u.test(rest)) return { decline: false, period: "week", photos };
-  if (/^(?:за\s+)?(?:все|всё)(?:\s+время)?$/u.test(rest)) return { decline: false, period: "all", photos };
+  // Только «всё время» / «за всё время»: голое «всё» по-русски часто значит «хватит», а не «отдай всю историю».
+  if (/^(?:за\s+)?(?:все|всё)\s+время$/u.test(rest)) return { decline: false, period: "all", photos };
   return null;
 }
 
