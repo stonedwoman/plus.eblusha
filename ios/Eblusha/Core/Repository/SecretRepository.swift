@@ -106,9 +106,11 @@ final class SecretRepository {
     // Проверка головы очереди наших OPK на сервере (purgeStalePrekeys): одна за раз — две
     // параллельные жгли бы одну и ту же голову дважды (второй claim съел бы уже живой OPK).
     private let prekeyHeadGate = AsyncSemaphore(1)
-    // Когда голова очереди последний раз оказалась нашей (stateLock). Мёртвые OPK появляются
-    // только после потери секретов, так что после удачной проверки повторять её незачем.
-    private var prekeyHeadOkAtMs: Int64 = 0
+    // Когда и у КАКОГО id голова очереди последний раз оказалась нашей (stateLock). Мёртвые OPK
+    // появляются только после потери секретов, так что после удачной проверки повторять её
+    // незачем — но только для того же id: после выхода/отзыва id новый, и отметка прежнего
+    // ничего о нём не говорит.
+    private var prekeyHeadOk: (deviceId: String, atMs: Int64)?
     // Тред → когда последний раз просили переслать ключ после мёртвого OPK (stateLock).
     private var opkResendAtMs: [String: Int64] = [:]
 
@@ -241,7 +243,12 @@ final class SecretRepository {
         for attempt in 0..<2 {
             let identity = keyStore.loadOrCreateIdentity()
             let (uploads, secrets) = Self.generatePrekeys(Self.prekeyBatch)
-            keyStore.addPrekeySecrets(secrets)
+            // Секреты не легли в Keychain — OPK не публикуем (мёртвые с рождения); устройство
+            // всё равно регистрируем (push, инбокс), OPK доложит replenishPrekeys.
+            let secretsSaved = keyStore.addPrekeySecrets(secrets)
+            if !secretsSaved {
+                NSLog("SecretE2EE: prekey secrets were not saved — registering without one-time prekeys")
+            }
             let pub = SecretCrypto.b64UrlEncode(identity.publicKey)
             let deviceId = deviceIdProvider.deviceId()
             do {
@@ -251,9 +258,9 @@ final class SecretRepository {
                     platform: "ios",
                     publicKey: pub,
                     identityPublicKey: pub,
-                    prekeys: uploads
+                    prekeys: secretsSaved ? uploads : []
                 ))
-                dropRejectedPrekeys(published: secrets.keys, accepted: accepted)
+                if secretsSaved { dropRejectedPrekeys(published: secrets.keys, accepted: accepted) }
                 deviceIdProvider.markRegistered(deviceId)
                 keyStore.setBootstrapped()
                 NSLog("SecretE2EE: device E2EE bootstrap complete")
@@ -405,8 +412,12 @@ final class SecretRepository {
         }
         let (uploads, secrets) = Self.generatePrekeys(toPublish)
         // Секреты пишем ДО публикации: ключ, выданный сервером раньше, чем мы успели бы
-        // сохранить его секрет, не вскрылся бы никогда.
-        keyStore.addPrekeySecrets(secrets)
+        // сохранить его секрет, не вскрылся бы никогда. Не легли (Keychain) — не публикуем
+        // вовсе: иначе это мёртвые OPK, а purgeStalePrekeys жёг бы их и звал нас снова.
+        guard keyStore.addPrekeySecrets(secrets) else {
+            NSLog("SecretE2EE: prekey secrets were not saved — replenish skipped")
+            return false
+        }
         do {
             let accepted = try await devices.publishPrekeys(
                 deviceId: deviceId,
@@ -474,12 +485,27 @@ final class SecretRepository {
         guard !registrationBlocked(), keyStore.isBootstrapped(), let me = session.currentUserId() else {
             return StalePrekeyPurge()
         }
-        if !force {
-            let now = nowMs()
-            let fresh: Bool = stateLock.withStateLock { now - prekeyHeadOkAtMs < Self.prekeyHeadOkTtlMs }
-            if fresh { return StalePrekeyPurge(burned: 0, healthy: true) }
+        if !force, prekeyHeadCheckIsFresh() { return StalePrekeyPurge(burned: 0, healthy: true) }
+        return await prekeyHeadGate.withPermit { () async -> StalePrekeyPurge in
+            if force {
+                // Повод есть (пакет на мёртвый OPK): прежней отметке больше не верим — и если
+                // эта проверка сорвётся (сеть), следующая обычная не пропустит её по кэшу.
+                self.stateLock.withStateLock { self.prekeyHeadOk = nil }
+            } else if self.prekeyHeadCheckIsFresh() {
+                // Пока ждали замок, голову проверил параллельный вызов.
+                return StalePrekeyPurge(burned: 0, healthy: true)
+            }
+            return await self.purgeStalePrekeysLocked(me: me)
         }
-        return await prekeyHeadGate.withPermit { await self.purgeStalePrekeysLocked(me: me) }
+    }
+
+    private func prekeyHeadCheckIsFresh() -> Bool {
+        let deviceId = deviceIdProvider.deviceId()
+        let now = nowMs()
+        return stateLock.withStateLock {
+            guard let ok = prekeyHeadOk, ok.deviceId == deviceId else { return false }
+            return now - ok.atMs < Self.prekeyHeadOkTtlMs
+        }
     }
 
     private func purgeStalePrekeysLocked(me: String) async -> StalePrekeyPurge {
@@ -527,7 +553,7 @@ final class SecretRepository {
         }
         if result.healthy {
             let now = nowMs()
-            stateLock.withStateLock { prekeyHeadOkAtMs = now }
+            stateLock.withStateLock { prekeyHeadOk = (myDeviceId, now) }
         }
         if result.burned > 0 {
             NSLog("SecretE2EE: burned %d stale one-time prekeys of this device (no secrets for them)", result.burned)

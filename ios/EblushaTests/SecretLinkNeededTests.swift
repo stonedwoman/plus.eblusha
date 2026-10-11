@@ -246,4 +246,49 @@ final class SecretLinkNeededViewModelTests: XCTestCase {
         XCTAssertFalse(linkCardShown(vm.ui))
         withExtendedLifetime(vm) {}
     }
+
+    /// Обратная сторона исправления: новое своё устройство, которому ключ НИКТО не передал
+    /// (другие аппараты молчат), по-прежнему видит карточку «Сканировать QR». Ни лечение OPK,
+    /// ни «ремни» экрана (полл, adoptKeyIfArrived) её не снимают и живые OPK не жгут.
+    func testNewOwnDeviceWithoutTransferredKeyStillAsksForQr() async throws {
+        let seeded = rig.seedMyServerPrekeys(dead: 0, live: 4, others: [acceptedDevice.deviceId])
+        let vm = openChat()
+        await waitUntil(8) { vm.ui.hasOtherDevices }
+        // Хотя бы один круг фонового полла (3,5 с) с adoptKeyIfArrived.
+        try? await Task.sleep(for: .seconds(4.5))
+        XCTAssertTrue(linkCardShown(vm.ui), "ключа нет — карточка привязки на месте")
+        XCTAssertFalse(vm.ui.secretReady)
+        XCTAssertNil(rig.keyStore.threadKey(thread))
+        XCTAssertEqual(rig.server.serverPrekeyIds(rig.deviceIds.deviceId()), seeded.live, "живые OPK не тронуты")
+        XCTAssertTrue(rig.server.sentKeyRequests.contains { $0.to == acceptedDevice.deviceId })
+
+        // «Ключ импортирован» без ключа в хранилище (Keychain не записал связку) экран не
+        // открывает: истина — хранилище, а не событие.
+        rig.repo.keyImported.send(thread)
+        try? await Task.sleep(for: .milliseconds(300))
+        XCTAssertFalse(vm.ui.secretReady)
+        XCTAssertTrue(linkCardShown(vm.ui))
+
+        // Ключ ДРУГОГО треда не открывает этот.
+        rig.keyStore.setThreadKey("thread-other", key: SecretCrypto.randomKey())
+        rig.repo.keyImported.send("thread-other")
+        try? await Task.sleep(for: .seconds(4))
+        XCTAssertFalse(vm.ui.secretReady)
+        XCTAssertNil(rig.keyStore.threadKey(thread))
+        withExtendedLifetime(vm) {}
+    }
+
+    /// Ключ уже лежит на устройстве к открытию экрана (снимок после ключа) — чат открыт сразу,
+    /// без карточки и без просьб о ключе.
+    func testKeyAlreadyStoredOpensImmediatelyWithoutAsking() async throws {
+        rig.seedMyServerPrekeys(dead: 0, live: 2, others: [acceptedDevice.deviceId])
+        rig.keyStore.setThreadKey(thread, key: SecretCrypto.randomKey())
+        let vm = openChat()
+        await waitUntil(5) { vm.ui.secretReady }
+        XCTAssertTrue(vm.ui.secretReady)
+        await waitUntil(5) { vm.ui.hasOtherDevices }
+        XCTAssertFalse(linkCardShown(vm.ui))
+        XCTAssertTrue(rig.server.sentKeyRequests.isEmpty)
+        withExtendedLifetime(vm) {}
+    }
 }

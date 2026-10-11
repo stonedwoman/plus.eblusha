@@ -198,4 +198,57 @@ final class SecretDeadPrekeyTests: XCTestCase {
         XCTAssertLessThan(lastClaim, joinSent)
         XCTAssertEqual(rig.server.serverPrekeyIds(myId).first, seeded.live[0])
     }
+
+    /// Секреты OPK не легли в Keychain — такие OPK не публикуются вовсе: иначе они мёртвые с
+    /// рождения, а лечение жгло бы их и перепубликовывало новые мёртвые по кругу.
+    func testPrekeysWhoseSecretsWereNotSavedAreNeverPublished() async {
+        rig.seedMyServerPrekeys(dead: 2, live: 0)
+        rig.server.myDevices[0]["availablePrekeys"] = 0
+        rig.breakKeychainMap("prekey_created")
+
+        let published = await rig.repo.replenishPrekeys()
+        XCTAssertFalse(published)
+        XCTAssertTrue(rig.server.calls("POST", "devices/\(myId)/prekeys").isEmpty, "мёртвые OPK не публикуем")
+
+        // Мёртвые сжигаются, но взамен новые мёртвые не публикуются.
+        let result = await rig.repo.purgeStalePrekeys(force: true)
+        XCTAssertEqual(result.burned, 2)
+        XCTAssertTrue(rig.server.calls("POST", "devices/\(myId)/prekeys").isEmpty)
+
+        // Регистрация в том же состоянии: устройство регистрируется (push, инбокс), но без OPK.
+        rig.keyStore.clearBootstrapped()
+        let registered = await rig.repo.ensureDeviceBootstrap()
+        XCTAssertTrue(registered)
+        let body = rig.server.calls("POST", "devices/register").last?.json as? [String: Any]
+        XCTAssertEqual((body?["prekeys"] as? [Any])?.count, 0)
+    }
+
+    /// Выход/отзыв меняют id: удачная проверка головы прежнего id о новом ничего не говорит.
+    func testHeadCheckCacheBelongsToTheDeviceId() async {
+        rig.seedMyServerPrekeys(dead: 0, live: 2)
+        _ = await rig.repo.purgeStalePrekeys()
+        XCTAssertEqual(myBundleReads, 1)
+
+        _ = rig.deviceIds.rotate()
+        let seeded = rig.seedMyServerPrekeys(dead: 1, live: 1)
+        let result = await rig.repo.purgeStalePrekeys()
+        // Голова нового id просмотрена дважды (мёртвая → сожгли → живая), а не взята из кэша.
+        XCTAssertEqual(myBundleReads, 3, "новый id проверяется, а не берётся из кэша прежнего")
+        XCTAssertEqual(result.burned, 1)
+        XCTAssertEqual(rig.server.serverPrekeyIds(myId), seeded.live)
+    }
+
+    /// Проверка по поводу (пакет на мёртвый OPK) сорвалась на сети — прежняя удачная отметка
+    /// не должна прятать мёртвую голову от следующей обычной проверки.
+    func testFailedForcedCheckDoesNotLeaveAStaleOk() async {
+        rig.seedMyServerPrekeys(dead: 0, live: 2)
+        _ = await rig.repo.purgeStalePrekeys()
+        rig.server.bundlesStatus = 500
+        let failed = await rig.repo.purgeStalePrekeys(force: true)
+        XCTAssertFalse(failed.healthy)
+        rig.server.bundlesStatus = 200
+        let before = myBundleReads
+        _ = await rig.repo.purgeStalePrekeys()
+        XCTAssertEqual(myBundleReads, before + 1, "после сорванной проверки кэшу не верим")
+    }
 }

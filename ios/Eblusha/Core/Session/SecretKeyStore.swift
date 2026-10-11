@@ -114,19 +114,24 @@ final class SecretKeyStore {
     // MARK: - Секретные половины one-time prekeys
 
     /// Домердживает секреты свежесгенерированных prekeys (keyId → секрет) для будущих открытий.
-    func addPrekeySecrets(_ secrets: [String: Data], nowMs: Int64 = SecretKeyStore.nowMs()) {
-        guard !secrets.isEmpty else { return }
+    /// false — секреты НЕ легли в Keychain (сбой чтения или записи). Такие OPK публиковать
+    /// нельзя: на сервере они были бы мёртвыми с рождения (пакет на них не вскроется никогда,
+    /// а purgeStalePrekeys жёг бы и перепубликовывал их по кругу).
+    @discardableResult
+    func addPrekeySecrets(_ secrets: [String: Data], nowMs: Int64 = SecretKeyStore.nowMs()) -> Bool {
+        guard !secrets.isEmpty else { return true }
         lock.lock()
         defer { lock.unlock() }
         // Сбой чтения ≠ пустая карта: запись «пустая + новые» стёрла бы все прежние секреты.
         guard var current = readMapOrNil(Keys.prekeySecrets),
-              var created = readMapOrNil(Keys.prekeyCreated) else { return }
+              var created = readMapOrNil(Keys.prekeyCreated) else { return false }
         for (keyId, sec) in secrets {
             current[keyId] = SecretCrypto.b64UrlEncode(sec)
             created[keyId] = String(nowMs)
         }
-        writeMap(Keys.prekeySecrets, current)
+        let saved = writeMap(Keys.prekeySecrets, current)
         writeMap(Keys.prekeyCreated, created)
+        return saved
     }
 
     func prekeySecret(_ keyId: String) -> Data? {
@@ -469,9 +474,10 @@ final class SecretKeyStore {
         }
     }
 
-    private func writeMap(_ key: String, _ map: [String: String]) {
-        guard let data = try? JSONEncoder().encode(map) else { return }
-        keychain.write(key, data)
+    @discardableResult
+    private func writeMap(_ key: String, _ map: [String: String]) -> Bool {
+        guard let data = try? JSONEncoder().encode(map) else { return false }
+        return keychain.write(key, data)
     }
 }
 
@@ -509,7 +515,9 @@ private struct SecretKeychain {
         }
     }
 
-    func write(_ key: String, _ data: Data) {
+    /// true — запись легла (обновление или вставка).
+    @discardableResult
+    func write(_ key: String, _ data: Data) -> Bool {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -523,8 +531,9 @@ private struct SecretKeychain {
         if status == errSecItemNotFound {
             var insert = query
             insert.merge(attributes) { _, new in new }
-            SecItemAdd(insert as CFDictionary, nil)
+            return SecItemAdd(insert as CFDictionary, nil) == errSecSuccess
         }
+        return status == errSecSuccess
     }
 
     func remove(_ key: String) {

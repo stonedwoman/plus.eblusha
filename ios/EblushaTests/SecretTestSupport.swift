@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import XCTest
 @testable import Eblusha
 
@@ -317,6 +318,8 @@ final class SecretTestRig {
     let api: APIClient
     let devices: DevicesRepository
     let keyStore: SecretKeyStore
+    /// Keychain-service тестового хранилища (боевое не трогаем).
+    let keychainService = "org.eblusha.plus.secret.tests.\(UUID().uuidString)"
     let repo: SecretRepository
     let server = FakeServer()
 
@@ -328,7 +331,7 @@ final class SecretTestRig {
         config.protocolClasses = [MockURLProtocol.self]
         api = APIClient(session: session, deviceIdProvider: deviceIds, urlSession: URLSession(configuration: config))
         devices = DevicesRepository(api: api, deviceIdProvider: deviceIds)
-        keyStore = SecretKeyStore(service: "org.eblusha.plus.secret.tests.\(UUID().uuidString)", defaults: defaults)
+        keyStore = SecretKeyStore(service: keychainService, defaults: defaults)
         repo = SecretRepository(api: api, devices: devices, keyStore: keyStore, deviceIdProvider: deviceIds, session: session)
         MockURLProtocol.server = server
     }
@@ -384,6 +387,20 @@ final class SecretTestRig {
         server.serverPrekeys[deviceIds.deviceId()] = deadKeys + liveKeys
         server.bundles[me] = [deviceIds.deviceId()] + others
         return (deadKeys.map(\.keyId), liveKeys.map(\.keyId))
+    }
+
+    /// Испортить карту хранилища (запись не JSON): её чтение проваливается, как при сбое
+    /// Keychain, и записи поверх неё не делаются. account — имя карты в SecretKeyStore.Keys.
+    func breakKeychainMap(_ account: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: account,
+        ]
+        SecItemDelete(query as CFDictionary)
+        var insert = query
+        insert[kSecValueData as String] = Data("not json".utf8)
+        SecItemAdd(insert as CFDictionary, nil)
     }
 
     func tearDown() {

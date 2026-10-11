@@ -103,7 +103,7 @@ extension ChatViewModel {
     /// (то же, что делает keyImported). Ремень для любого пропущенного события: экран больше не
     /// может застрять на карточке привязки при живом ключе.
     func adoptKeyIfArrived() {
-        guard secretMode, !ui.secretReady, secretRepo.hasThreadKey(conversationId) else { return }
+        guard secretMode, !ui.secretReady, !ui.secretDeclined, secretRepo.hasThreadKey(conversationId) else { return }
         ui.secretReady = true
         ui.secretInvite = false
         ui.hasAnySecretKeys = true
@@ -133,7 +133,11 @@ extension ChatViewModel {
         secretRepo.keyImported
             .receive(on: DispatchQueue.main)
             .sink { [weak self] threadId in
-                guard let self, threadId == self.conversationId else { return }
+                // Истина — хранилище, а не событие: связка шлёт keyImported по каждому
+                // пришедшему треду, даже если Keychain его не записал. Без ключа «готово» =
+                // ложно снятая карточка привязки и отправки, падающие «ключ не получен».
+                guard let self, threadId == self.conversationId,
+                      self.secretRepo.hasThreadKey(threadId) else { return }
                 self.ui.secretReady = true
                 self.ui.secretInvite = false
                 // Устройство больше не «новое»: у него есть ключ секретки (карточка привязки и
