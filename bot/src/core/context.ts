@@ -142,8 +142,12 @@ export function humanText(m: BotJobMessage, f: HistoryFormat, opts: { history?: 
   return `${humanHeader(m, f, opts.note ?? "")}\n${body}`;
 }
 
-/** Текст ответа бота для памяти и цепочки: скобки заголовков — обычные (заголовок в ответе не подделать). */
+/**
+ * Текст ответа бота для памяти и цепочки: скобки заголовков — обычные (заголовок в ответе не подделать). Карточка
+ * (таймер) — только первая строка запасного текста: она живая, сервер её переписывает.
+ */
 function botBody(m: BotJobMessage): string {
+  if (m.bot?.kind === "card") return sanitizeBody(`[карточка] ${(m.content ?? "").split("\n")[0]!.trim()}`);
   return sanitizeBody(m.content?.trim() || (m.attachments?.length ? "[картинка]" : "…"));
 }
 
@@ -179,7 +183,9 @@ export function renderUnits(list: BotHistoryMessage[], f: HistoryFormat, skip: R
         prev.messages.push(m);
         continue;
       }
-      const u: MemoryUnit = { role: "assistant", text: "", skip: !!m.triggerId && skip.has(m.triggerId), messages: [m], cost: 0 };
+      // Карточка «поделиться перепиской» в память не идёт (это просьба разрешения, а не ответ).
+      const shareCard = m.bot?.kind === "card" && m.bot.card?.type === "share";
+      const u: MemoryUnit = { role: "assistant", text: "", skip: shareCard || (!!m.triggerId && skip.has(m.triggerId)), messages: [m], cost: 0 };
       if (m.triggerId && m.triggerId !== lastHuman) {
         const q = humans.get(m.triggerId);
         botMarker.set(u, q ? `⟦к обращению ${headerName(q.senderName)} от ${formatWhen(q.createdAt, f.timeZone)}⟧\n` : "⟦продолжение по более раннему обращению⟧\n");

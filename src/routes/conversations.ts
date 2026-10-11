@@ -5,6 +5,8 @@ import { Prisma } from "@prisma/client";
 import { deleteS3ObjectsByKeys, deleteS3ObjectsByUrls } from "../lib/storageDeletion";
 import { authenticate } from "../middlewares/auth";
 import { getIO } from "../realtime/socket";
+import { promiseOnParticipantLeft } from "../lib/promiseTimer";
+import { shareOnConversationDeleted, shareOnParticipantLeft } from "../lib/botShare";
 import {
   isSecretConversation,
   isSecretConversationById,
@@ -1001,6 +1003,10 @@ router.delete("/:id/participants/me", async (req, res) => {
     },
   });
 
+  // Карточки бота: таймеры, где он обещавший, — отменены тихо; его согласия «поделиться перепиской» — закрыты.
+  void promiseOnParticipantLeft(id, userId);
+  void shareOnParticipantLeft(id, userId);
+
   // Уведомляем остальных участников об обновлении беседы
   const io = getIO();
   const remainingParticipants = conv.participants.filter((p) => p.userId !== userId);
@@ -1095,6 +1101,11 @@ router.delete("/:id", async (req, res) => {
       ]
     : [];
 
+  // «Поделиться перепиской»: действующие согласия уйдут каскадом — бот должен стереть прочитанное (сигнал после).
+  const liveShares = secretThread
+    ? []
+    : await prisma.botShare.findMany({ where: { conversationId: id, status: { in: ["GRANTED", "PENDING"] } }, select: { id: true } }).catch(() => []);
+
   const txResults = await prisma.$transaction([
     ...purgeSecret,
     prisma.messageReceipt.deleteMany({ where: { message: { conversationId: id } } }),
@@ -1108,6 +1119,7 @@ router.delete("/:id", async (req, res) => {
   if (attachmentUrls.length) {
     void deleteS3ObjectsByUrls(attachmentUrls, { reason: `conversation:${id}` });
   }
+  if (liveShares.length) void shareOnConversationDeleted(id, liveShares.map((s) => s.id));
 
   if (secretThread) {
     const deletedMsgIds = ((txResults[0] ?? []) as Array<{ msgId: string }>).map((r) => r.msgId);

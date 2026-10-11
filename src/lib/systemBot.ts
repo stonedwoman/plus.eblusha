@@ -8,6 +8,7 @@ import { enqueueBotJob } from "../jobs/queue";
 import { getIO } from "../realtime/socket";
 import {
   BOT_JOB_CHAIN_MAX,
+  BOT_JOB_PROMISES_MAX,
   BOT_JOB_REV,
   BOT_MEMLOG_EPOCH,
   BOT_MEMLOG_OVERLAP_MS,
@@ -18,9 +19,13 @@ import {
   type BotHistoryMessage,
   type BotJob,
   type BotJobAttachment,
+  type BotJobBotMeta,
   type BotJobMessage,
+  type BotJobPromise,
+  type BotJobShare,
   type BotMemoryChange,
   type BotMemoryStatus,
+  type BotSignalJob,
 } from "./botContract";
 
 /**
@@ -199,8 +204,12 @@ export function detectBotAddress(i: BotAddressInput): BotAddressVia | null {
   return null;
 }
 
-/** Служебные ключи metadata, которые задаёт только сервер. */
-const RESERVED_META_KEYS = ["bot", "isBot", "botAsk"] as const;
+/**
+ * Служебные ключи metadata, которые задаёт только сервер: признаки бота и карточки бота (card — общий конверт,
+ * promise — ранний вид таймера, который клиенты тоже узнают; docs/bot-cards.md). При пересылке карточка
+ * становится обычным текстом.
+ */
+const RESERVED_META_KEYS = ["bot", "isBot", "botAsk", "card", "promise"] as const;
 
 /**
  * Достать metadata.botAsk клиента и убрать служебные ключи из metadata отправителя.
@@ -332,8 +341,10 @@ export async function findActiveBotChat(userId: string, botId: string): Promise<
 
 // ───────────────────────────── Сообщение от бота ─────────────────────────────
 
-export type BotMessageKind = "answer" | "command" | "notice" | "confirm" | "welcome";
-export const BOT_MESSAGE_KINDS: readonly BotMessageKind[] = ["answer", "command", "notice", "confirm", "welcome"];
+export type BotMessageKind = "answer" | "command" | "notice" | "confirm" | "welcome" | "card";
+export const BOT_MESSAGE_KINDS: readonly BotMessageKind[] = ["answer", "command", "notice", "confirm", "welcome", "card"];
+/** Какие виды бот может прислать сам (POST /api/bot/messages): карточки ставит только сервер (src/lib/botCards.ts). */
+export const BOT_POST_KINDS = ["answer", "command", "notice", "confirm", "welcome"] as const;
 
 export interface BotMessageAttachmentInput {
   url: string;
@@ -359,6 +370,18 @@ export async function createBotMessage(opts: {
   /** Автор обращения, по разрешению которого написан ответ (grant.authorId): ему можно удалить этот ответ. */
   askerId?: string | null;
   linkPreview?: boolean;
+  /**
+   * Добавочные пометки metadata.bot (docs/bot-cards.md): depth "deep" + model — «Подумал лучше»; promiseId +
+   * mentions — напоминание таймера (mentions — задел под @-упоминания, клиентам пока ничего не значит).
+   */
+  extraBot?: { depth?: "deep"; model?: string; promiseId?: string; mentions?: string[] } | undefined;
+  /** Кому слать пуш (по умолчанию — всем получателям, как у любого сообщения). */
+  pushTo?: string[] | undefined;
+  /**
+   * Сбой рассылки после записи сообщения: "throw" (по умолчанию) — наверх; "log" — только в журнал (напоминание
+   * таймера: задачу повторит BullMQ, и второе такое же сообщение было бы лишним — первое уже в беседе).
+   */
+  publishErrors?: "throw" | "log";
 }) {
   const attachments = opts.attachments ?? [];
   const message = await prisma.message.create({
@@ -375,6 +398,10 @@ export async function createBotMessage(opts: {
           kind: opts.kind,
           ...(opts.triggerMessageId ? { triggerMessageId: opts.triggerMessageId } : {}),
           ...(opts.askerId ? { askerId: opts.askerId } : {}),
+          ...(opts.extraBot?.depth === "deep" ? { depth: "deep" } : {}),
+          ...(opts.extraBot?.model ? { model: opts.extraBot.model.slice(0, 64) } : {}),
+          ...(opts.extraBot?.promiseId ? { promiseId: opts.extraBot.promiseId } : {}),
+          ...(opts.extraBot?.mentions?.length ? { mentions: opts.extraBot.mentions.slice(0, 10) } : {}),
         },
       } as Prisma.InputJsonValue,
       ...(attachments.length
@@ -392,16 +419,23 @@ export async function createBotMessage(opts: {
     },
     include: SENT_MESSAGE_INCLUDE,
   });
-  await publishNewMessage({
-    conversationId: opts.conversationId,
-    message,
-    senderId: opts.botId,
-    secret: false,
-    type: opts.type,
-    content: opts.content ?? null,
-    linkPreview: opts.linkPreview === true,
-    previewUserId: opts.botId,
-  });
+  try {
+    await publishNewMessage({
+      conversationId: opts.conversationId,
+      message,
+      senderId: opts.botId,
+      secret: false,
+      type: opts.type,
+      content: opts.content ?? null,
+      linkPreview: opts.linkPreview === true,
+      previewUserId: opts.botId,
+      ...(opts.pushTo ? { pushTo: opts.pushTo } : {}),
+      ...(opts.extraBot?.mentions?.length ? { mentions: opts.extraBot.mentions } : {}),
+    });
+  } catch (error) {
+    if (opts.publishErrors !== "log") throw error;
+    logger.warn({ error, conversationId: opts.conversationId, messageId: message.id }, "bot message: fanout failed (message kept)");
+  }
   return message;
 }
 
@@ -443,7 +477,7 @@ export async function readBotGrant(token: unknown): Promise<BotGrant | null> {
 /** Израсходовать одно действие по разрешению. false — лимит исчерпан (или Redis недоступен). */
 export async function spendBotGrant(
   token: string,
-  what: "msg" | "react" | "followup" | "people" | "history",
+  what: "msg" | "react" | "followup" | "people" | "history" | "promise" | "share" | "sharepage",
   max: number,
   ttlSeconds = BOT_GRANT_TTL_SECONDS,
 ): Promise<boolean> {
@@ -497,6 +531,7 @@ type MessageRowForJob = {
   id: string;
   senderId: string;
   isBot: boolean;
+  metadata?: unknown;
   type: string;
   content: string | null;
   createdAt: Date;
@@ -518,8 +553,31 @@ function jobAttachment(a: { url: string; type: string; size: number | null; meta
   return { url: a.url, type, size: a.size ?? null, metadata };
 }
 
+/** Пометки сообщения бота для задачи (rev 4): вид, обращение, карточка, согласие, глубина. */
+export function botJobMetaOf(metadata: unknown): BotJobBotMeta | null {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+  const md = metadata as Record<string, unknown>;
+  const b = md.bot;
+  if (!b || typeof b !== "object" || Array.isArray(b)) return null;
+  const bb = b as Record<string, unknown>;
+  const kind = typeof bb.kind === "string" && bb.kind ? bb.kind : null;
+  if (!kind) return null;
+  const out: BotJobBotMeta = { kind };
+  if (typeof bb.triggerMessageId === "string" && bb.triggerMessageId) out.triggerId = bb.triggerMessageId;
+  if (typeof bb.shareId === "string" && bb.shareId) out.shareId = bb.shareId;
+  if (typeof bb.promiseId === "string" && bb.promiseId) out.promiseId = bb.promiseId;
+  if (bb.depth === "deep") out.depth = "deep";
+  const c = md.card;
+  if (kind === "card" && c && typeof c === "object" && !Array.isArray(c)) {
+    const cc = c as Record<string, unknown>;
+    if (typeof cc.type === "string" && typeof cc.id === "string") out.card = { type: cc.type, id: cc.id, state: typeof cc.state === "string" ? cc.state : "" };
+  }
+  return out;
+}
+
 function jobMessage(m: MessageRowForJob): BotJobMessage {
   const type = (["TEXT", "IMAGE", "VIDEO", "AUDIO", "FILE"] as const).find((t) => t === m.type) ?? "TEXT";
+  const bot = m.isBot ? botJobMetaOf(m.metadata) : null;
   return {
     id: m.id,
     senderId: m.senderId,
@@ -530,6 +588,7 @@ function jobMessage(m: MessageRowForJob): BotJobMessage {
     createdAt: new Date(m.createdAt).toISOString(),
     replyToId: m.replyToId ?? null,
     attachments: (m.attachments ?? []).map(jobAttachment),
+    ...(bot ? { bot } : {}),
   };
 }
 
@@ -928,6 +987,78 @@ export async function lookupBotPeople(args: {
   return { participants, matches, users, truncated };
 }
 
+/** Вид беседы глазами бота по составу. */
+function botConversationKind(conv: { isGroup: boolean; participantIds: string[] }, botId: string): BotConversationKind {
+  return conv.participantIds.includes(botId) && !conv.isGroup ? "bot" : conv.isGroup ? "group" : "dm";
+}
+
+/** Идущие таймеры обещаний беседы для задачи (rev 4). Сбой — пусто: задача важнее. */
+async function jobPromises(conversationId: string): Promise<BotJobPromise[]> {
+  try {
+    const rows = await prisma.promiseTimer.findMany({
+      where: { conversationId, status: "RUNNING" },
+      orderBy: { deadlineAt: "asc" },
+      take: BOT_JOB_PROMISES_MAX,
+      select: { id: true, promiserId: true, requesterId: true, cardMessageId: true, startAt: true, deadlineAt: true },
+    });
+    if (!rows.length) return [];
+    const users = await prisma.user.findMany({ where: { id: { in: rows.map((r) => r.promiserId) } }, select: { id: true, displayName: true } });
+    const name = new Map(users.map((u) => [u.id, u.displayName ?? null]));
+    return rows.map((r) => ({
+      id: r.id,
+      promiserId: r.promiserId,
+      promiserName: name.get(r.promiserId) ?? null,
+      requesterId: r.requesterId,
+      cardMessageId: r.cardMessageId ?? null,
+      startAt: r.startAt.toISOString(),
+      deadlineAt: r.deadlineAt.toISOString(),
+    }));
+  } catch (error) {
+    logger.warn({ error, conversationId }, "bot: job promises failed");
+    return [];
+  }
+}
+
+/** Задача боту на сообщение (новый grant в Redis). Бросает — вызывающий ловит. */
+async function buildBotJob(args: {
+  botId: string;
+  via: BotAddressVia;
+  conversation: { id: string; isGroup: boolean; title: string | null; participantIds: string[] };
+  message: MessageRowForJob;
+  share?: BotJobShare;
+}): Promise<{ job: BotJob; kind: BotConversationKind }> {
+  const { conversation: conv, message: m } = args;
+  const kind = botConversationKind(conv, args.botId);
+  const chain = await loadReplyChain(conv.id, m.replyToId, BOT_JOB_CHAIN_MAX - 1);
+  const grant = crypto.randomBytes(24).toString("base64url");
+  const now = Date.now();
+  const grantValue: BotGrant = { conversationId: conv.id, triggerMessageId: m.id, authorId: m.senderId, kind };
+  const redis = await getRedisClient();
+  await redis.set(grantKey(grant), JSON.stringify(grantValue), { EX: BOT_GRANT_TTL_SECONDS });
+  const promises = await jobPromises(conv.id);
+  const job: BotJob = {
+    v: 1,
+    rev: BOT_JOB_REV,
+    kind: "message",
+    enqueuedAt: now,
+    grant,
+    grantExpiresAt: now + BOT_GRANT_TTL_SECONDS * 1000,
+    via: args.via,
+    conversation: {
+      id: conv.id,
+      kind,
+      title: conv.isGroup ? conv.title ?? null : null,
+      participantIds: conv.participantIds.filter((id) => id !== args.botId),
+    },
+    author: { id: m.senderId, displayName: m.sender?.displayName ?? null },
+    message: jobMessage(m),
+    chain,
+    ...(promises.length ? { promises } : {}),
+    ...(args.share ? { share: args.share } : {}),
+  };
+  return { job, kind };
+}
+
 /**
  * Поставить боту задачу на адресованное ему сообщение. НИКОГДА не бросает: сбой очереди не должен
  * ломать отправку сообщения. Возвращает, поставлена ли задача. В журнал — только id, без текста.
@@ -945,43 +1076,60 @@ export async function dispatchToBot(args: {
       logger.warn({ conversationId: conv.id, messageId: m.id, userId: m.senderId }, "bot: dispatch rate-limited");
       return false;
     }
-    const kind: BotConversationKind = conv.participantIds.includes(args.botId) && !conv.isGroup
-      ? "bot"
-      : conv.isGroup
-        ? "group"
-        : "dm";
-    const chain = await loadReplyChain(conv.id, m.replyToId, BOT_JOB_CHAIN_MAX - 1);
-    const grant = crypto.randomBytes(24).toString("base64url");
-    const now = Date.now();
-    const grantValue: BotGrant = { conversationId: conv.id, triggerMessageId: m.id, authorId: m.senderId, kind };
-    const redis = await getRedisClient();
-    await redis.set(grantKey(grant), JSON.stringify(grantValue), { EX: BOT_GRANT_TTL_SECONDS });
-    const job: BotJob = {
-      v: 1,
-      rev: BOT_JOB_REV,
-      kind: "message",
-      enqueuedAt: now,
-      grant,
-      grantExpiresAt: now + BOT_GRANT_TTL_SECONDS * 1000,
-      via: args.via,
-      conversation: {
-        id: conv.id,
-        kind,
-        title: conv.isGroup ? conv.title ?? null : null,
-        participantIds: conv.participantIds.filter((id) => id !== args.botId),
-      },
-      author: { id: m.senderId, displayName: m.sender?.displayName ?? null },
-      message: jobMessage(m),
-      chain,
-    };
+    const { job, kind } = await buildBotJob(args);
     await enqueueBotJob(job, m.id);
     logger.info(
-      { conversationId: conv.id, messageId: m.id, via: args.via, kind, chain: chain.length },
+      { conversationId: conv.id, messageId: m.id, via: args.via, kind, chain: job.chain.length, promises: job.promises?.length ?? 0 },
       "bot: dispatched",
     );
     return true;
   } catch (error) {
     logger.warn({ error, conversationId: conv.id, messageId: m.id }, "bot: dispatch failed");
     return false;
+  }
+}
+
+/**
+ * Продолжение после «Поделиться» (docs/bot-cards.md, «Поделиться перепиской»): та же задача на ИСХОДНЫЙ вопрос с
+ * новым grant и job.share — бот читает переписку по согласию и отвечает ответом на вопрос. Без лимита частоты
+ * обращений (это не новое обращение). Вопрос удалён/беседы нет — false. Не бросает.
+ */
+export async function dispatchShareResume(args: { triggerMessageId: string; share: BotJobShare; seq: number }): Promise<boolean> {
+  try {
+    const bot = await getSystemBot();
+    if (!bot) return false;
+    const m = await prisma.message.findUnique({
+      where: { id: args.triggerMessageId },
+      include: { sender: { select: { displayName: true } }, attachments: true },
+    });
+    if (!m || m.deletedAt || m.isBot) return false;
+    const conv = await prisma.conversation.findUnique({
+      where: { id: m.conversationId },
+      select: { id: true, isGroup: true, title: true, type: true, isSecret: true, participants: { select: { userId: true } } },
+    });
+    if (!conv || conv.type === "SECRET" || conv.isSecret) return false;
+    const { job } = await buildBotJob({
+      botId: bot.id,
+      via: "explicit",
+      conversation: { id: conv.id, isGroup: conv.isGroup, title: conv.title ?? null, participantIds: conv.participants.map((p) => p.userId) },
+      message: m as unknown as MessageRowForJob,
+      share: args.share,
+    });
+    await enqueueBotJob(job, m.id, `share-${args.share.id}-${args.seq}`);
+    logger.info({ conversationId: conv.id, messageId: m.id, shareId: args.share.id }, "bot: share resume dispatched");
+    return true;
+  } catch (error) {
+    logger.warn({ error, shareId: args.share.id }, "bot: share resume failed");
+    return false;
+  }
+}
+
+/** Сигнал боту без разрешения (rev 4): «согласие закончилось — сотри переписку». Не бросает. */
+export async function dispatchBotSignal(signal: BotSignalJob["signal"]): Promise<void> {
+  try {
+    const job: BotSignalJob = { v: 1, rev: BOT_JOB_REV, kind: "signal", enqueuedAt: Date.now(), signal };
+    await enqueueBotJob(job, signal.shareId, `sig-${signal.shareId}-${signal.reason}-${Date.now().toString(36)}`, "signal");
+  } catch (error) {
+    logger.warn({ error, shareId: signal.shareId }, "bot: signal failed");
   }
 }

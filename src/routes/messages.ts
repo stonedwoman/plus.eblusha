@@ -22,6 +22,8 @@ import {
   logSecretCloudWriteBlocked,
   rejectSecretCloudWrite,
 } from "../lib/secretLatch";
+import { promiseOnMessageDeleted, promiseOnMessageEdited } from "../lib/promiseTimer";
+import { shareNoteChange, shareOnMessageDeleted } from "../lib/botShare";
 
 const router = Router();
 
@@ -374,6 +376,12 @@ router.post("/delete", async (req, res) => {
     void deleteS3ObjectsByUrls(attachmentUrls, { reason: `message:${messageId}` });
   }
   getIO()?.to(msg.conversationId).emit("message:update", { conversationId: msg.conversationId, messageId, reason: "deleted" });
+  // Карточки бота (docs/bot-cards.md): удалили карточку — таймер отменён / переписка забыта; удалили обещание —
+  // из карточки уходит цитата; удалили вопрос — ожидающая карточка «вопрос удалили»; журнал изменений согласия.
+  if (!msg.deletedAt) {
+    void promiseOnMessageDeleted(msg, userId);
+    void shareOnMessageDeleted(msg, userId);
+  }
   res.json({ success: true });
 });
 
@@ -486,6 +494,10 @@ router.post("/update", async (req, res) => {
     reason: "edited",
     message: updated,
   });
+  // «Поделиться перепиской»: пока доступ открыт, бот перечитает поправленное (docs/bot-cards.md).
+  void shareNoteChange(existing.conversationId, messageId, "edited");
+  // Таймер обещания: цитата на карточке — как в поправленном сообщении.
+  void promiseOnMessageEdited({ id: messageId, content: updated.content, contentEncV: updated.contentEncV });
 
   res.json({ message: updated });
 });

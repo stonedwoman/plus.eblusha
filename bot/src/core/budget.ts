@@ -21,6 +21,9 @@ export interface ModelPrice {
 }
 
 export const PRICES: Record<string, ModelPrice> = {
+  // Fable 5.1: $10/$50, запись кэша 5 мин $12.50, 1 ч $20, чтение $0.25 (справочник claude-api 2026-10-06).
+  "claude-fable-5-1": { input: 10, output: 50, cacheWrite5m: 12.5, cacheWrite1h: 20, cacheRead: 0.25 },
+  "claude-fable-5": { input: 10, output: 50, cacheWrite5m: 12.5, cacheWrite1h: 20, cacheRead: 1 },
   "claude-opus-5-5": { input: 4, output: 20, cacheWrite5m: 5, cacheWrite1h: 8, cacheRead: 0.2 },
   "claude-opus-5": { input: 5, output: 25, cacheWrite5m: 6.25, cacheWrite1h: 10, cacheRead: 0.5 },
   "claude-opus-4-8": { input: 5, output: 25, cacheWrite5m: 6.25, cacheWrite1h: 10, cacheRead: 0.5 },
@@ -29,6 +32,14 @@ export const PRICES: Record<string, ModelPrice> = {
   "claude-haiku-5-5": { input: 0.1, output: 0.5, cacheWrite5m: 0.125, cacheWrite1h: 0.2, cacheRead: 0.01 },
 };
 const FALLBACK_PRICE: ModelPrice = PRICES["claude-opus-5"]!;
+/** Haiku 5.5 дороже в 5 раз, когда запрос длиннее 100 тыс. токенов ($0.50/$2.50). */
+const HAIKU_LONG: ModelPrice = { input: 0.5, output: 2.5, cacheWrite5m: 0.625, cacheWrite1h: 1, cacheRead: 0.05 };
+const HAIKU_LONG_FROM = 100_000;
+
+function priceForTokens(model: string, promptTokens: number): ModelPrice {
+  if (model.startsWith("claude-haiku-5-5") && promptTokens > HAIKU_LONG_FROM) return HAIKU_LONG;
+  return priceFor(model);
+}
 export const WEB_SEARCH_USD = 0.01;
 
 export function priceFor(model: string | null | undefined): ModelPrice {
@@ -89,7 +100,8 @@ export function costOf(usage: UsageLike, requestModel: string): CostBreakdown {
     for (const it of its) {
       const model = it.model ?? requestModel;
       models.add(model);
-      usd += tokensCost(priceFor(model), {
+      const prompt = (it.input_tokens ?? 0) + (it.cache_read_input_tokens ?? 0) + (it.cache_creation_input_tokens ?? 0);
+      usd += tokensCost(priceForTokens(model, prompt), {
         input: it.input_tokens ?? 0,
         output: it.output_tokens ?? 0,
         cacheRead: it.cache_read_input_tokens ?? 0,
@@ -101,7 +113,8 @@ export function costOf(usage: UsageLike, requestModel: string): CostBreakdown {
     }
   } else {
     models.add(requestModel);
-    usd += tokensCost(priceFor(requestModel), {
+    const prompt = usage.input_tokens + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+    usd += tokensCost(priceForTokens(requestModel, prompt), {
       input: usage.input_tokens,
       output: usage.output_tokens,
       cacheRead: usage.cache_read_input_tokens ?? 0,

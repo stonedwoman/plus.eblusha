@@ -216,13 +216,13 @@ async function main() {
     const q1 = await send(B.token, g1.id, "Еблуша, а в Мельбурне?");
     const job1 = await jobOf(q1.id);
     assert.equal(job1.v, 1, "v не поднят: старый бот принимает");
-    assert.equal(job1.rev, 3);
+    assert.equal(job1.rev, 4, "ревизия 4 (карточки бота) — память rev ≥ 3 по-прежнему есть");
     assert.equal((job1 as unknown as Record<string, unknown>).history, undefined, "истории в задаче нет — бот берёт её сам");
     assert.deepEqual(job1.chain, []);
     assert.ok(parseBotJobRev1(job1), "старый бот (разбор rev 1) принимает задачу нового сервера");
     assert.deepEqual(parseBotJobRev1(job1), parseBotJobRev1({ ...job1, rev: undefined }), "для старого бота — та же задача, что от старого сервера");
-    assert.equal(parseBotJob(job1)!.rev, 3);
-    console.log("[bot-ctx] ok: задача rev 3 — без истории; старый и новый бот её разбирают");
+    assert.equal(parseBotJob(job1)!.rev, 4);
+    console.log("[bot-ctx] ok: задача rev 4 — без истории; старый и новый бот её разбирают");
 
     const grant = job1.grant;
     assert.equal((await call("POST", "/api/bot/history", A.token, { grant })).status, 403, "не бот — нельзя");

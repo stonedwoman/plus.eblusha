@@ -282,6 +282,21 @@ async function getOwnEffective(userId: string): Promise<LocalTimeInfo | null> {
   return eff ? describeTimeZone(eff.tz) : null;
 }
 
+/**
+ * Выбранный пояс человека (IANA) — БЕЗ учёта настройки «Показывать моё местное время»: таймер обещания понимает
+ * по нему слова «к 9», «в два часа» (наружу пояс не показывается), «поделиться перепиской» — границы «сегодня» и
+ * «эта неделя». null — пояс неизвестен (или Redis недоступен).
+ */
+export async function getEffectiveTimeZone(userId: string): Promise<string | null> {
+  try {
+    const redis = await getRedisClient();
+    const eff = parseEff(await redis.get(effKey(userId)));
+    return eff?.tz ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** Что видят собеседники (с учётом настройки). */
 export async function getPublicLocalTimes(userIds: string[]): Promise<Map<string, LocalTimeInfo | null>> {
   const out = new Map<string, LocalTimeInfo | null>();

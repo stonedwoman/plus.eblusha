@@ -1,0 +1,1492 @@
+{
+ "version": 1,
+ "about": "Общие векторы разбора времени обещания (docs/promise-timer.md, «Разбор времени»): текст + база (время сообщения-обещания) + пояс автора + now (по умолчанию = base) → срок UTC, метка, верхняя граница, или ошибка NO_TIME | AMBIGUOUS | PAST | TOO_FAR. Сервер: test/promise-time.test.ts; бот — тот же файл в разборе продлений.",
+ "cases": [
+  {
+   "text": "15мин",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:55:00.000Z",
+    "label": "15 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "15 мин",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:55:00.000Z",
+    "label": "15 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "15 минут",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:55:00.000Z",
+    "label": "15 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "15м",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:55:00.000Z",
+    "label": "15 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "15min",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:55:00.000Z",
+    "label": "15 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "15 min",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:55:00.000Z",
+    "label": "15 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "15 мин.",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:55:00.000Z",
+    "label": "15 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "15 Минут!",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:55:00.000Z",
+    "label": "15 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "буду минут через 15",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:55:00.000Z",
+    "label": "15 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "мин 15",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:55:00.000Z",
+    "label": "15 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "через 15",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:55:00.000Z",
+    "label": "15 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "буду через 15 минут",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:55:00.000Z",
+    "label": "15 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "через пять минут",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:45:00.000Z",
+    "label": "5 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "через 5 мин",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:45:00.000Z",
+    "label": "5 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "пять минут",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:45:00.000Z",
+    "label": "5 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "через пятнадцать минут",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:55:00.000Z",
+    "label": "15 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "через двадцать пять минут",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T11:05:00.000Z",
+    "label": "25 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "через полчаса",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T11:10:00.000Z",
+    "label": "30 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "полчасика",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T11:10:00.000Z",
+    "label": "30 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "пол часа",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T11:10:00.000Z",
+    "label": "30 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "буду через пол часа",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T11:10:00.000Z",
+    "label": "30 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "через час",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T11:40:00.000Z",
+    "label": "1 ч",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "часик",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T11:40:00.000Z",
+    "label": "1 ч",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "через часок",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T11:40:00.000Z",
+    "label": "1 ч",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "час-полтора",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T12:10:00.000Z",
+    "label": "час-полтора → 1,5 ч",
+    "upperBound": true
+   }
+  },
+  {
+   "text": "через час-полтора",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T12:10:00.000Z",
+    "label": "час-полтора → 1,5 ч",
+    "upperBound": true
+   }
+  },
+  {
+   "text": "час - полтора",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T12:10:00.000Z",
+    "label": "час-полтора → 1,5 ч",
+    "upperBound": true
+   }
+  },
+  {
+   "text": "10-15 мин",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:55:00.000Z",
+    "label": "10–15 мин → 15 мин",
+    "upperBound": true
+   }
+  },
+  {
+   "text": "минут 10–15",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:55:00.000Z",
+    "label": "10–15 мин → 15 мин",
+    "upperBound": true
+   }
+  },
+  {
+   "text": "10 или 15 минут",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:55:00.000Z",
+    "label": "10–15 мин → 15 мин",
+    "upperBound": true
+   }
+  },
+  {
+   "text": "минут 5-10",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:50:00.000Z",
+    "label": "5–10 мин → 10 мин",
+    "upperBound": true
+   }
+  },
+  {
+   "text": "2-3 часа",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T13:40:00.000Z",
+    "label": "2–3 ч → 3 ч",
+    "upperBound": true
+   }
+  },
+  {
+   "text": "час-два",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T12:40:00.000Z",
+    "label": "1–2 ч → 2 ч",
+    "upperBound": true
+   }
+  },
+  {
+   "text": "через 1,5 часа",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T12:10:00.000Z",
+    "label": "1,5 ч",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "полтора часа",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T12:10:00.000Z",
+    "label": "1,5 ч",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "1.5ч",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T12:10:00.000Z",
+    "label": "1,5 ч",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "через 2 часа 30 минут",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T13:10:00.000Z",
+    "label": "2 ч 30 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "2ч30м",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T13:10:00.000Z",
+    "label": "2 ч 30 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "2 ч 30 мин",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T13:10:00.000Z",
+    "label": "2 ч 30 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "через 2 часа",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T12:40:00.000Z",
+    "label": "2 ч",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "буду часа через 2",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T12:40:00.000Z",
+    "label": "2 ч",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "через 3 часа",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T13:40:00.000Z",
+    "label": "3 ч",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "через 90 минут",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T12:10:00.000Z",
+    "label": "1,5 ч",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "через 100 минут",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T12:20:00.000Z",
+    "label": "1 ч 40 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "через пару минут",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:45:00.000Z",
+    "label": "пара минут → 5 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "пару мин",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:45:00.000Z",
+    "label": "пара минут → 5 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "через пару часов",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T12:40:00.000Z",
+    "label": "2 ч",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "щас",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:45:00.000Z",
+    "label": "сейчас → 5 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "ща",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:45:00.000Z",
+    "label": "сейчас → 5 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "сейчас буду",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:45:00.000Z",
+    "label": "сейчас → 5 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "уже иду",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:45:00.000Z",
+    "label": "сейчас → 5 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "выхожу",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:45:00.000Z",
+    "label": "сейчас → 5 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "5 сек",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:45:00.000Z",
+    "label": "сейчас → 5 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "выхожу, буду через 20 минут",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T11:00:00.000Z",
+    "label": "20 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "в два часа давай",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T11:00:00.000Z",
+    "label": "в 14:00",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "в 2",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T11:00:00.000Z",
+    "label": "в 14:00",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "давай в два",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T11:00:00.000Z",
+    "label": "в 14:00",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "буду в 2",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T11:00:00.000Z",
+    "label": "в 14:00",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "в два часа давай",
+   "base": "2026-10-11T12:10:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "AMBIGUOUS",
+    "deadlineAt": "2026-10-11T23:00:00.000Z"
+   },
+   "note": "ближайшее будущее 02:00 через 10 ч 50 мин"
+  },
+  {
+   "text": "к 9",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T18:00:00.000Z",
+    "label": "к 21:00",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "к девяти",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T18:00:00.000Z",
+    "label": "к 21:00",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "до 9",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T18:00:00.000Z",
+    "label": "к 21:00",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "после 9",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T18:00:00.000Z",
+    "label": "в 21:00",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "около 9",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T18:00:00.000Z",
+    "label": "в 21:00",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "к 9 утра",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-12T06:00:00.000Z",
+    "label": "к 09:00",
+    "upperBound": false
+   },
+   "note": "пометка части суток снимает 8-часовой предел"
+  },
+  {
+   "text": "в 7 утра",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-12T04:00:00.000Z",
+    "label": "в 07:00",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "в 21:30",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T18:30:00.000Z",
+    "label": "в 21:30",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "в 21.30",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T18:30:00.000Z",
+    "label": "в 21:30",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "в 21-30",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T18:30:00.000Z",
+    "label": "в 21:30",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "21:30",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T18:30:00.000Z",
+    "label": "в 21:30",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "в полдесятого вечера",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T18:30:00.000Z",
+    "label": "в 21:30",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "в 9:30",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T18:30:00.000Z",
+    "label": "в 21:30",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "в 09:30",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-12T06:30:00.000Z",
+    "label": "в 09:30",
+    "upperBound": false
+   },
+   "note": "ведущий ноль — 24-часовая форма"
+  },
+  {
+   "text": "в 23:59",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T20:59:00.000Z",
+    "label": "в 23:59",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "в 0:30",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T21:30:00.000Z",
+    "label": "в 00:30",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "в 9 вечера",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T18:00:00.000Z",
+    "label": "в 21:00",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "в 9 вечером",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T18:00:00.000Z",
+    "label": "в 21:00",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "давай к 8 вечера",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T17:00:00.000Z",
+    "label": "к 20:00",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "в 3 ночи",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-12T00:00:00.000Z",
+    "label": "в 03:00",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "в 2 часа ночи",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T23:00:00.000Z",
+    "label": "в 02:00",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "в 12 ночи",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T21:00:00.000Z",
+    "label": "в 00:00",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "в 12 дня",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-12T09:00:00.000Z",
+    "label": "в 12:00",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "в полдень",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-12T09:00:00.000Z",
+    "label": "в 12:00",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "в полночь",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T21:00:00.000Z",
+    "label": "в 00:00",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "в полвторого",
+   "base": "2026-10-11T10:10:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:30:00.000Z",
+    "label": "в 13:30",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "пол второго",
+   "base": "2026-10-11T10:10:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:30:00.000Z",
+    "label": "в 13:30",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "в полвторого",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "AMBIGUOUS",
+    "deadlineAt": "2026-10-11T22:30:00.000Z"
+   }
+  },
+  {
+   "text": "без пятнадцати три",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T11:45:00.000Z",
+    "label": "в 14:45",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "без четверти три",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T11:45:00.000Z",
+    "label": "в 14:45",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "в без 15 три",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T11:45:00.000Z",
+    "label": "в 14:45",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "завтра в 2",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-12T11:00:00.000Z",
+    "label": "завтра в 14:00",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "завтра в 10",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-12T07:00:00.000Z",
+    "label": "завтра в 10:00",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "завтра к 12",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-12T09:00:00.000Z",
+    "label": "завтра к 12:00",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "послезавтра в 2",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "TOO_FAR"
+   }
+  },
+  {
+   "text": "в 14 по мск",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Asia/Krasnoyarsk",
+   "expect": {
+    "deadlineAt": "2026-10-11T11:00:00.000Z",
+    "label": "в 14:00",
+    "upperBound": false,
+    "zoneFromText": true
+   }
+  },
+  {
+   "text": "к 9 по Москве",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Asia/Krasnoyarsk",
+   "expect": {
+    "deadlineAt": "2026-10-11T18:00:00.000Z",
+    "label": "к 21:00",
+    "upperBound": false,
+    "zoneFromText": true
+   }
+  },
+  {
+   "text": "к 9",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Asia/Krasnoyarsk",
+   "expect": {
+    "deadlineAt": "2026-10-11T14:00:00.000Z",
+    "label": "к 21:00",
+    "upperBound": false,
+    "zoneFromText": false
+   }
+  },
+  {
+   "text": "15мин",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Asia/Krasnoyarsk",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:55:00.000Z",
+    "label": "15 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "в 14 буду",
+   "base": "2026-10-11T10:50:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T11:00:00.000Z",
+    "label": "в 14:00",
+    "upperBound": false
+   },
+   "now": "2026-10-11T11:05:00.000Z",
+   "note": "срок в прошлом на 5 мин — разрешено"
+  },
+  {
+   "text": "в 14 буду",
+   "base": "2026-10-11T10:50:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "PAST",
+    "deadlineAt": "2026-10-11T11:00:00.000Z"
+   },
+   "now": "2026-10-11T12:30:00.000Z",
+   "note": "срок прошёл 90 мин назад"
+  },
+  {
+   "text": "в 11",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "AMBIGUOUS",
+    "deadlineAt": "2026-10-11T20:00:00.000Z"
+   }
+  },
+  {
+   "text": "в 1",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "AMBIGUOUS",
+    "deadlineAt": "2026-10-11T22:00:00.000Z"
+   }
+  },
+  {
+   "text": "скоро",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "NO_TIME"
+   }
+  },
+  {
+   "text": "попозже",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "NO_TIME"
+   }
+  },
+  {
+   "text": "как смогу",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "NO_TIME"
+   }
+  },
+  {
+   "text": "к обеду",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "NO_TIME"
+   }
+  },
+  {
+   "text": "в течение дня",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "NO_TIME"
+   }
+  },
+  {
+   "text": "ок",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "NO_TIME"
+   }
+  },
+  {
+   "text": "буду",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "NO_TIME"
+   }
+  },
+  {
+   "text": "через 2",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "NO_TIME"
+   }
+  },
+  {
+   "text": "в начале третьего",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "NO_TIME"
+   }
+  },
+  {
+   "text": "минут через 20 после игры",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "NO_TIME"
+   }
+  },
+  {
+   "text": "15 мин назад",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "NO_TIME"
+   }
+  },
+  {
+   "text": "был в 2",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "NO_TIME"
+   }
+  },
+  {
+   "text": "15",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "NO_TIME"
+   }
+  },
+  {
+   "text": "во сколько?",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "NO_TIME"
+   }
+  },
+  {
+   "text": "в 9?",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "NO_TIME"
+   }
+  },
+  {
+   "text": "когда будешь",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "NO_TIME"
+   }
+  },
+  {
+   "text": "ещё 10 минут",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:50:00.000Z",
+    "label": "10 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "еще 10",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:50:00.000Z",
+    "label": "10 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "+10",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:50:00.000Z",
+    "label": "10 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "дай ещё 10",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:50:00.000Z",
+    "label": "10 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "ещё полчаса",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T11:10:00.000Z",
+    "label": "30 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "буду в 15:00",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T12:00:00.000Z",
+    "label": "в 15:00",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "15 мин",
+   "base": "2026-10-11T10:40:37.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:55:37.000Z",
+    "label": "15 мин",
+    "upperBound": false
+   },
+   "note": "относительный срок — с секундами базы"
+  },
+  {
+   "text": "в 14",
+   "base": "2026-10-11T10:40:37.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T11:00:00.000Z",
+    "label": "в 14:00",
+    "upperBound": false
+   },
+   "note": "абсолютный — ровно 14:00:00"
+  },
+  {
+   "text": "в 13",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-12T10:00:00.000Z",
+    "label": "в 13:00",
+    "upperBound": false
+   },
+   "note": "24-часовое, сегодня уже прошло — завтра"
+  },
+  {
+   "text": "в 21:30",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Asia/Calcutta",
+   "expect": {
+    "deadlineAt": "2026-10-11T16:00:00.000Z",
+    "label": "в 21:30",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "к 9",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Asia/Calcutta",
+   "expect": {
+    "deadlineAt": "2026-10-11T15:30:00.000Z",
+    "label": "к 21:00",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "через 45 минут",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Asia/Calcutta",
+   "expect": {
+    "deadlineAt": "2026-10-11T11:25:00.000Z",
+    "label": "45 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "в 3 ночи",
+   "base": "2026-10-24T20:00:00.000Z",
+   "zone": "Europe/Bucharest",
+   "expect": {
+    "deadlineAt": "2026-10-25T00:00:00.000Z",
+    "label": "в 03:00",
+    "upperBound": false
+   },
+   "note": "25.10.2026 03:00 бывает дважды — первое (EEST)"
+  },
+  {
+   "text": "в 3:30 ночи",
+   "base": "2026-03-28T22:00:00.000Z",
+   "zone": "Europe/Bucharest",
+   "expect": {
+    "deadlineAt": "2026-03-29T01:30:00.000Z",
+    "label": "в 04:30",
+    "upperBound": false
+   },
+   "note": "29.03.2026 03:30 не существует — сдвиг вперёд"
+  },
+  {
+   "text": "через час",
+   "base": "2026-10-25T00:30:00.000Z",
+   "zone": "Europe/Bucharest",
+   "expect": {
+    "deadlineAt": "2026-10-25T01:30:00.000Z",
+    "label": "1 ч",
+    "upperBound": false
+   },
+   "note": "относительное — абсолютно, перевод часов не влияет"
+  },
+  {
+   "text": "к 9",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Bucharest",
+   "expect": {
+    "deadlineAt": "2026-10-11T18:00:00.000Z",
+    "label": "к 21:00",
+    "upperBound": false
+   },
+   "note": "13:40 Бухарест = 10:40Z; 21:00 EEST = 18:00Z"
+  },
+  {
+   "text": "я в 5 минутах",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:45:00.000Z",
+    "label": "5 мин",
+    "upperBound": false
+   },
+   "note": "«в N минутах» — через N минут, не час"
+  },
+  {
+   "text": "в 10 минутах от вас",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:50:00.000Z",
+    "label": "10 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "к 15 минутам",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "NO_TIME"
+   },
+   "note": "не час и не длительность"
+  },
+  {
+   "text": "это в 3 раза дороже",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "NO_TIME"
+   },
+   "note": "счёт после «в N» — не час"
+  },
+  {
+   "text": "в 2 словах не объяснить",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "NO_TIME"
+   }
+  },
+  {
+   "text": "в двух шагах",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "NO_TIME"
+   }
+  },
+  {
+   "text": "в 3 часах езды",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "error": "NO_TIME"
+   }
+  },
+  {
+   "text": "в 2 км от вас, минут 10",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T10:50:00.000Z",
+    "label": "10 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "давай в 2 дня",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T11:00:00.000Z",
+    "label": "в 14:00",
+    "upperBound": false
+   },
+   "note": "«дня» — часть суток, не счёт"
+  },
+  {
+   "text": "через 1:30",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T12:10:00.000Z",
+    "label": "1,5 ч",
+    "upperBound": false
+   },
+   "note": "«через Ч:ММ» — длительность"
+  },
+  {
+   "text": "через 0:45",
+   "base": "2026-10-11T10:40:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T11:25:00.000Z",
+    "label": "45 мин",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "в 14 буду",
+   "base": "2026-10-11T11:02:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T11:00:00.000Z",
+    "label": "в 14:00",
+    "upperBound": false
+   },
+   "note": "однозначное время, прошедшее меньше часа назад, — опоздание, а не завтра"
+  },
+  {
+   "text": "к 14:00",
+   "base": "2026-10-11T11:03:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T11:00:00.000Z",
+    "label": "к 14:00",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "в 9 вечера",
+   "base": "2026-10-11T18:20:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-11T18:00:00.000Z",
+    "label": "в 21:00",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "завтра в 9 утра",
+   "base": "2026-10-11T22:00:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-12T06:00:00.000Z",
+    "label": "завтра в 09:00",
+    "upperBound": false
+   },
+   "note": "ночью «завтра» — после сна: 01:00 12.10 → 12.10 09:00"
+  },
+  {
+   "text": "завтра в 10",
+   "base": "2026-10-11T22:00:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-12T07:00:00.000Z",
+    "label": "завтра в 10:00",
+    "upperBound": false
+   }
+  },
+  {
+   "text": "завтра в 2",
+   "base": "2026-10-11T21:30:00.000Z",
+   "zone": "Europe/Moscow",
+   "expect": {
+    "deadlineAt": "2026-10-12T11:00:00.000Z",
+    "label": "завтра в 14:00",
+    "upperBound": false
+   },
+   "note": "00:30 — «завтра в 2» это 14:00 наступившего дня, не TOO_FAR"
+  }
+ ]
+}

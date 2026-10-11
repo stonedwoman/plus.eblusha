@@ -45,6 +45,24 @@ export async function publishNewMessage(opts: {
   linkPreview?: boolean;
   /** Кому считать лимит постановки превью (rate:preview-enqueue). */
   previewUserId: string;
+  /**
+   * Кого будить (подмножество получателей): пуш — только им, а message:notify остальным уходит с muted: true
+   * («не звени», тот же признак, что у «Без звука»). Нет — будить всех, как раньше. message:new / message:notify
+   * уходят всем в любом случае (непрочитанные считаются у всех): так карточка «поделиться перепиской» будит только
+   * спросившего (docs/bot-cards.md) — и на телефоне, и звуком на ПК/в вебе.
+   */
+  pushTo?: string[];
+  /**
+   * Кого это сообщение упоминает (напоминание таймера — обещавшего, metadata.bot.mentions). Сейчас ничего не меняет
+   * (будятся все); после слияния с «Без звука» (feat/chat-mute) упомянутый будится и в заглушённой ГРУППЕ — как ответ
+   * на его сообщение (conversationMuteRules.shouldAlert уже умеет mentionedUserIds). Решение конфликта при слиянии
+   * (проверено пробным слиянием; скрипт — scratchpad promise-timer/../fix/merge-resolution/resolve.py):
+   *   loadAlertGate(conversationId, { isGroup, replyToSenderId, mentionedUserIds: opts.mentions ?? null })
+   *   (+ AlertContext.mentionedUserIds → shouldAlert в conversationMute.ts);
+   *   const wake = (rid) => alert(rid) && (!pushSet || pushSet.has(rid));
+   *   message:notify … muted: !wake(rid);   enqueuePush(recipients.filter((rid) => rid !== senderId && wake(rid)), …)
+   */
+  mentions?: string[];
 }): Promise<void> {
   const { conversationId, message, senderId } = opts;
 
@@ -67,6 +85,9 @@ export async function publishNewMessage(opts: {
     include: { participants: true },
   });
   const recipients = convForNotify?.participants.map((p) => p.userId) ?? [];
+  // Кого будить (пуш, звук, плашка): pushTo — только их (остальным message:notify с muted: true).
+  const pushSet = opts.pushTo ? new Set(opts.pushTo) : null;
+  const wake = (rid: string) => !pushSet || pushSet.has(rid);
 
   for (const rid of recipients) {
     if (rid !== senderId) {
@@ -75,6 +96,7 @@ export async function publishNewMessage(opts: {
         messageId: message.id,
         senderId,
         message,
+        ...(pushSet ? { muted: !wake(rid) } : {}),
       });
     }
   }
@@ -99,7 +121,7 @@ export async function publishNewMessage(opts: {
               ? "Файл"
               : "";
     enqueuePush(
-      recipients.filter((rid) => rid !== senderId),
+      recipients.filter((rid) => rid !== senderId && wake(rid)),
       {
         kind: "message",
         conversationId,

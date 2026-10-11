@@ -9,6 +9,7 @@ import prisma from "../lib/prisma";
 import { applyLivekitFactsEvent } from "../lib/livekitFacts";
 import { isBlockedFromCallRoom, startCallEncryptionEnforcement } from "../lib/callEncryptionGuard";
 import { buildLivekitPublicUrl } from "../lib/livekitUrl";
+import { promiseOnCallJoin } from "../lib/promiseTimer";
 
 const router = Router();
 
@@ -84,6 +85,16 @@ router.post("/webhook", async (req, res) => {
     await redis.del(dedupeKey);
     res.status(500).json({ message: "Failed to persist webhook event" });
     return;
+  }
+
+  // Таймер обещания: обещавший вошёл в звонок этой беседы (комната conv-<id>, личность <userId>#<устройство>).
+  if (event.event === "participant_joined") {
+    const room = (event.room?.name ?? "").trim();
+    const joinedUserId = (event.participant?.identity ?? "").trim().split("#", 1)[0] ?? "";
+    if (room.startsWith("conv-") && joinedUserId) {
+      const sec = typeof event.createdAt === "bigint" ? Number(event.createdAt) : typeof event.createdAt === "number" ? event.createdAt : 0;
+      void promiseOnCallJoin(room.slice("conv-".length), joinedUserId, sec > 0 ? new Date(sec * 1000) : new Date());
+    }
   }
 
   res.json({ ok: true });

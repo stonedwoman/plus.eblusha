@@ -53,7 +53,16 @@ type ServerToClientEvents = {
    * такого события не говорит о расхождении часов.
    */
   "conversation:read-self": (payload: { conversationId: string; readAt: number; byDeviceId?: string; replay?: true }) => void;
-  "message:update": (payload: { conversationId: string; messageId: string; reason: string; message?: any }) => void;
+  "message:update": (payload: {
+    conversationId: string;
+    messageId: string;
+    reason: string;
+    message?: any;
+    /** Карточки бота (reason "card", docs/bot-cards.md). */
+    cardType?: string;
+    card?: unknown;
+    serverNow?: string;
+  }) => void;
   "message:notify": (payload: { conversationId: string; messageId: string; senderId: string; message?: any }) => void;
   "message:reaction": (payload: { conversationId: string; messageId: string; senderId: string }) => void;
   "availability:updated": (payload: { conversationId: string; userId: string }) => void;
@@ -763,6 +772,32 @@ function listParticipants(info: ActiveCallInfo): string[] {
   return Array.from(info.participantsByUser.keys());
 }
 
+/**
+ * Вход в звонок беседы (call:invite / call:accept / call:room:join): слушатели — таймер обещания (обещавший зашёл
+ * в звонок этой беседы → «пришёл», src/lib/promiseTimer.ts). Слушатель не должен бросать и ничего не ждёт.
+ */
+type CallJoinListener = (conversationId: string, userId: string, at: Date) => void;
+const callJoinListeners: CallJoinListener[] = [];
+export function registerCallJoinListener(fn: CallJoinListener): void {
+  if (!callJoinListeners.includes(fn)) callJoinListeners.push(fn);
+}
+function notifyCallJoin(conversationId: string, userId: string): void {
+  const at = new Date();
+  for (const fn of callJoinListeners) {
+    try {
+      fn(conversationId, userId, at);
+    } catch (error) {
+      logger.warn({ error, conversationId }, "call join listener failed");
+    }
+  }
+}
+
+/** Сидит ли человек в звонке ЭТОЙ беседы прямо сейчас (процесс backend; таймер: «уже в звонке — засекать нечего»). */
+export function isUserInConversationCall(conversationId: string, userId: string): boolean {
+  const a = getActiveCallInfo(conversationId);
+  return !!a && a.info.participantsByUser.has(userId);
+}
+
 function getActiveCallInfo(conversationId: string): { info: ActiveCallInfo; isGroup: boolean } | null {
   const groupInfo = activeGroupCalls.get(conversationId);
   if (groupInfo) return { info: groupInfo, isGroup: true };
@@ -1100,6 +1135,9 @@ export async function initSocket(
         messageId?: string;
         reason?: string;
         message?: unknown;
+        cardType?: unknown;
+        card?: unknown;
+        serverNow?: unknown;
       };
       if (!payload.conversationId || !payload.messageId || !payload.reason) return;
       io.to(payload.conversationId).emit("message:update", {
@@ -1107,6 +1145,10 @@ export async function initSocket(
         messageId: payload.messageId,
         reason: payload.reason,
         ...(payload.message !== undefined ? { message: payload.message } : {}),
+        // Карточки бота (docs/bot-cards.md): тип, конверт и время сервера — клиенты правят часы и карточку на месте.
+        ...(typeof payload.cardType === "string" ? { cardType: payload.cardType } : {}),
+        ...(payload.card !== undefined ? { card: payload.card } : {}),
+        ...(typeof payload.serverNow === "string" ? { serverNow: payload.serverNow } : {}),
       });
     } catch {
       // ignore malformed payloads
@@ -2243,6 +2285,8 @@ export async function initSocket(
           return;
         }
       }
+      // Таймер обещания: обещавший сам позвонил в эту беседу — «пришёл» (даже если не ответили).
+      notifyCallJoin(conversationId, userId);
       // Rate-limit invites to prevent ring-spam / re-ring loops. Only throttle while a call
       // for this conversation is ALREADY tracked (re-emitting call:incoming resets the
       // callee's ringtone) — a fresh call, or one just ended, is never throttled.
@@ -2563,6 +2607,7 @@ export async function initSocket(
       } else if (st) {
         callState.set(conversationId, { ...st, accepted: true });
       }
+      notifyCallJoin(conversationId, userId);
 
       // For direct (1:1) calls, we treat the call as active starting at accept time,
       // and wire it into presence so everyone sees "IN_CALL" reliably (even though the web client
@@ -2860,6 +2905,7 @@ export async function initSocket(
       // A (re)join cancels any pending disconnect-grace teardown for this call: the peer
       // came back within the grace window, so the call must stay alive.
       clearDirectCallGraceTimer(conversationId);
+      notifyCallJoin(conversationId, userId);
 
       const isGroup = !!conv.isGroup;
       logger.info({ conversationId, userId, isGroup, participantCount: conv.participants.length }, "call:room:join received");

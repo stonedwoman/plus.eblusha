@@ -8,6 +8,10 @@ export type RealtimeMessageUpdatePayload = {
   messageId: string;
   reason: string;
   message?: unknown;
+  /** Карточки бота (reason "card", docs/bot-cards.md): тип, конверт, время сервера. */
+  cardType?: string;
+  card?: unknown;
+  serverNow?: string;
 };
 
 let pubConnection: IORedis | null = null;

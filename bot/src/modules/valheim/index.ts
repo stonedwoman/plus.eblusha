@@ -20,6 +20,7 @@ import { BotChannel, JoinInfo, PluginClient, type FetchLike } from "./client";
 import { createCommands } from "./commands";
 import { loadValheimConfig, type ValheimConfig } from "./config";
 import { OpsClient, type OpsClientLike } from "./ops";
+import { PromiseWatch } from "./promiseWatch";
 import { createTools } from "./tools";
 import { VhWorld } from "./world";
 
@@ -63,7 +64,7 @@ function agentOf(cfg: ValheimConfig, deps: ValheimDeps): AgentClientLike | null 
   return cfg.agentUrl ? new AgentClient(cfg.agentUrl, cfg.agentTokenFile ?? null) : null;
 }
 
-export function createValheimModule(deps: ValheimDeps = {}): BotModule & { world: VhWorld; admin: ValheimAdmin } {
+export function createValheimModule(deps: ValheimDeps = {}): BotModule & { world: VhWorld; admin: ValheimAdmin; watch: () => PromiseWatch | null } {
   const cfg = deps.cfg ?? loadValheimConfig();
   const world =
     deps.world ??
@@ -85,16 +86,24 @@ export function createValheimModule(deps: ValheimDeps = {}): BotModule & { world
     userDailyRequests: cfg.agentUserDaily ?? 15,
     timeZone: cfg.timeZone,
   });
+  const online = async () => (await world.players()).players.map((p) => ({ name: p.name, since: p.since }));
+  let watch: PromiseWatch | null = null;
   return {
     name: "valheim",
     world,
     admin,
+    watch: () => watch,
     systemPrompt: VALHEIM_SYSTEM_PROMPT,
     tools: [...createTools(world, cfg), ...admin.tools()],
     commands: createCommands(world, ops),
-    characters: { listKnownCharacters: (): Promise<string[]> => world.knownCharacters() },
+    characters: { listKnownCharacters: (): Promise<string[]> => world.knownCharacters(), online },
     intercept: (input) => admin.intercept(input),
     async start(core) {
+      // Таймер обещания: «пришёл» по входу в игру привязанного персонажа (сервер rev ≥ 4).
+      if (core.promises) {
+        watch = new PromiseWatch(core, online, deps.now ? { now: deps.now } : {});
+        watch.start();
+      }
       // Первичная проверка связи — только в журнал; модуль работает и без мода и без агента.
       const [modOk, time, health] = await Promise.all([
         world.modReady(),
@@ -105,6 +114,7 @@ export function createValheimModule(deps: ValheimDeps = {}): BotModule & { world
       await admin.start(core);
     },
     async stop() {
+      watch?.stop();
       await admin.stop();
     },
   };

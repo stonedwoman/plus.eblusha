@@ -11,10 +11,11 @@
  */
 import { Worker, type ConnectionOptions } from "bullmq";
 import type { Logger } from "../log";
-import { parseBotJob, type BotJob } from "./types";
+import { parseBotJob, parseBotSignal, type BotJob, type BotSignal } from "./types";
 
 export interface JobSource {
-  start(handler: (job: BotJob) => Promise<void>): void;
+  /** onSignal — сигналы без разрешения (rev 4: «согласие закончилось — стереть переписку»). */
+  start(handler: (job: BotJob) => Promise<void>, onSignal?: (signal: BotSignal) => Promise<void>): void;
   stop(): Promise<void>;
 }
 
@@ -44,10 +45,15 @@ export class BullJobSource implements JobSource {
     private readonly log: Logger
   ) {}
 
-  start(handler: (job: BotJob) => Promise<void>): void {
+  start(handler: (job: BotJob) => Promise<void>, onSignal?: (signal: BotSignal) => Promise<void>): void {
     const worker = new Worker(
       this.opts.queueName,
       async (job) => {
+        const signal = parseBotSignal(job.data);
+        if (signal) {
+          if (onSignal) await onSignal(signal);
+          return;
+        }
         const parsed = parseBotJob(job.data);
         if (!parsed) {
           this.log.warn("job.malformed", { jobId: job.id ?? null });
