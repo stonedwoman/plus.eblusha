@@ -5,6 +5,8 @@ import { Prisma } from "@prisma/client";
 import { deleteS3ObjectsByKeys, deleteS3ObjectsByUrls } from "../lib/storageDeletion";
 import { authenticate } from "../middlewares/auth";
 import { getIO } from "../realtime/socket";
+import { promiseOnParticipantLeft } from "../lib/promiseTimer";
+import { shareOnParticipantLeft } from "../lib/botShare";
 import {
   isSecretConversation,
   isSecretConversationById,
@@ -1000,6 +1002,10 @@ router.delete("/:id/participants/me", async (req, res) => {
       userId: userId,
     },
   });
+
+  // Карточки бота: таймеры, где он обещавший, — отменены тихо; его согласия «поделиться перепиской» — закрыты.
+  void promiseOnParticipantLeft(id, userId);
+  void shareOnParticipantLeft(id, userId);
 
   // Уведомляем остальных участников об обновлении беседы
   const io = getIO();

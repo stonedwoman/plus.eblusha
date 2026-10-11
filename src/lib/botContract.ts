@@ -13,6 +13,11 @@
  *           ответы в этой беседе (в «Чате с Еблушей» — весь чат) после своего курсора, плюс журнал изменений
  *           (BotMemoryStatus): удалили или поправили сообщение, уже вошедшее в сводку, — бот пересобирает
  *           сводку с нуля. rev ≥ 3 — признак, что маршрут есть.
+ *   rev 4 — карточки бота (решения владельца 2026-10-11: таймер обещания «Еблуша, проконтролируй», «поделиться
+ *           перепиской», «Подумай лучше»; docs/bot-cards.md): у сообщений БОТА в цепочке — пометки `bot` (вид, на
+ *           какое обращение, карточка, согласие, глубина); в задаче — идущие таймеры беседы `promises` и, при
+ *           продолжении после «Поделиться», `share`; отдельный вид задачи — сигнал без разрешения (BotSignalJob:
+ *           «согласие закончилось — сотри переписку»). rev ≥ 4 — у сервера есть /api/bot/promises* и /api/bot/share*.
  *
  * Сервер кладёт задачу ТОЛЬКО на сообщение, адресованное боту (src/lib/systemBot.ts → detectBotAddress), в
  * обычной (не секретной) беседе. Остальную переписку людей бот не видит: он не участник, в задаче — триггер и
@@ -49,6 +54,25 @@ export interface BotJobAttachment {
   metadata: Record<string, unknown> | null;
 }
 
+/**
+ * Пометки сообщения БОТА в задаче (rev 4, из metadata.bot / metadata.card): что это за сообщение бота. У людей
+ * и у старого сервера поля нет.
+ */
+export interface BotJobBotMeta {
+  /** answer | command | notice | confirm | welcome | card */
+  kind: string;
+  /** На какое обращение ответ (metadata.bot.triggerMessageId). */
+  triggerId?: string;
+  /** Карточка (kind "card"): тип, id записи типа и её состояние. */
+  card?: { type: string; id: string; state: string };
+  /** Ответ по согласию «поделиться перепиской» (metadata.bot.shareId): уточнения к нему читают переписку без карточки. */
+  shareId?: string;
+  /** Напоминание таймера (metadata.bot.promiseId). */
+  promiseId?: string;
+  /** «Подумал лучше» (metadata.bot.depth = "deep"). */
+  depth?: "deep";
+}
+
 export interface BotJobMessage {
   id: string;
   senderId: string;
@@ -62,6 +86,31 @@ export interface BotJobMessage {
   createdAt: string;
   replyToId: string | null;
   attachments: BotJobAttachment[];
+  /** Только у сообщений бота, rev ≥ 4. */
+  bot?: BotJobBotMeta;
+}
+
+/** Идущий таймер обещания беседы (rev 4): бот узнаёт карточку в цепочке и решает «он тут» без лишних запросов. */
+export interface BotJobPromise {
+  id: string;
+  promiserId: string;
+  promiserName: string | null;
+  requesterId: string;
+  cardMessageId: string | null;
+  /** ISO. */
+  startAt: string;
+  deadlineAt: string;
+}
+
+/** Продолжение после «Поделиться» (rev 4): та же задача на исходный вопрос, новый grant, переписку читать можно. */
+export interface BotJobShare {
+  id: string;
+  period: "today" | "week" | "all";
+  photos: boolean;
+  /** Начало периода (ISO; null — «всё время»). */
+  from: string | null;
+  /** Конец окна доступа (ISO). */
+  until: string;
 }
 
 export interface BotJobV1 {
@@ -95,12 +144,31 @@ export interface BotJobV1 {
    * не длиннее BOT_JOB_CHAIN_MAX - 1. Только эта беседа, без удалённых и истёкших.
    */
   chain: BotJobMessage[];
+  /** rev 4: идущие таймеры беседы обращения (≤ BOT_JOB_PROMISES_MAX). */
+  promises?: BotJobPromise[];
+  /** rev 4: продолжение после «Поделиться» (переписка разрешена этому вопросу). */
+  share?: BotJobShare;
 }
 
 export type BotJob = BotJobV1;
 
-/** Текущая ревизия задачи, которую кладёт этот сервер (3 — есть POST /api/bot/history). */
-export const BOT_JOB_REV = 3;
+/**
+ * Сигнал боту без разрешения (rev 4): «согласие закончилось/отозвано — стереть переписку из памяти процесса».
+ * Старый бот такую задачу отбросит как непонятную («job.malformed») — ничего не сломается.
+ */
+export interface BotSignalJob {
+  v: 1;
+  rev: number;
+  kind: "signal";
+  enqueuedAt: number;
+  signal: { type: "share.ended"; shareId: string; conversationId: string; reason: string };
+}
+
+/** Текущая ревизия задачи, которую кладёт этот сервер (4 — карточки: таймер, «поделиться перепиской»). */
+export const BOT_JOB_REV = 4;
+
+/** Идущих таймеров беседы в задаче. */
+export const BOT_JOB_PROMISES_MAX = 5;
 
 /** Сколько сообщений (с триггером) уходит боту цепочкой. */
 export const BOT_JOB_CHAIN_MAX = 12;

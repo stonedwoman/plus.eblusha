@@ -116,6 +116,8 @@ model Conversation {
   callSessions            CallSession[]
   availabilityIntervals   ConversationAvailabilityInterval[]
   availabilityProposals   ConversationAvailabilityProposal[]
+  promiseTimers           PromiseTimer[]
+  botShares               BotShare[]
 }
 
 enum ConversationType {
@@ -251,6 +253,135 @@ model BotMemoryChange {
   createdAt        DateTime @default(now())
 
   @@index([conversationId, createdAt])
+}
+
+// ───────────── Карточки бота «Еблуша» (src/lib/botCards.ts, docs/bot-cards.md) ─────────────
+
+enum PromiseStatus {
+  RUNNING
+  ARRIVED
+  CANCELLED
+  UNRESOLVED
+}
+
+/// Таймер обещания «Еблуша, проконтролируй» (src/lib/promiseTimer.ts, docs/promise-timer.md). Им владеет
+/// сервер: карточка — сообщение бота (metadata.card, type "promise"), переходы — под замком строки. Текст
+/// обещания — только снимок цитаты (≤ 200 знаков, обнуляется, если обещание удалили).
+model PromiseTimer {
+  id                 String        @id @default(cuid())
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+  conversationId     String
+  /// Сообщение-карточка (бот).
+  cardMessageId      String?       @unique
+  /// Сообщение с обещанием (null — обещание в самом обращении).
+  promiseMessageId   String?
+  /// Обращение «Еблуша, проконтролируй».
+  triggerMessageId   String
+  promiserId         String
+  requesterId        String
+  /// Кто может «Отменить»: спросивший + владелец бота.
+  cancelAllowedIds   String[]
+  quote              String?
+  /// Цитата — слова не обещавшего («со слов Ромы»): id того, чьи слова.
+  quoteById          String?
+  quoteAt            DateTime?
+  label              String
+  upperBound         Boolean       @default(false)
+  /// code | model
+  parseSource        String
+  zone               String
+  /// promiser | requester | text | default
+  zoneSource         String
+  startAt            DateTime
+  deadlineAt         DateTime
+  originalDeadlineAt DateTime
+  /// [{at, from, to, label, byMessageId}] ≤ 10
+  extensions         Json          @default("[]")
+  extensionCount     Int           @default(0)
+  status             PromiseStatus @default(RUNNING)
+  closedAt           DateTime?
+  /// unresolved | card_deleted | promiser_left | …
+  closeReason        String?
+  arrivedAt          DateTime?
+  /// button | self | call | valheim | phrase
+  arrivedVia         String?
+  arrivedById        String?
+  /// Персонаж Valheim (только журнал/статистика, клиентам не отдаётся).
+  arrivedDetail      String?
+  cancelledById      String?
+  /// arrivedAt − deadlineAt, с (< 0 — запас).
+  lateSec            Int?
+  lateVsOriginalSec  Int?
+  /// Смещения напоминаний (мин) по текущему сроку: 0, 15, 30.
+  remindersSent      Int[]         @default([])
+  remindersTotal     Int           @default(0)
+  /// Таймер создан уже опоздавшим (срок в прошлом): напоминание «время вышло» не пишется.
+  createdLate        Boolean       @default(false)
+  reopenUntil        DateTime?
+  reopenBy           String[]      @default([])
+  /// Что вернуть при «Вернуть».
+  reopenPrev         Json?
+  rev                Int           @default(1)
+  conversation       Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, status])
+  @@index([promiserId, status, createdAt])
+  @@index([status, deadlineAt])
+}
+
+enum BotShareStatus {
+  PENDING
+  GRANTED
+  DECLINED
+  EXPIRED
+  REVOKED
+  ENDED
+}
+
+/// Согласие «поделиться перепиской» (src/lib/botShare.ts, docs/bot-cards.md): кто, когда, какой период,
+/// счётчики и статус. Текстов переписки здесь нет — их бот держит только в памяти процесса до конца окна.
+model BotShare {
+  id               String         @id @default(cuid())
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+  conversationId   String
+  cardMessageId    String?        @unique
+  /// Вопрос, ради которого просили.
+  triggerMessageId String
+  askerId          String
+  status           BotShareStatus @default(PENDING)
+  /// Пояс границ периодов (спросившего).
+  zone             String
+  /// [{period, from, messages, photos, photosUsed, enabled, off?, capped?}]
+  options          Json
+  suggestPeriod    String?
+  suggestPhotos    Boolean        @default(false)
+  /// too_big | budget — бот вернул карточку: выбранный период неподъёмен.
+  note             String?
+  /// today | week | all
+  period           String?
+  includePhotos    Boolean        @default(false)
+  periodFrom       DateTime?
+  pendingUntil     DateTime
+  decidedAt        DateTime?
+  decidedById      String?
+  until            DateTime?
+  endedAt          DateTime?
+  /// declined | expired | question_deleted | asker_left | revoked | ended | replaced
+  endReason        String?
+  endedById        String?
+  answerMessageIds String[]       @default([])
+  answers          Int            @default(0)
+  readMessages     Int?
+  readPhotos       Int?
+  usd              Decimal?       @db.Decimal(8, 4)
+  rev              Int            @default(1)
+  conversation     Conversation   @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, status])
+  @@index([askerId, createdAt])
+  @@index([status, until])
 }
 
 model MessageAttachment {

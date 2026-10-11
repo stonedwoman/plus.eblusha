@@ -8,6 +8,7 @@ import logger from "./config/logger";
 import { initSocket } from "./realtime/socket";
 import cloudConfig from "./cloud/config";
 import { startCloudMaintenance } from "./cloud/jobs/maintenance";
+import { startCardsWorker } from "./jobs/workers/cards.worker";
 
 const port = env.PORT;
 
@@ -80,6 +81,17 @@ async function main() {
     logger.info(`Server listening on port ${port}`);
   });
 
+  // Карточки бота (напоминания таймера, окна «поделиться перепиской»): воркеру нужен Socket.IO — он здесь, а не
+  // в отдельном worker-процессе.
+  const cardsWorker = (() => {
+    try {
+      return startCardsWorker();
+    } catch (error) {
+      logger.error({ error }, "cards: worker failed to start");
+      return null;
+    }
+  })();
+
   // Уборка Cloud (корзина, протухшие загрузки, кэш превью) — здесь, а не в
   // медиа-воркере: только этот процесс имеет права на запись в objects/.
   if (cloudConfig.CLOUD_ENABLED) {
@@ -91,6 +103,7 @@ async function main() {
   }
 
   process.on("SIGTERM", () => {
+    void cardsWorker?.close().catch(() => undefined);
     httpServer.close(() => {
       logger.info("SIGTERM received: shutting down gracefully");
       process.exit(0);

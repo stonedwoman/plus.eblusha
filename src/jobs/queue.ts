@@ -187,10 +187,13 @@ export async function pruneStaleBotJobs(graceMs: number = BOT_JOB_WAIT_MAX_MS): 
   return removed.length;
 }
 
-/** Поставить задачу боту. Бросает — вызывающий (dispatchToBot) ловит и пишет в журнал. */
-export async function enqueueBotJob(data: unknown, messageId: string): Promise<void> {
+/**
+ * Поставить задачу боту. Бросает — вызывающий (dispatchToBot) ловит и пишет в журнал. jobId — свой у продолжения
+ * после «Поделиться» (share-<id>-<n>: исходная задача на тот же вопрос могла ещё не уйти из очереди) и у сигналов.
+ */
+export async function enqueueBotJob(data: unknown, messageId: string, jobId?: string, name: "message" | "signal" = "message"): Promise<void> {
   // BullMQ запрещает двоеточие в custom jobId (см. enqueuePush).
-  await getBotQueue().add("message", data, { jobId: `msg-${messageId}`.replace(/:/g, "-") });
+  await getBotQueue().add(name, data, { jobId: (jobId ?? `msg-${messageId}`).replace(/:/g, "-") });
   // Заодно (не чаще раза в 5 мин) — уборка задач, которых бот так и не взял.
   if (Date.now() - botPrunedAt > BOT_PRUNE_EVERY_MS) {
     void pruneStaleBotJobs().catch(() => undefined);
@@ -273,5 +276,80 @@ export function enqueueImageThumb(job: ImageThumbJob): void {
       });
   } catch (error) {
     logger.warn({ error, objectKey }, "imageThumb: failed to enqueue");
+  }
+}
+
+// ─────────────────────────── Карточки бота: напоминания, сроки, окна ───────────────────────────
+// Одна очередь `cards` на все типы карточек (src/lib/botCards.ts, docs/bot-cards.md): таймер обещания
+// (напоминания в срок / +15 / +30, авто-закрытие через 6 ч) и «поделиться перепиской» (ожидание выбора 30 мин,
+// окно доступа 60 мин), плюс страховочный sweep раз в 5 минут. Воркер — в процессе backend (src/server.ts):
+// ему нужен Socket.IO. Отложенные задачи живут в Redis и переживают перезапуск. jobId — без двоеточий.
+export const CARDS_QUEUE_NAME = "cards";
+
+export type CardsJob =
+  | { kind: "promise.remind"; id: string; deadlineMs: number; offset: number }
+  | { kind: "promise.autoclose"; id: string; deadlineMs: number }
+  | { kind: "share.pending"; id: string }
+  | { kind: "share.end"; id: string; untilMs: number }
+  | { kind: "sweep" };
+
+let cardsQueue: Queue<CardsJob> | null = null;
+
+export function getCardsQueue(): Queue<CardsJob> {
+  if (cardsQueue) return cardsQueue;
+  cardsQueue = new Queue<CardsJob>(CARDS_QUEUE_NAME, {
+    connection: getConnection(),
+    defaultJobOptions: {
+      attempts: 3,
+      backoff: { type: "exponential", delay: 2000 },
+      removeOnComplete: true,
+      removeOnFail: { age: 7 * 24 * 3600, count: 500 },
+    },
+  });
+  return cardsQueue;
+}
+
+/**
+ * Ускорение времени очереди карточек в ТЕСТАХ (CARDS_TEST_TIME_SCALE=60 — минута за секунду). В бою не действует:
+ * только при NODE_ENV=test.
+ */
+export function cardsTimeScale(): number {
+  if (process.env.NODE_ENV !== "test") return 1;
+  const n = Number(process.env.CARDS_TEST_TIME_SCALE ?? "1");
+  return Number.isFinite(n) && n >= 1 ? n : 1;
+}
+
+/** jobId задачи карточки (без двоеточий; один и тот же для того же шага — повтор постановки не задвоит). */
+export function cardsJobId(job: CardsJob): string {
+  switch (job.kind) {
+    case "promise.remind":
+      return `promise-${job.id}-${job.deadlineMs}-${job.offset}`;
+    case "promise.autoclose":
+      return `promise-${job.id}-${job.deadlineMs}-close`;
+    case "share.pending":
+      return `share-${job.id}-pending`;
+    case "share.end":
+      return `share-${job.id}-end-${job.untilMs}`;
+    case "sweep":
+      return "cards-sweep";
+  }
+}
+
+/** Поставить задачу карточки на момент atMs. Бросает — вызывающий ловит (sweep догонит потерянное). */
+export async function enqueueCardsJob(job: CardsJob, atMs: number, now: number = Date.now()): Promise<void> {
+  const delay = Math.max(0, Math.round((atMs - now) / cardsTimeScale()));
+  const queue = getCardsQueue();
+  const jobId = cardsJobId(job).replace(/:/g, "-");
+  // Уже выполненная задача с тем же id удалена (removeOnComplete), ждущая — не задвоится.
+  await queue.add(job.kind, job, { jobId, delay });
+}
+
+/** Снять ждущую задачу карточки (продление, ручное закрытие). Не бросает. */
+export async function removeCardsJob(job: CardsJob): Promise<void> {
+  try {
+    const j = await getCardsQueue().getJob(cardsJobId(job));
+    if (j && (await j.isDelayed())) await j.remove();
+  } catch {
+    /* задача сама ничего не сделает: проверяет состояние строки */
   }
 }

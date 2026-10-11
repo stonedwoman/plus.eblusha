@@ -19,6 +19,8 @@ import debugRouter from "./debug";
 import adminRouter from "./admin";
 import usersRouter from "./users";
 import botRouter from "./bot";
+import cardsRouter from "./cards";
+import { botPromisesRouter, botShareRouter } from "./botCards";
 import { createCloudRouter } from "../cloud";
 
 const router = Router();
@@ -32,6 +34,11 @@ router.use("/messages", messagesRouter);
 router.use("/mobile", mobileRouter);
 router.use("/status", statusRouter);
 router.use("/users", usersRouter);
+// Карточки бота (таймер обещания, «поделиться перепиской»; docs/bot-cards.md): маршруты сервиса бота — ПЕРЕД
+// /bot (там router.use(authenticate) на всё), клиентам — /cards.
+router.use("/bot/promises", botPromisesRouter);
+router.use("/bot/share", botShareRouter);
+router.use("/cards", cardsRouter);
 // Бот «Еблуша» — часть системы: профиль, настройка «Чат с Еблушей», ответы бота (src/lib/systemBot.ts).
 router.use("/bot", botRouter);
 router.use("/upload", uploadRouter);

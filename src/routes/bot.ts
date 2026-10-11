@@ -16,8 +16,8 @@ import {
   BOT_GRANT_MAX_MESSAGES,
   BOT_GRANT_MAX_REACTIONS,
   BOT_GRANT_TTL_SECONDS,
-  BOT_MESSAGE_KINDS,
   BOT_NOTICES_PER_HOUR,
+  BOT_POST_KINDS,
   BOT_SECRET_REFUSAL,
   BotNotConfiguredError,
   botMemoryStatus,
@@ -49,7 +49,10 @@ import {
  *
  * Только системный бот (его учётка, User.isBot):
  *   POST /api/bot/messages  { grant | userId, type: TEXT|IMAGE|FILE, content?, replyToId?, attachments?,
- *                             kind?: answer|command|notice|confirm, linkPreview?: boolean } → 201 {message}
+ *                             kind?: answer|command|notice|confirm, linkPreview?: boolean,
+ *                             depth?: "deep", model?: string } → 201 {message}
+ *       depth/model — «Подумал лучше» (docs/bot-cards.md): metadata.bot.depth = "deep", metadata.bot.model.
+ *       Карточки (kind "card") бот сам не шлёт — их ставит сервер (/api/bot/promises, /api/bot/share).
  *       grant  — из задачи очереди: ответ ТОЛЬКО в беседу обращения, ≤ BOT_GRANT_MAX_MESSAGES, пока жив;
  *       userId — уведомление в личный «Чат с Еблушей» этого человека (если он его включил),
  *                ≤ BOT_NOTICES_PER_HOUR в час.
@@ -167,8 +170,11 @@ const botMessageSchema = z
       )
       .max(4)
       .optional(),
-    kind: z.enum(BOT_MESSAGE_KINDS as unknown as [string, ...string[]]).optional(),
+    kind: z.enum(BOT_POST_KINDS).optional(),
     linkPreview: z.boolean().optional(),
+    /** «Подумай лучше» (docs/bot-cards.md): ответ самой мощной моделью — metadata.bot.depth = "deep" и model. */
+    depth: z.literal("deep").optional(),
+    model: z.string().regex(/^[a-z0-9.-]{1,64}$/).optional(),
   })
   .refine((v) => (v.grant ? 1 : 0) + (v.userId ? 1 : 0) === 1, { message: "grant or userId (exactly one)" })
   .refine((v) => (v.content ?? "").trim().length > 0 || (v.attachments?.length ?? 0) > 0, { message: "empty message" });
@@ -261,10 +267,11 @@ router.post("/messages", requireSystemBot, async (req, res) => {
     content: b.content ?? null,
     replyToId: b.replyToId ?? null,
     attachments: b.attachments ?? [],
-    kind: (b.kind as "answer" | "command" | "notice" | "confirm" | undefined) ?? "answer",
+    kind: b.kind ?? "answer",
     triggerMessageId,
     askerId,
     linkPreview: b.linkPreview === true,
+    ...(b.depth || b.model ? { extraBot: { ...(b.depth ? { depth: b.depth } : {}), ...(b.model ? { model: b.model } : {}) } } : {}),
   });
   logger.info({ conversationId, messageId: message.id, via: b.grant ? "grant" : "notice" }, "bot: message posted");
   res.status(201).json({ message });

@@ -45,6 +45,12 @@ export async function publishNewMessage(opts: {
   linkPreview?: boolean;
   /** Кому считать лимит постановки превью (rate:preview-enqueue). */
   previewUserId: string;
+  /**
+   * Кому слать пуш (подмножество получателей). Нет — всем, как раньше. message:new / message:notify уходят всем
+   * в любом случае (непрочитанные считаются у всех): так карточка «поделиться перепиской» будит только
+   * спросившего (docs/bot-cards.md).
+   */
+  pushTo?: string[];
 }): Promise<void> {
   const { conversationId, message, senderId } = opts;
 
@@ -98,8 +104,9 @@ export async function publishNewMessage(opts: {
             : attachmentKind
               ? "Файл"
               : "";
+    const pushSet = opts.pushTo ? new Set(opts.pushTo) : null;
     enqueuePush(
-      recipients.filter((rid) => rid !== senderId),
+      recipients.filter((rid) => rid !== senderId && (!pushSet || pushSet.has(rid))),
       {
         kind: "message",
         conversationId,
