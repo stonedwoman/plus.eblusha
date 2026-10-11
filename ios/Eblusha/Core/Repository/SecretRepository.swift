@@ -45,6 +45,10 @@ final class SecretRepository {
     /// Мы отдали связку ключей другому своему устройству (имя + сколько тредов).
     let deviceLinkedOut = PassthroughSubject<LinkedDevice, Never>()
 
+    /// Связка ключей пришла, но вскрыть её нечем: пакет запечатан на мёртвый OPK (секрета нет и
+    /// не будет). Мёртвые OPK уже сожжены — экран привязки снимает «ждём» и просит повторить.
+    let deviceLinkFailed = PassthroughSubject<Void, Never>()
+
     /// Ключ треда автоматически сменён по пакету проверенного участника (решение владельца).
     struct KeyRotation: Equatable {
         let threadId: String
@@ -98,6 +102,15 @@ final class SecretRepository {
     // Бутстрап может стереть ключи и сменить id (X5/H13) — параллельный бутстрап в этот
     // момент зарегистрировал бы на сервере уже стёртую идентичность. Сериализуем.
     private let bootstrapGate = AsyncSemaphore(1)
+
+    // Проверка головы очереди наших OPK на сервере (purgeStalePrekeys): одна за раз — две
+    // параллельные жгли бы одну и ту же голову дважды (второй claim съел бы уже живой OPK).
+    private let prekeyHeadGate = AsyncSemaphore(1)
+    // Когда голова очереди последний раз оказалась нашей (stateLock). Мёртвые OPK появляются
+    // только после потери секретов, так что после удачной проверки повторять её незачем.
+    private var prekeyHeadOkAtMs: Int64 = 0
+    // Тред → когда последний раз просили переслать ключ после мёртвого OPK (stateLock).
+    private var opkResendAtMs: [String: Int64] = [:]
 
     // Пик расшифровки вложения = шифртекст+плейнтекст в памяти (~2× размера). Большие —
     // строго по одному, мелкие — до трёх (параллельный автодекод видимых видео-пузырей
@@ -156,6 +169,10 @@ final class SecretRepository {
     private static let prekeysNeededThrottleMs: Int64 = 60_000
     private static let membershipRefetchMs: Int64 = 2_000
     private static let revocationCheckThrottleMs: Int64 = 30_000
+    /// Сколько верить проверке «голова очереди OPK — наша» (purgeStalePrekeys без force).
+    private static let prekeyHeadOkTtlMs: Int64 = 10 * 60_000
+    /// Не чаще раза в столько просим переслать ключ ТРЕДА после мёртвого OPK (как натив: 30 с).
+    private static let opkResendCooldownMs: Int64 = 30_000
 
     // MARK: - Бутстрап устройства
 
@@ -430,6 +447,156 @@ final class SecretRepository {
         return mine.availablePrekeys
     }
 
+    // MARK: - Мёртвые OPK на сервере (вечная карточка «Чат открыт на другом устройстве»)
+
+    /// Итог проверки головы очереди наших OPK на сервере.
+    struct StalePrekeyPurge: Equatable {
+        /// Сколько мёртвых OPK (без секрета у нас) сожжено.
+        var burned = 0
+        /// Голова очереди — наша или очередь пуста: пакет на нас вскроется.
+        var healthy = false
+    }
+
+    /// Сервер раздаёт наши one-time prekeys САМЫМИ СТАРЫМИ ПЕРВЫМИ. Если самые старые
+    /// опубликованы прежней идентичностью этого же id (выход на сборках до H13 стирал ключи,
+    /// но id оставлял; любая потеря Keychain), секретов к ним нет нигде — и КАЖДЫЙ пакет нам
+    /// (принятие приглашения, ответ на key_request, привязка) запечатан на мёртвый OPK и не
+    /// вскроется: ключ треда не появляется никогда, экран навсегда «Чат открыт на другом
+    /// устройстве». H13 новых таких не допускает, но уже испорченный id не лечил.
+    ///
+    /// Лечение: подсмотреть голову очереди (bundles её НЕ расходуют) и, пока секрета к ней у нас
+    /// нет, израсходовать её самим (claim). Keychain не ответил — не жжём ничего. Потолок —
+    /// серверный предел невыданных OPK. Без force удачная проверка кэшируется на 10 минут:
+    /// мёртвые OPK появляются только после потери секретов, а силой проверку зовёт пакет на
+    /// мёртвый OPK.
+    @discardableResult
+    func purgeStalePrekeys(force: Bool = false) async -> StalePrekeyPurge {
+        guard !registrationBlocked(), keyStore.isBootstrapped(), let me = session.currentUserId() else {
+            return StalePrekeyPurge()
+        }
+        if !force {
+            let now = nowMs()
+            let fresh: Bool = stateLock.withStateLock { now - prekeyHeadOkAtMs < Self.prekeyHeadOkTtlMs }
+            if fresh { return StalePrekeyPurge(burned: 0, healthy: true) }
+        }
+        return await prekeyHeadGate.withPermit { await self.purgeStalePrekeysLocked(me: me) }
+    }
+
+    private func purgeStalePrekeysLocked(me: String) async -> StalePrekeyPurge {
+        let myDeviceId = deviceIdProvider.deviceId()
+        var result = StalePrekeyPurge()
+        var queueEmpty = false
+        scan: for _ in 0..<Self.serverPrekeyCap {
+            let bundles: [PrekeyBundleDto]
+            do {
+                bundles = try await devices.prekeyBundles(userId: me).bundles
+            } catch {
+                break scan // сеть: решим в следующий раз
+            }
+            // Нашего устройства среди живых нет (отозвано, ещё не зарегистрировано) — чинить нечего.
+            guard let mine = bundles.first(where: { $0.deviceId == myDeviceId }) else { break scan }
+            guard let head = mine.oneTimePreKey?.id?.trimmed(), !head.isEmpty else {
+                queueEmpty = true
+                result.healthy = true
+                break scan
+            }
+            switch keyStore.prekeySecretState(head) {
+            case .present:
+                result.healthy = true
+                break scan
+            case .unavailable:
+                break scan // Keychain молчит — мёртвый от живого не отличить, ничего не жжём
+            case .missing:
+                let claimed: String
+                do {
+                    guard let keyId = try await devices.claimPrekey(deviceId: myDeviceId).prekey?.keyId else {
+                        break scan
+                    }
+                    claimed = keyId
+                } catch {
+                    break scan
+                }
+                if keyStore.prekeySecretState(claimed) == .present {
+                    // Мёртвую голову успел забрать отправитель, и наш claim съел живой OPK: его
+                    // секрет больше никому не понадобится.
+                    keyStore.removePrekeySecrets([claimed])
+                } else {
+                    result.burned += 1
+                }
+            }
+        }
+        if result.healthy {
+            let now = nowMs()
+            stateLock.withStateLock { prekeyHeadOkAtMs = now }
+        }
+        if result.burned > 0 {
+            NSLog("SecretE2EE: burned %d stale one-time prekeys of this device (no secrets for them)", result.burned)
+        }
+        if result.burned > 0 || queueEmpty {
+            await replenishPrekeys()
+        }
+        return result
+    }
+
+    /// После пакетов на мёртвые OPK: сжечь мёртвые (сразу, мимо кэша проверки), затем попросить
+    /// отправителей переслать ключи тредов — их ответ ляжет уже на живой OPK. Связку переслать
+    /// некому (приглашение у доверенного одноразовое) — экран привязки попросит повторить.
+    private func healAfterDeadPrekeys(_ packages: [DeadOpkPackage], link: Bool) async {
+        await purgeStalePrekeys(force: true)
+        // Дубли — по (тред, устройство, отправитель), а НЕ по треду: иначе мусорный пакет
+        // постороннего, пришедший первым, гасил бы просьбу по честному. Одну просьбу на тред
+        // ограничивает пауза, которая ставится только при реальной отправке.
+        var seen = Set<String>()
+        for package in packages {
+            guard let threadId = package.threadId else { continue }
+            let pair = "\(threadId)|\(package.initiatorDeviceId ?? "")|\(package.senderUserId ?? "")"
+            guard seen.insert(pair).inserted else { continue }
+            await requestResendAfterDeadPrekey(package, threadId: threadId)
+        }
+        if link { deviceLinkFailed.send(()) }
+    }
+
+    /// key_request ОТПРАВИТЕЛЮ невскрывшегося пакета (веб и натив делают так же). Только по
+    /// нашему секретному треду, только от его участника и только на живое устройство этого
+    /// участника — иначе подделанный заголовок делал бы из нас отражатель запросов на чужие
+    /// устройства — и не чаще раза в 30 с на тред.
+    private func requestResendAfterDeadPrekey(_ package: DeadOpkPackage, threadId: String) async {
+        let myDeviceId = deviceIdProvider.deviceId()
+        guard let initiator = package.initiatorDeviceId, !initiator.isEmpty, initiator != myDeviceId,
+              let sender = package.senderUserId, !sender.isEmpty else { return }
+        let checkedAt = nowMs()
+        let cooling: Bool = stateLock.withStateLock {
+            guard let last = opkResendAtMs[threadId] else { return false }
+            return checkedAt - last < Self.opkResendCooldownMs
+        }
+        guard !cooling else { return }
+        guard case .members(let members) = await threadMembership(threadId), members.contains(sender) else {
+            return
+        }
+        guard let senderDevices = try? await devices.prekeyBundles(userId: sender).bundles.map(\.deviceId),
+              senderDevices.contains(initiator) else { return }
+        let sentAt = nowMs()
+        stateLock.withStateLock {
+            if opkResendAtMs.count > 500 { opkResendAtMs.removeAll() }
+            opkResendAtMs[threadId] = sentAt
+        }
+        invalidateReceivers(threadId)
+        do {
+            try await sendControl(toDeviceId: initiator, header: SecretHeader(
+                kind: "control",
+                threadId: threadId,
+                type: "key_request",
+                fromDeviceId: myDeviceId,
+                requesterDeviceId: myDeviceId,
+                ts: sentAt,
+                reasonCode: "OPK_SECRET_MISS"
+            ))
+            NSLog("SecretE2EE: asked %@ to resend the key of %@ (previous package hit a dead prekey)", initiator, threadId)
+        } catch {
+            NSLog("SecretE2EE: resend request to %@ failed: %@", initiator, String(describing: error))
+        }
+    }
+
     /// Сервер принимает не больше 250 невыданных OPK; не принятые перечислены неявно —
     /// их нет в insertedKeyIds. Их секреты хранить незачем.
     private func dropRejectedPrekeys<S: Sequence>(published: S, accepted: PrekeysAcceptedResponse)
@@ -474,6 +641,10 @@ final class SecretRepository {
 
     /// Просит каждое устройство [userIds] (+ свои другие) переслать ключ треда (control).
     func requestThreadKey(threadId: String, userIds: [String]) async {
+        // Отвечающий запечатает ключ на САМЫЙ СТАРЫЙ наш OPK (claim) — если тот мёртвый (секрета
+        // у нас нет), ответ не вскроется никогда, и экран так и висит на «Чат открыт на другом
+        // устройстве». Поэтому сначала голова очереди должна стать нашей.
+        await purgeStalePrekeys()
         let myDeviceId = deviceIdProvider.deviceId()
         let header = SecretHeader(
             kind: "control",
@@ -510,6 +681,9 @@ final class SecretRepository {
     func acceptInvite(threadId: String) async -> ApiResult<Void> {
         await safeApiCall {
             await self.ensureDeviceBootstrap()
+            // Создатель заклеймит самый старый наш OPK — мёртвый (без секрета) сжигаем заранее,
+            // иначе ключ треда придёт запечатанным на него и не вскроется.
+            await self.purgeStalePrekeys()
             // Пополняем one-time prekeys ДО accept'а: создатель заклеймит один, чтобы
             // ключевать нас, каждый accept/re-key сжигает по одному, и ничто другое пул
             // не пополняет (сервер сам не подталкивает).
@@ -586,6 +760,9 @@ final class SecretRepository {
             // OPK, которыми вскрыли пакеты: удалятся через сутки после ack (одноразовые, H04).
             var usedPrekeys: [String] = []
             var prekeysNeeded = false
+            // Пакеты на мёртвые OPK (секрета нет): после ack — лечение и просьба переслать.
+            var deadOpkThreads: [DeadOpkPackage] = []
+            var deadOpkLink = false
             for item in items {
                 let h = item.headerJson
                 if h.kind == "key_package", h.packageKind == "thread_key" {
@@ -626,6 +803,19 @@ final class SecretRepository {
                         NSLog("SecretE2EE: thread_key %@ deferred: %@", item.msgId, reason)
                     case .linked:
                         acks.append(item.msgId)
+                    case .opkMissing(let threadId):
+                        // Не вскроется НИКОГДА: OPK на сервере уже израсходован, секрета у нас нет.
+                        // Держать до отравления (20 попыток / 30 мин) значило полчаса молча
+                        // показывать «Чат открыт на другом устройстве» — подтверждаем сразу,
+                        // жжём мёртвые OPK и просим отправителя переслать ключ на живой.
+                        NSLog("SecretE2EE: thread_key %@ sealed to a prekey we have no secret for — acked, healing", item.msgId)
+                        acks.append(item.msgId)
+                        poisonAttempts.removeValue(forKey: item.msgId)
+                        deadOpkThreads.append(DeadOpkPackage(
+                            threadId: threadId,
+                            initiatorDeviceId: h.initiatorDeviceId?.trimmed(),
+                            senderUserId: item.senderUserId?.trimmed()
+                        ))
                     }
                 } else if h.kind == "key_package", h.packageKind == "device_link_keys" {
                     // Привязка устройства: связка ВСЕХ ключей тредов с доверенного устройства.
@@ -644,6 +834,13 @@ final class SecretRepository {
                         registerPoisonFailure(item.msgId, acks: &acks)
                     case .deferred(let reason):
                         NSLog("SecretE2EE: device_link_keys %@ deferred: %@", item.msgId, reason)
+                    case .opkMissing:
+                        // Связку не вскрыть никогда (мёртвый OPK) — ack, лечение, экран привязки
+                        // попросит повторить (приглашение у доверенного одноразовое).
+                        NSLog("SecretE2EE: device_link_keys %@ sealed to a prekey we have no secret for — acked, healing", item.msgId)
+                        acks.append(item.msgId)
+                        poisonAttempts.removeValue(forKey: item.msgId)
+                        deadOpkLink = true
                     }
                 } else if h.kind == "link_device_join" {
                     // Другое НАШЕ устройство просит связку ключей, предъявляя token/code
@@ -683,6 +880,9 @@ final class SecretRepository {
             if !usedPrekeys.isEmpty {
                 keyStore.markPrekeysUsed(usedPrekeys)
                 keyStore.prunePrekeySecrets()
+            }
+            if !deadOpkThreads.isEmpty || deadOpkLink {
+                await healAfterDeadPrekeys(deadOpkThreads, link: deadOpkLink)
             }
         } catch {
             NSLog("SecretE2EE: inbox sync failed: %@", String(describing: error))
@@ -1161,7 +1361,20 @@ final class SecretRepository {
     }
 
     /// Общая расшифровка key_package (thread_key и device_link_keys ходят одним handshake).
-    private func openKeyPackage(_ item: SecretInboxItemDto) -> Data? {
+    /// «Секрета OPK нет» отличается от прочих неудач: такой пакет не вскроется никогда.
+    private func openKeyPackage(_ item: SecretInboxItemDto) -> PackageOpening {
+        let h = item.headerJson
+        guard h.kind == "key_package", let prekeyId = h.prekeyId else { return .failed }
+        switch keyStore.prekeySecretState(prekeyId) {
+        case .present: break
+        case .missing: return .opkMissing
+        case .unavailable: return .keychainUnavailable
+        }
+        guard let plain = openKeyPackageWithSecret(item) else { return .failed }
+        return .opened(plain)
+    }
+
+    private func openKeyPackageWithSecret(_ item: SecretInboxItemDto) -> Data? {
         let h = item.headerJson
         guard h.kind == "key_package",
               let prekeyId = h.prekeyId,
@@ -1199,6 +1412,28 @@ final class SecretRepository {
         /// GET /conversations (как раз сразу после «Принять» на плохой сети) выбрасывали
         /// честный ключ треда без импорта — веб в этом случае тоже не подтверждает.
         case deferred(reason: String)
+        /// Пакет запечатан на OPK, секрета которого у нас НЕТ (веб: OPK_SECRET_MISS). Повтор
+        /// бессмыслен — подтвердить, сжечь мёртвые OPK и попросить переслать (threadId — из
+        /// заголовка, у связки nil).
+        case opkMissing(threadId: String?)
+    }
+
+    /// Чем кончилось вскрытие key_package.
+    enum PackageOpening: Equatable {
+        case opened(Data)
+        /// Секрета OPK нет — окончательно (OPK на сервере уже израсходован).
+        case opkMissing
+        /// Keychain не ответил — не окончательно, ждать.
+        case keychainUnavailable
+        /// Заголовок негодный или не сошлась криптография — как раньше, повтор с отравлением.
+        case failed
+    }
+
+    /// Пакет на мёртвый OPK, по которому надо попросить переслать ключ треда.
+    struct DeadOpkPackage: Equatable {
+        let threadId: String?
+        let initiatorDeviceId: String?
+        let senderUserId: String?
     }
 
     enum ThreadKeyPayload: Equatable {
@@ -1243,8 +1478,17 @@ final class SecretRepository {
     /// сервер из авторизации — подделать его нельзя). Смена ключа от проверенного участника —
     /// автоматическая (решение владельца), но прежний ключ остаётся для старой истории.
     private func importKeyPackage(_ item: SecretInboxItemDto) async -> KeyPackageOutcome {
-        guard let plain = openKeyPackage(item) else {
-            // Нет секрета OPK / не сошлось: как и раньше — повтор, затем отравление.
+        let plain: Data
+        switch openKeyPackage(item) {
+        case .opened(let data):
+            plain = data
+        case .opkMissing:
+            let headerThread = item.headerJson.threadId?.trimmed() ?? ""
+            return .opkMissing(threadId: headerThread.isEmpty ? nil : headerThread)
+        case .keychainUnavailable:
+            return .deferred(reason: "keychain unavailable")
+        case .failed:
+            // Не сошлось при живом секрете: как и раньше — повтор, затем отравление.
             return .retry(reason: "cannot open package")
         }
         guard let payload = (try? JSONSerialization.jsonObject(with: plain)) as? [String: Any] else {
@@ -1491,6 +1735,8 @@ final class SecretRepository {
             guard await self.ensureDeviceBootstrap() else {
                 throw SecretContractError(message: "Не удалось подготовить ключи устройства — проверьте связь")
             }
+            // Связку доверенное устройство запечатает на самый старый наш OPK — он должен быть живым.
+            await self.purgeStalePrekeys()
             guard await self.replenishPrekeys() else {
                 throw SecretContractError(message: "Не удалось опубликовать ключи устройства — попробуйте ещё раз")
             }
@@ -1783,7 +2029,13 @@ final class SecretRepository {
                 opened: false
             )
         }
-        guard let plain = openKeyPackage(item) else { return .retry(reason: "cannot open package") }
+        let plain: Data
+        switch openKeyPackage(item) {
+        case .opened(let data): plain = data
+        case .opkMissing: return .opkMissing(threadId: nil)
+        case .keychainUnavailable: return .deferred(reason: "keychain unavailable")
+        case .failed: return .retry(reason: "cannot open package")
+        }
         guard let payload = (try? JSONSerialization.jsonObject(with: plain)) as? [String: Any] else {
             return .rejected(reason: "payload is not a JSON object", opened: true)
         }

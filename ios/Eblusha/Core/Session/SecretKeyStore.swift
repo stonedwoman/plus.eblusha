@@ -136,6 +136,26 @@ final class SecretKeyStore {
         return SecretCrypto.b64UrlDecode(encoded)
     }
 
+    /// Есть ли у нас секрет OPK — с отличием «секрета НЕТ» от «Keychain не ответил».
+    /// Первое окончательно: пакет на такой OPK не вскроется никогда, а сам OPK на сервере —
+    /// мёртвый (его надо сжечь, SecretRepository.purgeStalePrekeys). Второе (до первой
+    /// разблокировки после ребута) — повод подождать, но НИКОГДА не жечь и не подтверждать.
+    enum PrekeySecretState: Equatable {
+        case present
+        case missing
+        case unavailable
+    }
+
+    func prekeySecretState(_ keyId: String) -> PrekeySecretState {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let map = readMapOrNil(Keys.prekeySecrets) else { return .unavailable }
+        guard let encoded = map[keyId],
+              let secret = SecretCrypto.b64UrlDecode(encoded),
+              secret.count == SecretCrypto.keyBytes else { return .missing }
+        return .present
+    }
+
     func prekeySecretCount() -> Int {
         lock.lock()
         defer { lock.unlock() }

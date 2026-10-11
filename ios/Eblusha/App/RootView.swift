@@ -141,6 +141,10 @@ struct RootView: View {
         Task {
             await container.secretRepository.ensureDeviceBootstrap()
             if !connectFirst { container.realtimeClient.connect() }
+            // Мёртвые OPK (секретов к ним нет — например, выход на старой сборке оставил id)
+            // сжигаем ДО того, как кто-то запечатает на них ключ: иначе ключи секреток сюда не
+            // доходят никогда. Обычно это один GET.
+            await container.secretRepository.purgeStalePrekeys()
             await container.secretRepository.syncInbox()
             await PushRepository.shared.syncTokens()
             MessageNotifications.shared.requestPermissionAfterLogin()

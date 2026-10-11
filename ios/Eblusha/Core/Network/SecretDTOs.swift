@@ -138,6 +138,9 @@ struct SecretHeader: Codable {
     var fromDeviceId: String?
     var requesterDeviceId: String?
     var ts: Int64?
+    /// key_request: почему просим заново (веб/натив: «OPK_SECRET_MISS», «DECRYPT_FAIL»). Только
+    /// для журналов той стороны — на решение «отдавать ли ключ» не влияет.
+    var reasonCode: String?
     // kind="link_device_join": новое устройство предъявляет token/code приглашения (deviceLinkInvite).
     var token: String?
     var code: String?
@@ -150,7 +153,7 @@ extension SecretHeader {
     private enum CodingKeys: String, CodingKey {
         case v, kind, nonce, packageKind, threadId, recipientDeviceId, initiatorDeviceId
         case initiatorIdentityKey, prekeyId, handshakeSalt, hkdfInfo, alg
-        case type, fromDeviceId, requesterDeviceId, ts, token, code, attachment
+        case type, fromDeviceId, requesterDeviceId, ts, reasonCode, token, code, attachment
     }
 
     /// Терпимый разбор (H12). Заголовок пишет ОТПРАВИТЕЛЬ — любой пользователь через
@@ -177,6 +180,7 @@ extension SecretHeader {
         fromDeviceId = try? c.decodeIfPresent(String.self, forKey: .fromDeviceId)
         requesterDeviceId = try? c.decodeIfPresent(String.self, forKey: .requesterDeviceId)
         ts = try? c.decodeIfPresent(Int64.self, forKey: .ts)
+        reasonCode = try? c.decodeIfPresent(String.self, forKey: .reasonCode)
         token = try? c.decodeIfPresent(String.self, forKey: .token)
         code = try? c.decodeIfPresent(String.self, forKey: .code)
         attachment = try? c.decodeIfPresent(SecretHeaderAttachment.self, forKey: .attachment)
