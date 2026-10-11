@@ -50,7 +50,7 @@ function hashHue(id: string): number {
   return Math.abs(h) % 360
 }
 
-function statusDotColor(s?: string | null): string {
+export function statusDotColor(s?: string | null): string {
   const v = (s ?? 'OFFLINE').toString().toUpperCase()
   if (v === 'ONLINE') return '#22c55e'
   if (v === 'IN_CALL') return '#ef4444'
@@ -60,7 +60,7 @@ function statusDotColor(s?: string | null): string {
 }
 
 /** Resolve a raw avatar URL to a displayable <img src>; null for emoji/blank. */
-function resolveAvatarSrc(raw: string | null | undefined): string | null {
+export function resolveAvatarSrc(raw: string | null | undefined): string | null {
   if (!raw) return null
   const s = String(raw)
   if (s.startsWith('emoji:')) return null
@@ -176,7 +176,7 @@ function InfoRow(props: {
 }
 
 /** Fullscreen avatar viewer with a history strip; owner can delete past avatars. */
-function AvatarViewer(props: {
+export function AvatarViewer(props: {
   items: Array<{ raw: string; src: string; isCurrent: boolean }>
   startIndex: number
   canManage?: boolean
