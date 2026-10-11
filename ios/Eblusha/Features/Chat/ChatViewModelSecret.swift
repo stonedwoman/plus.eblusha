@@ -28,6 +28,12 @@ extension ChatViewModel {
     func initSecret() async {
         secretMode = true
         secretPeers = await repo.conversationPeerUserIds(conversationId)
+        // Подписка — ДО сетевых шагов ниже (бутстрап, разбор инбокса, key_request, история):
+        // ключ треда приезжает как раз посреди них (ответ на наш же key_request — за секунду),
+        // и keyImported, отправленный до подписки, терялся: ключ лежал в хранилище, а экран
+        // так и оставался на «Чат открыт на другом устройстве» до переоткрытия. secretPeers
+        // уже известны — досыл очереди из обработчика не уйдёт мимо собеседника.
+        subscribeSecretStreams()
         ui.peerUserId = secretPeers.count == 1 ? secretPeers.first : nil
         // Местное время собеседника показывается и в секретке (сервер отдаёт его по любой 1:1).
         refreshPeerLocalTime()
@@ -88,8 +94,23 @@ extension ChatViewModel {
         startSecretKeysWatchdog()
         // Ключ треда сменился, пока экран был закрыт, — плашка при открытии.
         if secretRepo.takeKeyRotationNotice(conversationId) { ui.secretKeyRotated = true }
-        subscribeSecretStreams()
+        // Ремень: ключ мог сесть между проверкой выше и этой строкой.
+        adoptKeyIfArrived()
         startSecretLoops()
+    }
+
+    /// Ключ треда уже в хранилище, а экран всё ещё «ждёт ключ» — перевести в рабочее состояние
+    /// (то же, что делает keyImported). Ремень для любого пропущенного события: экран больше не
+    /// может застрять на карточке привязки при живом ключе.
+    func adoptKeyIfArrived() {
+        guard secretMode, !ui.secretReady, secretRepo.hasThreadKey(conversationId) else { return }
+        ui.secretReady = true
+        ui.secretInvite = false
+        ui.hasAnySecretKeys = true
+        ui.secretKeyArrived += 1
+        stopSecretKeysWatchdog()
+        flushSecretQueue()
+        Task { await self.loadSecret() }
     }
 
     /// Плашка «ключ шифрования сменился» прочитана.
@@ -115,6 +136,9 @@ extension ChatViewModel {
                 guard let self, threadId == self.conversationId else { return }
                 self.ui.secretReady = true
                 self.ui.secretInvite = false
+                // Устройство больше не «новое»: у него есть ключ секретки (карточка привязки и
+                // кнопка «Привязать устройство» опираются на этот признак).
+                self.ui.hasAnySecretKeys = true
                 self.ui.secretKeyArrived += 1
                 self.stopSecretKeysWatchdog()
                 self.flushSecretQueue()
@@ -142,6 +166,7 @@ extension ChatViewModel {
                 self.ui.linkBusy = false
                 self.ui.linkScanning = false
                 self.ui.linkRequestedOn = nil
+                self.ui.hasAnySecretKeys = self.secretRepo.hasAnyThreadKey()
                 self.ui.secretReady = ready || self.ui.secretReady
                 if ready {
                     self.ui.secretKeyArrived += 1
@@ -149,6 +174,18 @@ extension ChatViewModel {
                     self.flushSecretQueue()
                     Task { await self.loadSecret() }
                 }
+            }
+            .store(in: &cancellables)
+
+        // Связка пришла, но была запечатана на мёртвый OPK этого устройства (их уже сожгли):
+        // «Запрос отправлен» больше ждать нечего — просим повторить с тем же экраном.
+        secretRepo.deviceLinkFailed
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in
+                guard let self, self.ui.linkRequestedOn != nil || self.ui.linkBusy else { return }
+                self.ui.linkRequestedOn = nil
+                self.ui.linkBusy = false
+                self.ui.linkError = "Ключи пришли, но открыть их не удалось. Обновите код на том устройстве и повторите."
             }
             .store(in: &cancellables)
 
@@ -210,7 +247,9 @@ extension ChatViewModel {
                 guard let self else { return }
                 await self.secretRepo.syncInbox()
                 // Ремень к keyImported: ключ мог сесть без события (ре-бутстрап, потерянный
-                // паблишер), а упавший на сети досыл иначе ждал бы нового сообщения.
+                // паблишер) — экран открывается сам, а упавший на сети досыл иначе ждал бы
+                // нового сообщения.
+                self.adoptKeyIfArrived()
                 if self.ui.secretQueued > 0 { self.flushSecretQueue() }
                 tick += 1
                 if tick % 6 == 0 { await self.loadSecret() }
