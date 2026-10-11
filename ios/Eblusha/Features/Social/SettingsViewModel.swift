@@ -222,8 +222,9 @@ final class SettingsViewModel: ObservableObject {
 
     // MARK: - Фото
 
-    /// Фото сохраняется сразу — как и раньше: загрузка, затем тот же `PATCH /status/me` с
-    /// фото и текущими значениями полей.
+    /// Фото сохраняется сразу — как и раньше: загрузка, затем `PATCH /status/me` с одним фото. Набранные, но не
+    /// сохранённые имя и «О себе» вместе с ним НЕ уходят (как на вебе и Android): подтверждать их человек будет
+    /// сам, панелью сохранения, а строка «Фото сохранено.» не должна молча сохранить ещё и их.
     func uploadAvatar(bytes: Data, mime: String) {
         guard !ui.avatarBusy else { return }
         Task {
@@ -231,19 +232,10 @@ final class SettingsViewModel: ObservableObject {
             setMsg("p-photo", .busy("Загружаем фото…"))
             switch await api.uploadAvatar(bytes: bytes, mime: mime) {
             case .success(let url):
-                let name = ui.displayName.trimmed()
-                let bio = ui.bio.trimmed()
-                switch await api.updateProfile(
-                    displayName: name.isEmpty ? nil : name,
-                    bio: bio.isEmpty ? nil : bio,
-                    avatarUrl: url
-                ) {
+                switch await api.updateProfile(displayName: nil, bio: nil, avatarUrl: url) {
                 case .success(let profile):
+                    // Черновик имени и «О себе» не трогаем: он остаётся несохранённым, панель сохранения на месте.
                     ui.profile = profile
-                    // Поля, которые ушли вместе с фото, больше не «несохранённые».
-                    if !name.isEmpty { ui.displayName = profile.displayName ?? ui.displayName }
-                    if !bio.isEmpty { ui.bio = profile.bio ?? ui.bio }
-                    draftTouched = isDirty
                     setMsg("p-photo", .ok("Фото сохранено."))
                 case .failure:
                     setMsg("p-photo", .err("Не удалось сохранить фото. Попробуйте ещё раз."))

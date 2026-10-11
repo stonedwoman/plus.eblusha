@@ -789,13 +789,41 @@ final class SettingsViewModelTests: XCTestCase {
 
     // Фото
 
-    func testAvatarUploadSavesImmediatelyWithCurrentFields() async {
+    func testAvatarUploadSavesImmediatelyAndAlone() async {
         let (vm, api) = await makeLoaded()
         vm.uploadAvatar(bytes: Data([1, 2, 3]), mime: "image/jpeg")
         await settle()
         XCTAssertEqual(api.updates.count, 1)
         XCTAssertEqual(api.updates.first?.avatar, "/media/new.jpg")
+        XCTAssertNil(api.updates.first?.name, "имя с фото не уходит")
+        XCTAssertNil(api.updates.first?.bio, "«О себе» с фото не уходит")
         XCTAssertEqual(vm.ui.profile?.avatarUrl, "/media/new.jpg")
         XCTAssertEqual(vm.msgs["p-photo"], .ok("Фото сохранено."))
+    }
+
+    /// Находка ревью: новое фото молча сохраняло вместе с собой несохранённые имя и «О себе», а панель сохранения пропадала.
+    func testAvatarUploadKeepsUnsavedNameAndBioUnsaved() async {
+        let (vm, api) = await makeLoaded()
+        vm.onDisplayNameChange("Роман Новый")
+        vm.onBioChange("Другое «О себе»")
+        XCTAssertTrue(vm.isDirty)
+        vm.uploadAvatar(bytes: Data([1, 2, 3]), mime: "image/jpeg")
+        await settle()
+        XCTAssertEqual(api.updates.count, 1)
+        XCTAssertNil(api.updates.first?.name)
+        XCTAssertNil(api.updates.first?.bio)
+        XCTAssertEqual(api.profile.displayName, "Роман", "на сервере имя прежнее")
+        XCTAssertEqual(api.profile.bio, "Привет", "на сервере «О себе» прежнее")
+        XCTAssertEqual(vm.ui.displayName, "Роман Новый", "черновик остался в поле")
+        XCTAssertEqual(vm.ui.bio, "Другое «О себе»")
+        XCTAssertTrue(vm.isDirty, "панель сохранения на месте")
+        XCTAssertEqual(vm.ui.profile?.avatarUrl, "/media/new.jpg")
+        // «Сохранить» потом отправляет именно черновик.
+        vm.save()
+        await settle()
+        XCTAssertEqual(api.updates.count, 2)
+        XCTAssertEqual(api.updates.last?.name, "Роман Новый")
+        XCTAssertEqual(api.updates.last?.bio, "Другое «О себе»")
+        XCTAssertFalse(vm.isDirty)
     }
 }
