@@ -7,7 +7,8 @@
   "android": "0.3.41 / versionCode 63 (C:/projects/eblusha-mobile, не под git)",
   "ios": "сборка 995 (TestFlight) = /DATA/eblusha-plus/ios @ 695bfa65",
   "independent_check": "2026-10-11: сверено заново по коду 100+ утверждений (веб, ПК, Android, iOS, сервер); исправлено 11 мест в eblusha-app.md, записи выше обновлены",
-  "release-2026-10-11": "2026-10-11: единый выпуск — мьют, карточки бота, «Подумай лучше», окно ПК 2.0.11 (ветка release/2026-10-11)"
+  "release-2026-10-11": "2026-10-11: единый выпуск — мьют, карточки бота, «Подумай лучше», окно ПК 2.0.11 (ветка release/2026-10-11)",
+  "settings_tiles": "2026-10-11, НЕ выпущено: строки src раздела «Настройки» взяты из веток — веб feat/settings-tiles-web (/DATA/eb-settings-wt), iPhone feat/settings-tiles-ios (/DATA/eb-settings-ios-wt), ПК fix/settings-7-4, Android — рабочее дерево C:/projects/eblusha-mobile; после слияния сверить номера строк с main"
  },
  "roots": {
   "srv": "/DATA/eblusha-plus/ на ssh root@stoned.local (снимок для чтения: scratchpad/srvsrc/)",
@@ -157,13 +158,14 @@
   {
    "id": "android.update",
    "section": "2",
-   "claim": "Капсула «v X» → «Обновление» → «Обновления» → «Скачать» / «Установить» / «Разрешить установку»; проверка при открытии списка",
+   "claim": "Капсула «v X» → «Обновление» → раздел «Обновления» (он же «Настройки» → «Обновления») → «Проверить обновления» / «Скачать» / «Установить» / «Разрешить установку»; проверка при открытии списка чатов",
    "src": [
     "and:ui/chat/ChatListScreen.kt:262-285,655-676,680-790",
     "and:feature/chat/ChatListViewModel.kt:71-72,213-250",
-    "and:core/update/UpdateManager.kt:118-187"
+    "and:core/update/UpdateManager.kt:118-187",
+    "and:ui/settings/SettingsSections.kt:229-301"
    ],
-   "scout": "android-ui.md §11"
+   "scout": "android-ui.md §11; settings-unify/SPEC.md §1.3 ②"
   },
   {
    "id": "android.version",
@@ -200,24 +202,26 @@
   {
    "id": "ios.version-capsule",
    "section": "2",
-   "claim": "Капсула «v 1.0 · 995», важен номер сборки",
+   "claim": "Капсула «v 1.0 · 1036» в строке со своим именем; внизу «Настроек» — «Еблуша для iPhone 1.0 · сборка 1036»; важен номер сборки",
    "src": [
-    "ios:Features/Chat/ChatListView.swift:292",
-    "ios:Features/Social/SettingsView.swift:536-566"
+    "ios:Features/Chat/ChatListView.swift:283-330",
+    "ios:Features/Settings/SettingsContent.swift:326-332"
    ],
-   "scout": "ios-ui.md шапка"
+   "scout": "ios-ui.md шапка; settings-unify/SPEC.md §1.4"
   },
   {
    "id": "layout.web",
    "section": "3",
-   "claim": "Веб: плитки «Беседа», «Контакты», своя плитка → окно «Профиль»; /settings без ссылок",
+   "claim": "Веб: плитки «Беседа», «Контакты», своя карточка внизу левой колонки → «Настройки» (центр плитками); Ctrl+, / ⌘+,; /settings и /settings/<раздел> открывают тот же центр",
    "src": [
     "web:ui/pages/chats/render/ConversationListPane.tsx:462-557",
-    "web:ui/pages/chats/render/ChatModals.tsx:488-1305",
+    "web:ui/pages/ChatsPage.tsx:309-319,588,1738-1742",
+    "web:ui/pages/SettingsRoute.tsx:1-20",
+    "web:ui/settings/SettingsCenter.tsx:329-340",
     "web:router-app.tsx:21-57",
     "web:ui/web-mobile/MobileTabBar.tsx:56-83 (не подключён)"
    ],
-   "scout": "web-ui.md вступление, §2"
+   "scout": "web-ui.md вступление, §2; settings-unify/SPEC.md §1.6"
   },
   {
    "id": "layout.pc",
@@ -232,23 +236,25 @@
   {
    "id": "layout.android",
    "section": "3",
-   "claim": "Android: без вкладок, строка с именем → «Профиль», «⋮» на карточке",
+   "claim": "Android: без вкладок, строка с именем → «Настройки», «⋮» на карточке",
    "src": [
     "and:ui/navigation/HomeNavHost.kt:21-25,39-98",
-    "and:ui/chat/ChatListScreen.kt:592-678,489-547"
+    "and:ui/chat/ChatListScreen.kt:489-547,655-735",
+    "and:ui/settings/SettingsCenterScreen.kt:428"
    ],
-   "scout": "android-ui.md §1"
+   "scout": "android-ui.md §1; settings-unify/SPEC.md §1.6"
   },
   {
    "id": "layout.ios",
    "section": "3",
-   "claim": "iPhone: без вкладок, строка профиля → «Профиль», свайп/долгое нажатие по карточке, «…» («Ещё»)",
+   "claim": "iPhone: без вкладок, строка с именем → «Настройки», свайп/долгое нажатие по карточке, «…» («Ещё»)",
    "src": [
     "ios:App/RootView.swift:242-300",
-    "ios:Features/Chat/ChatListView.swift:254-308,219-247",
+    "ios:Features/Chat/ChatListView.swift:219-247,283-330",
+    "ios:Features/Settings/SettingsCenterView.swift:136",
     "ios:Features/Chat/ChatView.swift:736-855"
    ],
-   "scout": "ios-ui.md §2, §5"
+   "scout": "ios-ui.md §2, §5; settings-unify/SPEC.md §1.6"
   },
   {
    "id": "layout.message-menu",
@@ -322,29 +328,29 @@
   {
    "id": "acc.logout",
    "section": "4",
-   "claim": "Пути выхода; на Android без подтверждения; выход стирает ключи секретных чатов",
+   "claim": "Выход: «Настройки» → внизу «Выйти из Еблуши» → «Выйти» (вопрос «Выйти из аккаунта…?», «Остаться») на всех четырёх; выход стирает ключи секретных чатов",
    "src": [
-    "web:ui/pages/chats/render/ChatModals.tsx:1274-1299",
+    "web:ui/settings/SettingsCenter.tsx:270,435-446",
     "pc:Eblusha.Desktop/Views/ChatsPage.xaml:6856-6885,6950-6976",
-    "and:ui/social/SettingsScreen.kt:112-116",
+    "and:ui/settings/SettingsCenterScreen.kt:639-655",
     "and:ui/navigation/RootNavHost.kt:103-115",
-    "ios:Features/Social/SettingsView.swift:536-541",
+    "ios:Features/Settings/SettingsCenterView.swift:500-525",
     "ios:App/RootView.swift:150-173"
    ],
-   "scout": "web-ui.md §1; native-pc-ui.md §1; android-ui.md §3; ios-ui.md §11"
+   "scout": "native-pc-ui.md §1; settings-unify/SPEC.md §1.4"
   },
   {
    "id": "acc.password-change",
    "section": "4",
-   "claim": "Смена пароля в вебе и на ПК; на телефонах нет",
+   "claim": "Смена пароля: веб — «Настройки» → «Безопасность» → «Пароль» → «Изменить пароль»; ПК — «Настройки» → «Безопасность» → «Изменить пароль»; на телефонах нет",
    "src": [
-    "web:ui/pages/chats/render/ChatModals.tsx:284-352",
+    "web:ui/settings/sections/SecuritySection.tsx:58-95,203-212",
     "srv:src/routes/auth.ts:348-359",
     "pc:Eblusha.Desktop/Views/ChatsPage.xaml:8097-8316",
     "and-root:app/src/main/java/org/eblusha/app/data/remote (нет эндпоинта смены пароля)",
-    "ios:Features/Social/SettingsView.swift:103-117"
+    "ios: в Features/Settings нет смены пароля"
    ],
-   "scout": "server-features.md §2.3; android-ui.md §12; ios-ui.md §14"
+   "scout": "server-features.md §2.3; settings-unify/SPEC.md §1.3 ⑤"
   },
   {
    "id": "acc.no-recovery",
@@ -360,56 +366,60 @@
   {
    "id": "acc.eblid",
    "section": "4",
-   "claim": "EBLID 4 цифры; где посмотреть",
+   "claim": "EBLID 4 цифры: «Настройки» → «Профиль» → «EBLID» (кнопка «Скопировать»); «Контакты» → «Мой EBLID»",
    "src": [
     "srv:src/routes/status.ts:40-49",
-    "web:ui/pages/chats/render/ChatModals.tsx:2317-2398",
+    "web:ui/settings/sections/ProfileSection.tsx:104-120",
     "pc:Eblusha.Desktop/Views/ChatsPage.xaml:4517-4522,7142-7157",
-    "and:ui/social/SettingsScreen.kt:150-153",
+    "and:ui/settings/SettingsSections.kt:155-165",
     "and:ui/social/ContactsScreen.kt:324-345",
-    "ios:Features/Social/SettingsView.swift:150",
+    "ios:Features/Settings/SettingsSectionView.swift:250-266",
     "ios:Features/Social/ContactsView.swift:540-555"
    ],
-   "scout": "все"
+   "scout": "все; settings-unify/SPEC.md §1.3 ①"
   },
   {
    "id": "acc.avatar",
    "section": "4",
-   "claim": "Смена аватара; история до 30",
+   "claim": "Аватар: «Настройки» → «Профиль» → «Фото профиля» → «Заменить фото» («Добавить фото»); история до 30 (веб и ПК — щелчок по фото); телефоны сохраняют сразу",
    "src": [
-    "web:ui/pages/chats/render/ChatModals.tsx:521-551,557-788",
+    "web:ui/settings/sections/ProfileSection.tsx:57-82",
+    "web:ui/settings/AvatarEditorModal.tsx:300-305",
     "srv:src/routes/status.ts:93-97",
     "pc:Eblusha.Desktop/Views/ChatsPage.xaml:7013-7289",
-    "and:ui/social/SettingsScreen.kt:92-99,135-149",
-    "ios:Features/Social/SettingsView.swift:142-232"
+    "and:ui/settings/SettingsSections.kt:101-125",
+    "ios:Features/Settings/SettingsSectionView.swift:190-232"
    ],
-   "scout": "server-features.md §2.4"
+   "scout": "server-features.md §2.4; settings-unify/SPEC.md §1.3 ①"
   },
   {
    "id": "acc.name-about",
    "section": "4",
-   "claim": "Имя: ПК, телефоны, веб только /settings; «О себе»: телефоны и /settings, на ПК нет",
+   "claim": "Имя: «Настройки» → «Профиль» → «Отображаемое имя» → «Сохранить изменения» (везде). «О себе» убрано со всех клиентов (11.10): запрос профиля несёт только имя и фото",
    "src": [
-    "web:ui/pages/SettingsPage.tsx:55-80",
-    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:7166",
-    "pc:Eblusha.Desktop/Views/ChatsPage.Profile.cs:133,418-443",
-    "and:ui/social/SettingsScreen.kt:217-244",
-    "ios:Features/Social/SettingsView.swift:142-232"
+    "web:ui/settings/sections/ProfileSection.tsx:84-101",
+    "web:ui/settings/settingsFormat.ts:215-220",
+    "pc:Eblusha.Desktop/Views/ChatsPage.Profile.cs:13",
+    "pc:Eblusha.Desktop/Services/ApiClient.cs:388-401",
+    "and:ui/settings/SettingsSections.kt:130-140",
+    "and:data/remote/dto/SocialDtos.kt:91",
+    "ios:Features/Settings/SettingsSectionView.swift:235-247"
    ],
-   "scout": "web-ui.md §9; native-pc-ui.md §9"
+   "scout": "решение владельца 2026-10-11; settings-unify/SPEC.md §1.3 ①"
   },
   {
    "id": "acc.manual-status",
    "section": "4",
-   "claim": "Ручной статус на телефонах и /settings; DND ничего не глушит",
+   "claim": "Ручного выбора статуса («В сети», «Отошёл», «Не беспокоить», «Невидимка») нет ни на одном клиенте (убрано 11.10): статус считается по подключению; сервер поле status ещё принимает, клиенты его не шлют",
    "src": [
-    "and:ui/social/SettingsScreen.kt:155-192",
-    "ios:Features/Social/SettingsView.swift:24-29,240-270",
-    "web:ui/pages/SettingsPage.tsx:57-66",
-    "srv:src/jobs/queue.ts:81-110 (пуш не смотрит статус)",
-    "srv:src/routes/status.ts:74"
+    "srv:src/routes/status.ts:74-83 (PATCH принимает status; клиенты не шлют)",
+    "srv:src/realtime/socket.ts:865,926-940 (статус считается по подключению)",
+    "web:ui/settings/noProfileBio.test.ts:30",
+    "pc:Eblusha.Desktop/Views/ChatsPage.Profile.cs:13",
+    "and:ui/settings/SettingsSections.kt:88-170 (в «Профиле» статуса нет)",
+    "ios:Features/Settings/SettingsSectionView.swift:160-300 (в «Профиле» статуса нет)"
    ],
-   "scout": "server-features.md §7; ios-ui.md §10"
+   "scout": "server-features.md §7; решение владельца 2026-10-11"
   },
   {
    "id": "acc.no-login-change-delete",
@@ -424,15 +434,15 @@
   {
    "id": "acc.sessions",
    "section": "4",
-   "claim": "Активные сеансы, «Отключить», «Отключить все другие»; на Android без подтверждения",
+   "claim": "Активные сеансы: «Настройки» → «Безопасность»; «Отключить» у устройства («Отключить устройство?») и «Отключить все другие» (на телефонах «Все другие», «Отключить все другие устройства?»); вопрос на месте везде",
    "src": [
-    "web:ui/pages/chats/render/ChatModals.tsx:803-1258",
+    "web:ui/settings/sections/SecuritySection.tsx:120-170,195-290",
     "srv:src/routes/devices.ts:502,525",
     "pc:Eblusha.Desktop/Views/ChatsPage.xaml:8097-8316",
-    "and:ui/social/SettingsScreen.kt:418-505",
-    "ios:Features/Social/SettingsView.swift:418-532,584-649"
+    "and:ui/settings/SettingsSections.kt:490-640",
+    "ios:Features/Settings/SettingsSectionView.swift:429-460,640-655"
    ],
-   "scout": "server-features.md §2.5"
+   "scout": "server-features.md §2.5; settings-unify/SPEC.md §1.3 ⑤"
   },
   {
    "id": "acc.new-session-ok",
@@ -495,7 +505,7 @@
   {
    "id": "contacts.profile-card",
    "section": "5",
-   "claim": "Состав карточки человека, звонка нет",
+   "claim": "Карточка человека: имя, присутствие, EBLID, «В Еблуше с», кнопки; «О себе» не показывается (убрано 11.10); звонка нет",
    "src": [
     "web:ui/components/UserProfileCard.tsx:280-559",
     "pc:Eblusha.Desktop/Views/ChatsPage.xaml:4866-5033",
@@ -729,10 +739,11 @@
   {
    "id": "msg.links-youtube",
    "section": "7",
-   "claim": "Превью ссылок, YouTube в ленте, выключатель на ПК",
+   "claim": "Превью ссылок, YouTube в ленте; выключатель: веб и ПК — «Настройки» → «Приложение» → «Встроенный проигрыватель YouTube»",
    "src": [
     "srv:src/lib/linkPreview.ts:1-30",
-    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:8605-8610"
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:8605-8610",
+    "web:ui/settings/sections/AppSection.tsx:12-20"
    ],
    "scout": "server-features.md §5.4; native-pc-ui.md §4"
   },
@@ -789,11 +800,11 @@
   {
    "id": "files.video",
    "section": "8",
-   "claim": "Видео в ленте; автовоспроизведение iPhone; HEVC на ПК",
+   "claim": "Видео в ленте; автовоспроизведение iPhone («Настройки» → «Приложение» → «Медиа» → «Автовоспроизведение видео»); HEVC на ПК",
    "src": [
     "ios:Features/Chat/InlineVideoPlayer.swift:36-70",
-    "ios:Features/Social/SettingsView.swift:361-376",
-    "pc:Eblusha.Desktop/CLAUDE.md «Видео в ленте»"
+    "pc:Eblusha.Desktop/CLAUDE.md «Видео в ленте»",
+    "ios:Features/Settings/SettingsSectionView.swift:499-515"
    ],
    "scout": "native-pc-ui.md §4; ios-ui.md §7"
   },
@@ -858,11 +869,14 @@
   {
    "id": "calls.mic-permission",
    "section": "9",
-   "claim": "Нет доступа к микрофону — звонок не начнётся; ПК «Открыть параметры Windows»",
+   "claim": "Нет доступа к микрофону — звонок не начнётся; ПК «Открыть параметры Windows»; веб, Android, iPhone — «Настройки» → «Звук и видео» → «Доступ к микрофону» / «Доступ к камере» (телефоны: «Открыть настройки Android» / «Открыть настройки iOS»)",
    "src": [
     "pc:Eblusha.Desktop/Services/CallService.MediaCheck.cs:86-95",
     "pc:Eblusha.Desktop/Views/ChatsPage.xaml:7624-8078",
-    "web:ui/pages/ChatsPage.tsx:806-822"
+    "web:ui/pages/ChatsPage.tsx:806-822",
+    "web:ui/settings/sections/AvSection.tsx:105-110",
+    "and:ui/settings/SettingsSections.kt:428-448",
+    "ios:Features/Settings/SettingsSectionView.swift:354-380"
    ],
    "scout": "native-pc-ui.md §7, §9"
   },
@@ -940,13 +954,14 @@
   {
    "id": "calls.screenshare",
    "section": "9",
-   "claim": "Параметры показа; звук: веб Chrome, ПК только Win11 всё кроме Еблуши; iPhone нельзя",
+   "claim": "Параметры показа; значения по умолчанию на вебе — «Настройки» → «Звук и видео» → «Видео в звонке»; звук: веб Chrome, ПК только Win11 всё кроме Еблуши; iPhone нельзя",
    "src": [
     "web:ui/components/ScreenShareSettings.tsx:31-48,152-281",
     "pc:Eblusha.Desktop/Services/ShareQuality.cs:25-44",
     "pc:Eblusha.Desktop/Services/ProcessLoopbackCapture.cs:56-58",
     "and:ui/call/CallScreen.kt:484-601",
-    "ios:Features/Call/CallView.swift:6-11"
+    "ios:Features/Call/CallView.swift:6-11",
+    "web:ui/settings/sections/AvSection.tsx:192-215"
    ],
    "scout": "все"
   },
@@ -965,23 +980,24 @@
   {
    "id": "calls.relay",
    "section": "9",
-   "claim": "Ретранслятор в вебе и на ПК (на ПК вкл. по умолчанию)",
+   "claim": "Ретранслятор: веб и ПК — «Настройки» → «Соединение» → «Звонки» → «Всегда соединяться через ретранслятор» (на ПК включён по умолчанию)",
    "src": [
-    "web:ui/pages/chats/render/ChatModals.tsx:252-282",
     "pc:Eblusha.Desktop/Services/AppSettings.cs:192-202",
-    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:7558-7589"
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:7558-7589",
+    "web:ui/settings/sections/ConnectionSection.tsx:22-30"
    ],
    "scout": "server-features.md §10.7; native-pc-ui.md §7"
   },
   {
    "id": "calls.server-switch",
    "section": "9",
-   "claim": "ПК «Через СПб», iPhone «Источник» → зеркало с выходом",
+   "claim": "Сервер: ПК и iPhone — «Настройки» → «Соединение» → «Сервер» → «Через СПб» (на iPhone — выход из аккаунта); веб — только сведение, через какой адрес открыт сайт",
    "src": [
     "pc:Eblusha.Desktop/Views/ChatsPage.xaml:7479-7589",
-    "ios:Features/Social/SettingsView.swift:122-137,385-412"
+    "ios:Features/Settings/SettingsSectionView.swift:61-82,320-345",
+    "web:ui/settings/sections/ConnectionSection.tsx:15-21"
    ],
-   "scout": "native-pc-ui.md §9; ios-ui.md §11"
+   "scout": "native-pc-ui.md §9; settings-unify/SPEC.md §1.3 ③"
   },
   {
    "id": "calls.reconnect-15s",
@@ -1059,12 +1075,14 @@
   {
    "id": "notif.mute-workarounds",
    "section": "10",
-   "claim": "Выключить всё сразу: вкладка, «Показывать уведомления поверх других окон» на ПК, категория уведомлений Android, настройки iOS",
+   "claim": "Выключить всё сразу: вкладка, «Показывать уведомления поверх других окон» на ПК, категория уведомлений Android, настройки iOS; из приложений — «Настройки» → «Приложение» → «Уведомления»",
    "src": [
     "pc:Eblusha.Desktop/Views/ChatsPage.xaml:8536-8541",
     "pc:Eblusha.Desktop/Services/AppSettings.cs:15-16",
     "pc:Eblusha.Desktop/Views/ChatsPage.xaml.cs:8362-8368",
-    "and:service/MessageNotifier.kt:56-66"
+    "and:service/MessageNotifier.kt:56-66",
+    "and:ui/settings/SettingsSections.kt:640-690",
+    "ios:Features/Settings/SettingsSectionView.swift:535-545"
    ],
    "scout": "native-pc-ui.md §8; android-ui.md §10; ios-ui.md §10"
   },
@@ -1097,17 +1115,17 @@
   {
    "id": "localtime",
    "section": "11",
-   "claim": "Местное время в 1:1, нет в группах и при совпадении; выключатель везде, общий",
+   "claim": "Местное время в 1:1 под статусом (строкой присутствия), нет в группах и при совпадении; выключатель везде — «Настройки» → «Профиль» → «Местное время» → «Показывать моё местное время», общий",
    "src": [
-    "web:ui/components/LocalTimeSettingsSection.tsx:70-115",
+    "web:ui/settings/sections/ProfileSection.tsx:123-137",
     "web:ui/pages/chats/components/PeerLocalTimeLine.tsx:67",
     "srv:src/routes/status.ts:131-178",
     "pc:Eblusha.Desktop/Views/ChatsPage.xaml:7220-7242",
-    "and:ui/social/SettingsScreen.kt:194-204,322-379",
-    "ios:Features/Social/SettingsView.swift:276-312",
+    "and:ui/settings/SettingsSections.kt:171-198",
+    "ios:Features/Settings/SettingsSectionView.swift:270-296",
     "mem:eblusha-local-time.md"
    ],
-   "scout": "server-features.md §8"
+   "scout": "server-features.md §8; settings-unify/SPEC.md §1.3 ①"
   },
   {
    "id": "secret.what",
@@ -1170,13 +1188,16 @@
   {
    "id": "secret.link-device",
    "section": "12",
-   "claim": "Привязка: QR в шапке на старом, «Сканировать QR»/8 цифр на новом, код 5 минут",
+   "claim": "Привязка: QR в шапке на старом, «Сканировать QR»/8 цифр на новом, код 5 минут; без открытия чата — «Настройки» → «Безопасность» («Подтвердить по коду» на вебе, «Показать код» на телефонах, «Секретные чаты на этом ПК»)",
    "src": [
     "web:ui/pages/chats/components/DeviceLinkInline.tsx:320-760",
     "srv:src/routes/devices.ts:559",
     "pc:Eblusha.Desktop/Views/ChatsPage.SecretLink.cs:111-459,801-829",
     "and:ui/chat/ChatScreen.kt:955-965,3819-4040",
-    "ios:Features/Chat/SecretChatCards.swift:212-420"
+    "ios:Features/Chat/SecretChatCards.swift:212-420",
+    "web:ui/settings/sections/SecuritySection.tsx:220-245",
+    "and:ui/settings/SettingsSections.kt:461-486",
+    "ios:Features/Settings/SettingsSectionView.swift:388-420"
    ],
    "scout": "server-features.md §11.5"
   },
@@ -1238,20 +1259,21 @@
   {
    "id": "bot.chat",
    "section": "13",
-   "claim": "«Чат с Еблушей» выключен по умолчанию; пути включения; карточка бота: «ОТКРЫТЬ ЧАТ С ЕБЛУШЕЙ»/«К ЧАТУ С ЕБЛУШЕЙ», на ПК «ВКЛЮЧИТЬ ЧАТ С ЕБЛУШЕЙ»/«ОТКРЫТЬ ЧАТ С ЕБЛУШЕЙ»; выключение сохраняет историю; «Удалить чат» у чата с ботом есть везде, кроме iPhone",
+   "claim": "«Чат с Еблушей» выключен по умолчанию; включение везде «Настройки» → «Профиль» → «Бот «Еблуша»» → «Чат с Еблушей» (веб и iPhone — ещё «Открыть чат»); карточка бота: «ОТКРЫТЬ ЧАТ С ЕБЛУШЕЙ»/«К ЧАТУ С ЕБЛУШЕЙ», на ПК «ВКЛЮЧИТЬ ЧАТ С ЕБЛУШЕЙ»/«ОТКРЫТЬ ЧАТ С ЕБЛУШЕЙ»; выключение сохраняет историю; «Удалить чат» у чата с ботом есть везде, кроме iPhone",
    "src": [
     "srv:docs/bot-system.md:121-142",
     "srv:src/routes/bot.ts:95-110",
     "web:ui/components/bot/BotUi.tsx:85-140",
     "pc:Eblusha.Desktop/Views/ChatsPage.xaml:7267-7289",
-    "and:ui/social/SettingsScreen.kt:206-215,270-320",
-    "ios:Features/Social/SettingsView.swift:316-352",
     "web:ui/pages/chats/render/ChatModals.tsx:388",
     "pc:Eblusha.Desktop/Views/ChatsPage.Bot.cs:167-176,334",
     "and:ui/components/UserProfileCard.kt:455",
     "ios:UI/Components/UserProfileCard.swift:810",
     "ios:Features/Chat/ChatView.swift:806-808",
-    "ios:Features/Chat/ChatListView.swift:221-233"
+    "ios:Features/Chat/ChatListView.swift:221-233",
+    "web:ui/settings/sections/ProfileSection.tsx:139-155",
+    "and:ui/settings/SettingsSections.kt:200-215",
+    "ios:Features/Settings/SettingsSectionView.swift:296-318"
    ],
    "scout": "server-features.md §12.4"
   },
@@ -1377,7 +1399,7 @@
   {
    "id": "missing.grep",
    "section": "16",
-   "claim": "Список «Чего пока нет»",
+   "claim": "Список «Чего пока нет» (в «Аккаунте» — поля «О себе» и ручного статуса: убраны 11.10)",
    "src": [
     "web: grep mute|Notification|search|Поиск|pinned|archiv|folder|sticker|poll|theme|DND|block|forgot|deleteAccount по ui/ domain/ core/ features/ utils/ — функций нет",
     "srv: grep router.(get|post|put|patch|delete) в src/routes — нет поиска сообщений, исключения участника, сброса пароля, удаления своей учётки",
@@ -1389,18 +1411,6 @@
    "scout": "server-features.md §17; web-ui.md §13; native-pc-ui.md §16; android-ui.md §12; ios-ui.md §14"
   },
   {
-   "id": "mismatch.web-link-hint",
-   "section": "18",
-   "claim": "Веб: «Настройки → Устройства → Привязать» есть только на скрытой странице /settings («Устройства» → «Привязать новое устройство»); ссылок на неё в интерфейсе нет",
-   "src": [
-    "web:ui/components/LinkDeviceModal.tsx:273",
-    "web:ui/pages/SettingsPage.tsx:86-94",
-    "web:router.tsx:63",
-    "web:ui/web-mobile/MobileTabBar.tsx:80 (компонент нигде не подключён)"
-   ],
-   "scout": "web-ui.md «Замечания владельцу» п.1"
-  },
-  {
    "id": "mismatch.strike-u",
    "section": "18",
    "claim": "Веб: на «Зачёркнутый» буква «U»",
@@ -1408,18 +1418,6 @@
     "web:ui/pages/chats/render/MessagesPane.tsx:2702-2710"
    ],
    "scout": "web-ui.md «Замечания владельцу» п.5"
-  },
-  {
-   "id": "mismatch.profile-link-device",
-   "section": "18",
-   "claim": "«Привязать новое устройство» в «Профиле» Android/iPhone — QR EBLUSHA_LINK_DEVICE, сканер секретки его не принимает",
-   "src": [
-    "and:ui/social/SettingsScreen.kt:246-253,381-409",
-    "and:domain/model/SocialModels.kt:47-54",
-    "and:feature/chat/ChatViewModel.kt:649-656",
-    "ios:Features/Social/SettingsView.swift:418-532"
-   ],
-   "scout": "android-ui.md §3"
   },
   {
    "id": "contacts.remove",
@@ -1459,12 +1457,13 @@
   {
    "id": "layout.web-profile-vs-settings",
    "section": "3",
-   "claim": "Веб: окно «Профиль» — почти все настройки; имя, «О себе», статус — только на /settings",
+   "claim": "Веб: окна «Профиль» и страницы /settings больше нет — одни «Настройки» плитками (5 плиток: «Профиль», «Соединение», «Звук и видео», «Безопасность», «Приложение»); «О себе» и ручного выбора статуса нет ни на одном клиенте",
    "src": [
-    "web:ui/pages/chats/render/ChatModals.tsx:522,1261-1298",
-    "web:ui/pages/SettingsPage.tsx:60-84"
+    "web:ui/pages/SettingsRoute.tsx:1-20",
+    "web:ui/settings/settingsIndex.ts:13-19",
+    "web:ui/settings/noProfileBio.test.ts:30"
    ],
-   "scout": "независимая проверка 2026-10-11"
+   "scout": "независимая проверка 2026-10-11; settings-unify/SPEC.md §0"
   },
   {
    "id": "notif.mute",
@@ -1572,6 +1571,31 @@
     "pc(winui-git fix-startwin):CHANGELOG.md «2.0.11»"
    ],
    "scout": "CHANGELOG натива"
+  },
+  {
+   "id": "settings.center",
+   "section": "4",
+   "claim": "«Настройки» плитками на всех клиентах: ПК — 7 разделов, веб и iPhone — 5 («Профиль», «Соединение», «Звук и видео», «Безопасность», «Приложение»), Android — 5 («Профиль», «Обновления», «Звук и видео», «Безопасность», «Приложение»); поле «Найти настройку»; внизу «Выйти из Еблуши» и версия",
+   "src": [
+    "web:ui/settings/settingsIndex.ts:13-19",
+    "web:ui/settings/SettingsCenter.tsx:31,129,606-611",
+    "pc:Eblusha.Desktop/Views/ChatsPage.SettingsSearch.cs:45-80",
+    "and:ui/settings/SettingsSearch.kt:7-13",
+    "and:ui/settings/SettingsRows.kt:1038",
+    "ios:Features/Settings/SettingsContent.swift:19-27",
+    "ios:Features/Settings/SettingsCenterView.swift:136,190"
+   ],
+   "scout": "settings-unify/SPEC.md §0, §1.1"
+  },
+  {
+   "id": "settings.app-phones",
+   "section": "4, 10, 8",
+   "claim": "Раздел «Приложение» на телефонах: Android — «Уведомления» («Настройки Android»), «Входящие звонки на весь экран» («Разрешить»); iPhone — «Медиа» («Автовоспроизведение видео»), «Звуки и уведомления» («Звук входящих сообщений», «Звук отправки»), «Уведомления» («Настройки iOS»)",
+   "src": [
+    "and:ui/settings/SettingsSections.kt:640-690",
+    "ios:Features/Settings/SettingsSectionView.swift:499-545"
+   ],
+   "scout": "settings-unify/SPEC.md §1.3 ⑦"
   }
  ]
 }
