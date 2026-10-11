@@ -36,6 +36,11 @@ export interface BotConfig {
   model: string;
   /** Каталог для SQLite (учёт расходов, привязки ников, подтверждения). */
   dataDir: string;
+  /**
+   * Справочник по приложению (bot/knowledge/eblusha-app.md; в образе — /app/knowledge/eblusha-app.md) — блоком в
+   * системный текст. null (BOT_KNOWLEDGE_FILE=off) — без справочника.
+   */
+  knowledgeFile: string | null;
 
   /** Потолок трат на модель за календарный месяц (UTC), $. */
   monthlyBudgetUsd: number;
@@ -179,6 +184,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
     anthropicWorkspaceId: optStr(env, "ANTHROPIC_WORKSPACE_ID"),
     model: str(env, "BOT_MODEL", "claude-opus-5-5"),
     dataDir: str(env, "BOT_DATA_DIR", "./data"),
+    knowledgeFile: /^(off|0|false|no|нет)$/i.test(str(env, "BOT_KNOWLEDGE_FILE", "knowledge/eblusha-app.md")) ? null : str(env, "BOT_KNOWLEDGE_FILE", "knowledge/eblusha-app.md"),
     monthlyBudgetUsd: num(env, "BOT_MONTHLY_BUDGET_USD", 60),
     dailyBudgetUsd: num(env, "BOT_DAILY_BUDGET_USD", 6),
     userDailyQuestions: num(env, "BOT_USER_DAILY_QUESTIONS", 25),

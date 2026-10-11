@@ -259,7 +259,8 @@ export function deepUnavailable(e: unknown): "permanent" | "temporary" | null {
 export class ClaudeEngine implements LlmEngine {
   readonly model: string;
   private readonly client: Anthropic;
-  private readonly system: string;
+  /** Блоки системного текста (основной, справочник по приложению): постоянные на процесс, точка кэша — на последнем. */
+  private readonly system: readonly string[];
   /** Усилие вопроса — сообщением (кэш не сбрасывается). false — API не принял, верхним уровнем до перезапуска. */
   private effortMessages = true;
   /** Серверные инструменты по моделям (проба глубокой модели); нет записи — как у основной. */
@@ -278,12 +279,13 @@ export class ClaudeEngine implements LlmEngine {
       | "webFetchMaxContentTokens"
       | "memoryModel"
     >,
-    systemPrompt: string,
+    systemPrompt: string | readonly string[],
     private readonly log: Logger,
     client?: Anthropic
   ) {
     this.model = cfg.model;
-    this.system = systemPrompt;
+    this.system = (typeof systemPrompt === "string" ? [systemPrompt] : [...systemPrompt]).filter((t) => t.trim() !== "");
+    if (this.system.length === 0) this.system = [""];
     this.client = client ?? new Anthropic({ apiKey: cfg.anthropicApiKey ?? undefined, maxRetries: 2, timeout: 180_000 });
   }
 
@@ -375,7 +377,7 @@ export class ClaudeEngine implements LlmEngine {
       // даже весь вывод (с мышлением) и ввод (по полной цене, без скидки кэша) и поиск уложились в остаток.
       let maxTokens = req.maxTokens ?? this.cfg.maxTokens;
       if (req.hardCap) {
-        const inTokens = iter === 0 ? roughTokens(messages) + roughTokens(this.system) + roughTokens(tools) : nextInTokens;
+        const inTokens = iter === 0 ? roughTokens(messages) + roughTokens(this.system.join("\n\n")) + roughTokens(tools) : nextInTokens;
         const webReserve = req.web === false ? 0 : this.cfg.webSearchMaxUses * 0.01;
         const room = Math.floor((req.maxUsd - cost.usd - inTokens * inPrice - webReserve) / outPrice);
         if (room < HARDCAP_MIN_STEP_TOKENS) {
@@ -389,7 +391,8 @@ export class ClaudeEngine implements LlmEngine {
           {
             model,
             max_tokens: maxTokens,
-            system: [{ type: "text", text: this.system, cache_control: systemCache }],
+            // Точка кэша — только на последнем блоке: она кэширует и предыдущие (точек в запросе не больше 4).
+            system: this.system.map((text, i) => (i === this.system.length - 1 ? { type: "text" as const, text, cache_control: systemCache } : { type: "text" as const, text })),
             tools,
             messages,
             thinking: { type: "adaptive" },

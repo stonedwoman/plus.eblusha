@@ -17,7 +17,7 @@ import { Bot } from "./core/bot";
 import { Registry } from "./core/registry";
 import { Store } from "./core/store";
 import { ClaudeEngine } from "./llm/claude";
-import { buildSystemPrompt } from "./llm/prompt";
+import { buildKnowledgeBlock, buildSystemPrompt } from "./llm/prompt";
 import { loadModules } from "./modules";
 import type { BotModule } from "./modules/api";
 import type { LlmEngine } from "./llm/types";
@@ -49,6 +49,33 @@ async function ensureProfile(api: EblushaApi, log: Logger, assetsDir: string): P
   }
 }
 
+/**
+ * Справочник по приложению для системного текста: файл из образа (bot/knowledge/eblusha-app.md). Нет файла или он
+ * пустой — бот работает без него (журнал: knowledge.missing). Путь относительный — от каталога бота.
+ */
+export function loadKnowledge(file: string | null, log: Logger): string | null {
+  if (!file) {
+    log.info("knowledge.off");
+    return null;
+  }
+  // Относительный путь — от рабочего каталога (в образе /app) или от каталога бота (dist/src → ../.., src → ..).
+  const candidates = path.isAbsolute(file) ? [file] : [path.resolve(process.cwd(), file), path.resolve(__dirname, "..", "..", file), path.resolve(__dirname, "..", file)];
+  const full = candidates.find((c) => fs.existsSync(c)) ?? candidates[0]!;
+  try {
+    const block = buildKnowledgeBlock(fs.readFileSync(full, "utf8"));
+    if (!block) {
+      log.warn("knowledge.missing", { file: full, why: "пустой файл" });
+      return null;
+    }
+    const stamp = /Сверено с кодом ([0-9-]+)/.exec(block)?.[1] ?? null;
+    log.info("knowledge.loaded", { chars: block.length, approxTokens: Math.round(block.length / 2.8), checked: stamp });
+    return block;
+  } catch (e) {
+    log.warn("knowledge.missing", { file: full, why: (e as Error).message.slice(0, 200) });
+    return null;
+  }
+}
+
 export interface StartOptions {
   /** Подмена модели (интеграционный тест: без сети и без денег). undefined — по ключу из конфига. */
   llm?: LlmEngine | null;
@@ -66,11 +93,13 @@ export async function startBot(cfg: BotConfig, log: Logger, opts: StartOptions =
   const api = new EblushaApi(cfg.apiUrl, { username: cfg.username, password: cfg.password }, log.child({ c: "api" }));
   await ensureProfile(api, log, opts.assetsDir ?? process.env.BOT_ASSETS_DIR ?? path.join(process.cwd(), "assets"));
 
+  const knowledge = opts.llm !== undefined ? null : loadKnowledge(cfg.knowledgeFile, log);
+  const system = buildSystemPrompt(registry.prompts, { memory: cfg.memoryTailTokens <= 0 ? "off" : cfg.memoryModel ? "full" : "recent" });
   const llm =
     opts.llm !== undefined
       ? opts.llm
       : cfg.anthropicApiKey
-        ? new ClaudeEngine(cfg, buildSystemPrompt(registry.prompts, { memory: cfg.memoryTailTokens <= 0 ? "off" : cfg.memoryModel ? "full" : "recent" }), log.child({ c: "llm" }))
+        ? new ClaudeEngine(cfg, knowledge ? [system, knowledge] : system, log.child({ c: "llm" }))
         : null;
   if (!llm) log.warn("llm.disabled", { reason: "ANTHROPIC_API_KEY не задан — отвечаю шаблонами" });
   let engine: LlmEngine | null = llm;

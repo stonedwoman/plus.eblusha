@@ -4,3 +4,5 @@ data
 test
 *.md
 ops
+# справочник бота — в образ (src/main.ts loadKnowledge)
+!knowledge/eblusha-app.md

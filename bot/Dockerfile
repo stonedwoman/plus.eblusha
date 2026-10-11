@@ -20,6 +20,8 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
 COPY assets ./assets
+# Справочник по приложению — блоком в системный текст модели (src/main.ts loadKnowledge, BOT_KNOWLEDGE_FILE).
+COPY knowledge/eblusha-app.md ./knowledge/eblusha-app.md
 # Каталог данных (SQLite) принадлежит node: именованный том при первом подключении унаследует владельца.
 RUN mkdir -p /data && chown node:node /data
 USER node

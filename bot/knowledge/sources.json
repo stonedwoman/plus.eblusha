@@ -1,0 +1,1577 @@
+{
+ "about": "Утверждение справочника eblusha-app.md -> где это в коде. Для проверки и будущих обновлений; в промпт бота не идёт. Номер section = раздел eblusha-app.md. scout = файл разведки в этой же папке, где утверждение разобрано подробнее.",
+ "verified": {
+  "date": "2026-10-11",
+  "server_web": "695bfa65 (ветка platform/core-redis-queue-ssrf-rateobs)",
+  "pc": "2.0.10 (C:/projects/eblusha-winui, Eblusha.Desktop.csproj:11)",
+  "android": "0.3.41 / versionCode 63 (C:/projects/eblusha-mobile, не под git)",
+  "ios": "сборка 995 (TestFlight) = /DATA/eblusha-plus/ios @ 695bfa65",
+  "independent_check": "2026-10-11: сверено заново по коду 100+ утверждений (веб, ПК, Android, iOS, сервер); исправлено 11 мест в eblusha-app.md, записи выше обновлены",
+  "release-2026-10-11": "2026-10-11: единый выпуск — мьют, карточки бота, «Подумай лучше», окно ПК 2.0.11 (ветка release/2026-10-11)"
+ },
+ "roots": {
+  "srv": "/DATA/eblusha-plus/ на ssh root@stoned.local (снимок для чтения: scratchpad/srvsrc/)",
+  "web": "/DATA/eblusha-plus/frontend/src/ (снимок: scratchpad/webui-src/frontend/src/)",
+  "pc": "C:/projects/eblusha-winui/",
+  "and": "C:/projects/eblusha-mobile/app/src/main/java/org/eblusha/app/ (and-root: — от корня C:/projects/eblusha-mobile/)",
+  "ios": "/DATA/eblusha-plus/ios/Eblusha/ (ios-root: — от /DATA/eblusha-plus/ios/)",
+  "live": "файлы на проде /DATA/eblusha-plus/frontend/public/updates/ (проверено по ssh 2026-10-11)",
+  "mem": "C:/Users/stone/.claude/projects/C--projects/memory/"
+ },
+ "claims": [
+  {
+   "id": "platforms.lang-theme",
+   "section": "1",
+   "claim": "Интерфейс везде только русский и тёмный",
+   "src": [
+    "web:utils/i18n.ts:1-2",
+    "pc:Eblusha.Desktop/App.xaml:6",
+    "and:ui/theme/Theme.kt:36-45",
+    "ios:Resources/Info.plist:5-6",
+    "ios:Resources/Info.plist:44-48"
+   ],
+   "scout": "server-features.md §0; native-pc-ui.md §16; android-ui.md шапка; ios-ui.md шапка"
+  },
+  {
+   "id": "platforms.mirror",
+   "section": "1",
+   "claim": "Зеркало ru.eblusha.org",
+   "src": [
+    "ios:Core/Config/AppConfig.swift:25-40",
+    "mem:eblusha-bot.md (веб и /health проверены на обоих хостах)"
+   ],
+   "scout": "ios-ui.md §11 «Источник»"
+  },
+  {
+   "id": "platforms.nettest",
+   "section": "1, 9",
+   "claim": "eblusha.org/nettest, «Проверить связь», 15 секунд",
+   "src": [
+    "srv:frontend/public/nettest/index.html"
+   ],
+   "scout": "server-features.md §0"
+  },
+  {
+   "id": "web.update",
+   "section": "2",
+   "claim": "Веб обновляется сам при перезагрузке страницы",
+   "src": [
+    "srv:CLAUDE.md:12-16"
+   ],
+   "scout": "server-features.md §14"
+  },
+  {
+   "id": "web.narrow",
+   "section": "2",
+   "claim": "Узкое окно ≤768 px: два экрана, свайпы",
+   "src": [
+    "web:ui/pages/chats/hooks/useChatsResponsive.ts:5-26",
+    "web:ui/pages/ChatsPage.tsx:6489-6500"
+   ],
+   "scout": "web-ui.md вступление"
+  },
+  {
+   "id": "pc.requirements",
+   "section": "2",
+   "claim": "Windows 10 1809+ / 11, 64-бит; Mac нет",
+   "src": [
+    "pc:Eblusha.Setup/Ui/Scenes/ErrorScene.cs:284-285",
+    "pc:CHANGELOG.md:126,230"
+   ],
+   "scout": "native-pc-ui.md §14"
+  },
+  {
+   "id": "pc.install",
+   "section": "2",
+   "claim": "Установщик eblusha.org/updates/winui/Eblusha-Setup.exe, права админа, нет сертификата",
+   "src": [
+    "pc:Eblusha.Setup/Ui/Scenes/WelcomeScenes.cs:51-58",
+    "pc:Eblusha.Setup/Ui/Scenes/OptionsScene.cs:73,204-206,257",
+    "pc:CHANGELOG.md:233-234",
+    "srv:frontend/public/updates/winui/latest.json"
+   ],
+   "scout": "native-pc-ui.md §14"
+  },
+  {
+   "id": "pc.update",
+   "section": "2",
+   "claim": "Проверка при запуске и каждые 5 минут, красный «!», «Скачать» → «Установить и перезапустить», служба «Еблуша: обновления», не во время звонка",
+   "src": [
+    "pc:Eblusha.Desktop/Services/UpdateService.cs:134-135,205",
+    "pc:Eblusha.Desktop/Views/ChatsPage.Updates.cs:150-189,348",
+    "pc:Eblusha.Desktop/CLAUDE.md §2"
+   ],
+   "scout": "native-pc-ui.md §13"
+  },
+  {
+   "id": "pc.version",
+   "section": "2",
+   "claim": "Текущая версия ПК 2.0.10",
+   "src": [
+    "live:winui/latest.json (version 2.0.10)",
+    "pc:Eblusha.Desktop/Eblusha.Desktop.csproj:11"
+   ],
+   "scout": "server-features.md §14"
+  },
+  {
+   "id": "pc.uninstall",
+   "section": "2",
+   "claim": "Удаление через «Приложения», галочка «Удалить и мои данные»",
+   "src": [
+    "pc:Eblusha.Setup/Ui/Scenes/UninstallScenes.cs:16,41-87",
+    "pc:Eblusha.Setup/Engine/InstallEngine.cs:1006"
+   ],
+   "scout": "native-pc-ui.md §14"
+  },
+  {
+   "id": "pc.electron-migration",
+   "section": "2",
+   "claim": "Electron заморожен, плашка «Переезжайте на новую Еблушу», вход заново, секретки после привязки",
+   "src": [
+    "web:ui/components/electronMigration.ts:60-80",
+    "srv:frontend/public/updates/release-notes-2.0.0.txt",
+    "pc:CHANGELOG.md:210-218",
+    "mem:eblusha-electron-to-native-migration.md"
+   ],
+   "scout": "server-features.md §14; native-pc-ui.md §14"
+  },
+  {
+   "id": "android.no-play-apk",
+   "section": "2",
+   "claim": "Не в Google Play, APK с сервера; прямая ссылка eblusha-<версия>.apk",
+   "src": [
+    "and:core/update/UpdateManager.kt:33-48",
+    "live:android/latest.yml (download_url https://ru.eblusha.org/updates/android/eblusha-0.3.41.apk)"
+   ],
+   "scout": "android-ui.md §11"
+  },
+  {
+   "id": "android.minsdk",
+   "section": "2",
+   "claim": "Android 8.0+ (minSdk 26)",
+   "src": [
+    "and-root:gradle/libs.versions.toml:6"
+   ],
+   "scout": "—"
+  },
+  {
+   "id": "android.update",
+   "section": "2",
+   "claim": "Капсула «v X» → «Обновление» → «Обновления» → «Скачать» / «Установить» / «Разрешить установку»; проверка при открытии списка",
+   "src": [
+    "and:ui/chat/ChatListScreen.kt:262-285,655-676,680-790",
+    "and:feature/chat/ChatListViewModel.kt:71-72,213-250",
+    "and:core/update/UpdateManager.kt:118-187"
+   ],
+   "scout": "android-ui.md §11"
+  },
+  {
+   "id": "android.version",
+   "section": "2",
+   "claim": "Текущая версия Android 0.3.41",
+   "src": [
+    "and-root:app/build.gradle.kts:61-62",
+    "live:android/latest.yml"
+   ],
+   "scout": "android-ui.md шапка"
+  },
+  {
+   "id": "ios.testflight",
+   "section": "2",
+   "claim": "Только TestFlight, доступ по приглашению на Apple ID, обновлений в приложении нет",
+   "src": [
+    "ios-root:project.yml:59-64",
+    "srv:scripts/ios-release.sh:2",
+    "ios:Features/Chat/ChatListView.swift:6-7",
+    "srv:docs/ios-handoff.md §3.4"
+   ],
+   "scout": "ios-ui.md шапка"
+  },
+  {
+   "id": "ios.device",
+   "section": "2",
+   "claim": "Только iPhone, iOS 18+, только вертикально",
+   "src": [
+    "ios-root:project.yml:8,57",
+    "ios:Resources/Info.plist:40-43"
+   ],
+   "scout": "ios-ui.md шапка"
+  },
+  {
+   "id": "ios.version-capsule",
+   "section": "2",
+   "claim": "Капсула «v 1.0 · 995», важен номер сборки",
+   "src": [
+    "ios:Features/Chat/ChatListView.swift:292",
+    "ios:Features/Social/SettingsView.swift:536-566"
+   ],
+   "scout": "ios-ui.md шапка"
+  },
+  {
+   "id": "layout.web",
+   "section": "3",
+   "claim": "Веб: плитки «Беседа», «Контакты», своя плитка → окно «Профиль»; /settings без ссылок",
+   "src": [
+    "web:ui/pages/chats/render/ConversationListPane.tsx:462-557",
+    "web:ui/pages/chats/render/ChatModals.tsx:488-1305",
+    "web:router-app.tsx:21-57",
+    "web:ui/web-mobile/MobileTabBar.tsx:56-83 (не подключён)"
+   ],
+   "scout": "web-ui.md вступление, §2"
+  },
+  {
+   "id": "layout.pc",
+   "section": "3",
+   "claim": "ПК: карточка слева внизу, шестерёнка «Настройки», Ctrl+,",
+   "src": [
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:2977-2983,3189-3216,3236-3290",
+    "pc:Eblusha.Desktop/Views/ChatsPage.SettingsShell.cs:1-63"
+   ],
+   "scout": "native-pc-ui.md §0, §9"
+  },
+  {
+   "id": "layout.android",
+   "section": "3",
+   "claim": "Android: без вкладок, строка с именем → «Профиль», «⋮» на карточке",
+   "src": [
+    "and:ui/navigation/HomeNavHost.kt:21-25,39-98",
+    "and:ui/chat/ChatListScreen.kt:592-678,489-547"
+   ],
+   "scout": "android-ui.md §1"
+  },
+  {
+   "id": "layout.ios",
+   "section": "3",
+   "claim": "iPhone: без вкладок, строка профиля → «Профиль», свайп/долгое нажатие по карточке, «…» («Ещё»)",
+   "src": [
+    "ios:App/RootView.swift:242-300",
+    "ios:Features/Chat/ChatListView.swift:254-308,219-247",
+    "ios:Features/Chat/ChatView.swift:736-855"
+   ],
+   "scout": "ios-ui.md §2, §5"
+  },
+  {
+   "id": "layout.message-menu",
+   "section": "3",
+   "claim": "Меню сообщения: правый щелчок / удержание 0,5 с / нажатие (узкий веб) / долгое нажатие",
+   "src": [
+    "web:ui/pages/chats/render/ChatMessageRow.tsx:387-426",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:2493-2516",
+    "and:ui/chat/ChatScreen.kt:1805,2070-2166",
+    "ios:Features/Chat/MessageActionsSheet.swift:30-87"
+   ],
+   "scout": "web-ui.md §6; native-pc-ui.md §3"
+  },
+  {
+   "id": "layout.no-search",
+   "section": "3, 16",
+   "claim": "Поиска по беседам и сообщениям нет нигде",
+   "src": [
+    "pc:Eblusha.Desktop/ViewModels/ChatsViewModel.cs:1056",
+    "and:ui/chat/ChatListScreen.kt:192-205",
+    "ios:Features/Social/ContactsView.swift:68 (searchable только в контактах)",
+    "srv:src/routes/* (нет маршрута поиска сообщений)"
+   ],
+   "scout": "все разведки, «Чего нет»"
+  },
+  {
+   "id": "acc.invite-code",
+   "section": "4",
+   "claim": "Код 8 цифр, меняется каждую минуту, 10 минут на регистрацию, сразу друзья",
+   "src": [
+    "srv:src/lib/registrationInvites.ts:7-9",
+    "srv:src/routes/auth.ts:54-131",
+    "web:ui/pages/chats/render/ChatModals.tsx:2347-2397",
+    "ios:Features/Social/ContactsView.swift:557-568,621-665"
+   ],
+   "scout": "server-features.md §2.1"
+  },
+  {
+   "id": "acc.register-steps",
+   "section": "4",
+   "claim": "Шаги регистрации веб/ПК и Android/iPhone",
+   "src": [
+    "web:ui/pages/RegisterPage.tsx:11-14,360-650",
+    "pc:Eblusha.Desktop/Views/LoginPage.xaml:157-429",
+    "pc:Eblusha.Desktop/Views/LoginPage.Register.cs:82-84,509-551",
+    "and:ui/auth/RegisterScreen.kt:64-190",
+    "ios:Features/Auth/RegisterView.swift:24,51-65,77-95"
+   ],
+   "scout": "web-ui.md §1; android-ui.md §2; ios-ui.md §1"
+  },
+  {
+   "id": "acc.limits",
+   "section": "4",
+   "claim": "Логин 3–30, пароль ≥6, имя 2–50; 10 попыток входа в минуту",
+   "src": [
+    "srv:src/routes/auth.ts:37-39,247"
+   ],
+   "scout": "server-features.md §16"
+  },
+  {
+   "id": "acc.login-only-password",
+   "section": "4",
+   "claim": "Вход только логин+пароль",
+   "src": [
+    "web:ui/pages/LoginPage.tsx:35-66",
+    "and:ui/auth/LoginScreen.kt:93-163",
+    "ios:Features/Auth/LoginView.swift:23-61"
+   ],
+   "scout": "server-features.md §2.2"
+  },
+  {
+   "id": "acc.logout",
+   "section": "4",
+   "claim": "Пути выхода; на Android без подтверждения; выход стирает ключи секретных чатов",
+   "src": [
+    "web:ui/pages/chats/render/ChatModals.tsx:1274-1299",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:6856-6885,6950-6976",
+    "and:ui/social/SettingsScreen.kt:112-116",
+    "and:ui/navigation/RootNavHost.kt:103-115",
+    "ios:Features/Social/SettingsView.swift:536-541",
+    "ios:App/RootView.swift:150-173"
+   ],
+   "scout": "web-ui.md §1; native-pc-ui.md §1; android-ui.md §3; ios-ui.md §11"
+  },
+  {
+   "id": "acc.password-change",
+   "section": "4",
+   "claim": "Смена пароля в вебе и на ПК; на телефонах нет",
+   "src": [
+    "web:ui/pages/chats/render/ChatModals.tsx:284-352",
+    "srv:src/routes/auth.ts:348-359",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:8097-8316",
+    "and-root:app/src/main/java/org/eblusha/app/data/remote (нет эндпоинта смены пароля)",
+    "ios:Features/Social/SettingsView.swift:103-117"
+   ],
+   "scout": "server-features.md §2.3; android-ui.md §12; ios-ui.md §14"
+  },
+  {
+   "id": "acc.no-recovery",
+   "section": "4, 16",
+   "claim": "Восстановления пароля нет",
+   "src": [
+    "srv:src/routes/* (нет маршрута сброса)",
+    "pc:Eblusha.Desktop/Views/LoginPage.xaml",
+    "ios:Features/Auth/AuthViewModel.swift"
+   ],
+   "scout": "server-features.md §17"
+  },
+  {
+   "id": "acc.eblid",
+   "section": "4",
+   "claim": "EBLID 4 цифры; где посмотреть",
+   "src": [
+    "srv:src/routes/status.ts:40-49",
+    "web:ui/pages/chats/render/ChatModals.tsx:2317-2398",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:4517-4522,7142-7157",
+    "and:ui/social/SettingsScreen.kt:150-153",
+    "and:ui/social/ContactsScreen.kt:324-345",
+    "ios:Features/Social/SettingsView.swift:150",
+    "ios:Features/Social/ContactsView.swift:540-555"
+   ],
+   "scout": "все"
+  },
+  {
+   "id": "acc.avatar",
+   "section": "4",
+   "claim": "Смена аватара; история до 30",
+   "src": [
+    "web:ui/pages/chats/render/ChatModals.tsx:521-551,557-788",
+    "srv:src/routes/status.ts:93-97",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:7013-7289",
+    "and:ui/social/SettingsScreen.kt:92-99,135-149",
+    "ios:Features/Social/SettingsView.swift:142-232"
+   ],
+   "scout": "server-features.md §2.4"
+  },
+  {
+   "id": "acc.name-about",
+   "section": "4",
+   "claim": "Имя: ПК, телефоны, веб только /settings; «О себе»: телефоны и /settings, на ПК нет",
+   "src": [
+    "web:ui/pages/SettingsPage.tsx:55-80",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:7166",
+    "pc:Eblusha.Desktop/Views/ChatsPage.Profile.cs:133,418-443",
+    "and:ui/social/SettingsScreen.kt:217-244",
+    "ios:Features/Social/SettingsView.swift:142-232"
+   ],
+   "scout": "web-ui.md §9; native-pc-ui.md §9"
+  },
+  {
+   "id": "acc.manual-status",
+   "section": "4",
+   "claim": "Ручной статус на телефонах и /settings; DND ничего не глушит",
+   "src": [
+    "and:ui/social/SettingsScreen.kt:155-192",
+    "ios:Features/Social/SettingsView.swift:24-29,240-270",
+    "web:ui/pages/SettingsPage.tsx:57-66",
+    "srv:src/jobs/queue.ts:81-110 (пуш не смотрит статус)",
+    "srv:src/routes/status.ts:74"
+   ],
+   "scout": "server-features.md §7; ios-ui.md §10"
+  },
+  {
+   "id": "acc.no-login-change-delete",
+   "section": "4, 16",
+   "claim": "Логин не меняется, удалить аккаунт может только админ",
+   "src": [
+    "srv:src/routes/admin.ts:105",
+    "srv:src/routes/* (нет маршрута удаления своей учётки и смены логина)"
+   ],
+   "scout": "server-features.md §2.4, §17"
+  },
+  {
+   "id": "acc.sessions",
+   "section": "4",
+   "claim": "Активные сеансы, «Отключить», «Отключить все другие»; на Android без подтверждения",
+   "src": [
+    "web:ui/pages/chats/render/ChatModals.tsx:803-1258",
+    "srv:src/routes/devices.ts:502,525",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:8097-8316",
+    "and:ui/social/SettingsScreen.kt:418-505",
+    "ios:Features/Social/SettingsView.swift:418-532,584-649"
+   ],
+   "scout": "server-features.md §2.5"
+  },
+  {
+   "id": "acc.new-session-ok",
+   "section": "4, 18",
+   "claim": "«Новый сеанс»: «Запретить» отключает, «ОК» ничего не передаёт",
+   "src": [
+    "web:ui/components/SystemPopups.tsx:30-115",
+    "web:ui/layouts/AppLayout.tsx:40-66",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:10141-10159",
+    "pc:Eblusha.Desktop/Views/ChatsPage.Sessions.cs:72,119-133",
+    "mem:eblusha-new-session-popup.md"
+   ],
+   "scout": "web-ui.md §10; native-pc-ui.md §8"
+  },
+  {
+   "id": "contacts.add",
+   "section": "5",
+   "claim": "Добавить друга по EBLID; поиск по имени только на Android и iPhone",
+   "src": [
+    "web:ui/pages/chats/render/ChatModals.tsx:2230-2310",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:4376-4793",
+    "and:ui/social/ContactsScreen.kt:137-166",
+    "ios:Features/Social/ContactsView.swift:268-315,487-580",
+    "srv:src/routes/contacts.ts:149-191"
+   ],
+   "scout": "все §Контакты"
+  },
+  {
+   "id": "contacts.requests",
+   "section": "5",
+   "claim": "Заявки: принять/отклонить/отозвать",
+   "src": [
+    "web:ui/pages/ChatsPage.tsx:6380-6460",
+    "pc:Eblusha.Desktop/Views/ChatsPage.Outgoing.cs:102-105",
+    "and:ui/social/ContactsScreen.kt:181-214",
+    "ios:Features/Social/ContactsView.swift:186-244"
+   ],
+   "scout": "все"
+  },
+  {
+   "id": "contacts.friend-actions",
+   "section": "5",
+   "claim": "Кнопки у друга, удаление без подтверждения (веб/ПК/Android), жесты iPhone",
+   "src": [
+    "web:ui/pages/chats/render/ChatModals.tsx:2469-2555",
+    "and:ui/social/ContactsScreen.kt:216-245",
+    "ios:Features/Social/ContactsView.swift:319-366,100-116"
+   ],
+   "scout": "web-ui.md §3; android-ui.md §4; ios-ui.md §3"
+  },
+  {
+   "id": "contacts.no-friendship-needed",
+   "section": "5",
+   "claim": "Дружба не нужна для беседы",
+   "src": [
+    "srv:src/routes/conversations.ts:558-735"
+   ],
+   "scout": "server-features.md §3"
+  },
+  {
+   "id": "contacts.profile-card",
+   "section": "5",
+   "claim": "Состав карточки человека, звонка нет",
+   "src": [
+    "web:ui/components/UserProfileCard.tsx:280-559",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:4866-5033",
+    "and:ui/components/UserProfileCard.kt:100-346,625-673",
+    "ios:UI/Components/UserProfileCard.swift:1-31,96-108"
+   ],
+   "scout": "все"
+  },
+  {
+   "id": "contacts.no-block",
+   "section": "5, 16",
+   "claim": "Блокировки нет",
+   "src": [
+    "srv:src/routes/contacts.ts:189-191 (block без UI и без применения)"
+   ],
+   "scout": "server-features.md §3"
+  },
+  {
+   "id": "conv.dm-dedup",
+   "section": "6",
+   "claim": "Повторная личка возвращает ту же беседу",
+   "src": [
+    "srv:src/routes/conversations.ts:625-662"
+   ],
+   "scout": "server-features.md §4.1"
+  },
+  {
+   "id": "conv.create-group",
+   "section": "6",
+   "claim": "Группа только из друзей, хотя бы один",
+   "src": [
+    "web:ui/pages/chats/render/ChatModals.tsx:1748-2122",
+    "pc:Eblusha.Desktop/Views/ChatsPage.NewGroup.cs:79-82",
+    "and:ui/social/CreateGroupScreen.kt:78-147",
+    "ios:Features/Social/CreateGroupView.swift:59-72,227-238"
+   ],
+   "scout": "все"
+  },
+  {
+   "id": "conv.group-settings",
+   "section": "6",
+   "claim": "Настройки группы по нажатию на шапку, пути по платформам",
+   "src": [
+    "web:ui/pages/chats/render/MessagesPane.tsx:333-346",
+    "web:ui/pages/chats/render/ChatModals.tsx:3433-3815",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:9266-9402",
+    "and:ui/chat/ChatScreen.kt:2560-2827",
+    "ios:Features/Social/GroupMembersView.swift:282-297,300-360,405-466"
+   ],
+   "scout": "все"
+  },
+  {
+   "id": "conv.group-add",
+   "section": "6",
+   "claim": "Добавить: «Из друзей»/«По EBLID» (веб, ПК), iPhone по ID, Android только друзья",
+   "src": [
+    "web:ui/pages/chats/render/ChatModals.tsx:3055-3207",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:9467-9630",
+    "ios:Features/Social/GroupMembersView.swift:405-466",
+    "and:ui/chat/ChatScreen.kt:2560-2827"
+   ],
+   "scout": "android-ui.md §6; ios-ui.md §4"
+  },
+  {
+   "id": "conv.no-roles-kick",
+   "section": "6, 16",
+   "claim": "Ролей нет, исключить нельзя, удалить группу нельзя",
+   "src": [
+    "srv:src/routes/conversations.ts:735-990,888",
+    "pc:Eblusha.Desktop/Views/ChatsPage.Group.cs:24-25",
+    "ios:Features/Social/GroupMembersView.swift:466"
+   ],
+   "scout": "server-features.md §4.2"
+  },
+  {
+   "id": "conv.group-title-100",
+   "section": "6",
+   "claim": "Название группы: в вебе и на ПК до 100 символов (поле maxLength=100); Android и iPhone длину не ограничивают, сервер пускает до 200",
+   "src": [
+    "web:ui/pages/chats/render/ChatModals.tsx:3461",
+    "srv:src/routes/conversations.ts:888",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:5143,9359",
+    "and:ui/chat/ChatScreen.kt:2684-2714",
+    "ios:Features/Social/GroupMembersView.swift:124,341"
+   ],
+   "scout": "web-ui.md §4 (сверено вручную)"
+  },
+  {
+   "id": "conv.leave",
+   "section": "6",
+   "claim": "Выход из группы; в вебе без подтверждения; запись «покинул(а)»",
+   "src": [
+    "web:ui/pages/chats/render/ChatModals.tsx:3340-3357,3289-3292",
+    "pc:Eblusha.Desktop/Views/ChatsPage.Group.cs:993-999,1124-1125",
+    "and:ui/chat/ChatScreen.kt:571-575",
+    "ios:Features/Chat/ConversationRemovalPrompt.swift:30-35"
+   ],
+   "scout": "server-features.md §4.2"
+  },
+  {
+   "id": "conv.delete-dm",
+   "section": "6",
+   "claim": "Удаление лички у обоих навсегда; в вебе без подтверждения, в приложениях с вопросом",
+   "src": [
+    "srv:src/routes/conversations.ts:1063-1135",
+    "web:ui/pages/chats/render/ChatModals.tsx:3240-3260,3401-3425",
+    "pc:Eblusha.Desktop/Views/ChatsPage.Group.cs:1032-1040,1096-1097",
+    "and:ui/chat/ChatListScreen.kt:139-178",
+    "ios:Features/Chat/ConversationRemovalPrompt.swift:13-42"
+   ],
+   "scout": "server-features.md §4.3"
+  },
+  {
+   "id": "conv.read-gate",
+   "section": "6",
+   "claim": "Прочитано только когда реально видят; ручная отметка только Android/iPhone",
+   "src": [
+    "web:domain/readSync/readGate.ts:1-30",
+    "pc:CHANGELOG.md:70",
+    "and:ui/chat/ChatScreen.kt:981-989",
+    "ios:Features/Chat/ChatListView.swift:100-101,132-162"
+   ],
+   "scout": "server-features.md §5.11"
+  },
+  {
+   "id": "conv.list-row",
+   "section": "6",
+   "claim": "Что видно в строке списка; секретка отдельной строкой",
+   "src": [
+    "web:ui/pages/chats/render/ConversationListPane.tsx:229,297,314-391",
+    "and:ui/chat/ChatListScreen.kt:360-549",
+    "ios:Features/Chat/ChatListView.swift:433-685"
+   ],
+   "scout": "все"
+  },
+  {
+   "id": "msg.send-rate",
+   "section": "7",
+   "claim": "60 сообщений в минуту",
+   "src": [
+    "srv:src/routes/conversations.ts:1318-1321"
+   ],
+   "scout": "server-features.md §5.1"
+  },
+  {
+   "id": "msg.format",
+   "section": "7",
+   "claim": "Панель форматирования, клавиши, разметка",
+   "src": [
+    "web:ui/pages/chats/render/MessagesPane.tsx:2671-2712",
+    "web:ui/lib/chatMarkdown.ts:6-26,85-185",
+    "pc:Eblusha.Desktop/Views/ChatsPage.Format.cs:156-164",
+    "and:ui/chat/ChatScreen.kt:2894-2906",
+    "ios:Features/Chat/ComposerFormatting.swift:20-56,160-191"
+   ],
+   "scout": "все"
+  },
+  {
+   "id": "msg.reply",
+   "section": "7",
+   "claim": "Ответ: меню, свайпы, ответ на несколько, переход по цитате",
+   "src": [
+    "web:ui/pages/chats/render/ChatModals.tsx:2575-2590,2676-2685",
+    "and:ui/chat/ChatScreen.kt:1708-1758",
+    "ios:Features/Chat/MessageListView.swift:297-316"
+   ],
+   "scout": "все"
+  },
+  {
+   "id": "msg.edit",
+   "section": "7",
+   "claim": "Правка только своих текстовых, 8000 знаков, без срока, не в секретках",
+   "src": [
+    "srv:src/routes/messages.ts:369-456",
+    "web:ui/pages/chats/render/MessagesPane.tsx:3240-3270,3485-3498",
+    "pc:Eblusha.Desktop/ViewModels/ChatItems.cs:700-703",
+    "and:ui/chat/ChatScreen.kt:2542-2558",
+    "ios:Features/Chat/MessageActionsSheet.swift:36-38"
+   ],
+   "scout": "server-features.md §5.7"
+  },
+  {
+   "id": "msg.delete",
+   "section": "7",
+   "claim": "Удаление у всех, без срока, своё + ответ бота спросившему",
+   "src": [
+    "srv:src/routes/messages.ts:321-375",
+    "srv:src/lib/systemBot.ts:540-574",
+    "web:ui/pages/chats/render/ChatModals.tsx:2606-2646,2702-2722",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml.cs:4825-4840",
+    "and:feature/bot/BotRules.kt:137-150"
+   ],
+   "scout": "server-features.md §5.8"
+  },
+  {
+   "id": "msg.forward",
+   "section": "7",
+   "claim": "Пересылка; из секретки нельзя; в секретку — веб только текст, телефоны никак",
+   "src": [
+    "web:ui/pages/chats/render/ChatModals.tsx:2805-3052,2936-2967",
+    "and:feature/chat/ChatViewModel.kt:1309-1321",
+    "ios:Features/Chat/ChatViewModel.swift:1505-1530,1565-1576"
+   ],
+   "scout": "server-features.md §5.6; android-ui.md §5; ios-ui.md §6"
+  },
+  {
+   "id": "msg.reactions",
+   "section": "7",
+   "claim": "Реакции: курсор / долгое нажатие / двойной тап; по умолчанию 👍 😂 ❤️ 🤘; в секретках нет",
+   "src": [
+    "web:ui/pages/chats/components/MessageReactionRail.tsx:56-67,509-590",
+    "srv:src/routes/messages.ts:242-319",
+    "pc:Eblusha.Desktop/Services/ReactionFavorites.cs:1-18",
+    "and:ui/chat/ReactionPicker.kt:80,158",
+    "ios:Features/Chat/MessageListView.swift:688-697"
+   ],
+   "scout": "все"
+  },
+  {
+   "id": "msg.ticks",
+   "section": "7",
+   "claim": "Одна серая — отправлено, две серые — доставлено (телефоны), оранжевые — прочитано",
+   "src": [
+    "web:ui/pages/chats/render/ChatMessageRow.tsx:348-385",
+    "pc:Eblusha.Desktop/Ui/TickShapes.cs:20-25",
+    "and:ui/chat/ChatScreen.kt:2016-2019,2372-2376",
+    "ios:Features/Chat/ChatView.swift:1176-1199"
+   ],
+   "scout": "все (сверено по ChatMessageRow вручную)"
+  },
+  {
+   "id": "msg.links-youtube",
+   "section": "7",
+   "claim": "Превью ссылок, YouTube в ленте, выключатель на ПК",
+   "src": [
+    "srv:src/lib/linkPreview.ts:1-30",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:8605-8610"
+   ],
+   "scout": "server-features.md §5.4; native-pc-ui.md §4"
+  },
+  {
+   "id": "files.attach",
+   "section": "8",
+   "claim": "Как прикрепить на каждой платформе",
+   "src": [
+    "web:ui/pages/chats/render/MessagesPane.tsx:3007-3099",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:4104-4108,3752-3905",
+    "and:ui/chat/ChatScreen.kt:1066-1161",
+    "ios:Features/Chat/AttachmentSheet.swift:31,186-310"
+   ],
+   "scout": "все"
+  },
+  {
+   "id": "files.limits",
+   "section": "8",
+   "claim": "10 фото + 10 файлов; размер: веб/ПК без явного предела (части), iPhone 1 ГБ, Android 100 МБ, секретка ПК 100 МБ/20",
+   "src": [
+    "web:ui/pages/chats/chatsConstants.ts:8-10",
+    "srv:src/routes/upload.ts:30-45,382-410 (части без общего предела)",
+    "pc:Eblusha.Desktop/Services/ApiClient.cs:949,977",
+    "pc:CHANGELOG.md:156",
+    "and:feature/chat/ChatViewModel.kt:1044-1046,1152-1161",
+    "ios:Features/Chat/ChatViewModel.swift:807,1165-1174"
+   ],
+   "scout": "server-features.md §5.2; native-pc-ui.md §4; android-ui.md §5; ios-ui.md §6"
+  },
+  {
+   "id": "files.editor",
+   "section": "8",
+   "claim": "Редактор фото по платформам; HEIC в браузере",
+   "src": [
+    "web:ui/components/ImageEditorModal.tsx:40-50,620-660",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:9803-9937",
+    "and:ui/chat/PhotoEditor.kt:115-121,305-323",
+    "ios:Features/PhotoEditor/PhotoEditorModels.swift:24-29"
+   ],
+   "scout": "все"
+  },
+  {
+   "id": "files.view-save",
+   "section": "8",
+   "claim": "Просмотр и сохранение; Android 10+; iPhone видео не сохраняет",
+   "src": [
+    "web:ui/components/ImageLightbox.tsx:640-650",
+    "pc:Eblusha.Desktop/Views/ChatsPage.Files.cs:20,50-114,150",
+    "and:ui/chat/ChatScreen.kt:3486-3497,4114-4192",
+    "ios:Features/PhotoViewer/PhotoViewerView.swift:189-236,352-378"
+   ],
+   "scout": "все"
+  },
+  {
+   "id": "files.video",
+   "section": "8",
+   "claim": "Видео в ленте; автовоспроизведение iPhone; HEVC на ПК",
+   "src": [
+    "ios:Features/Chat/InlineVideoPlayer.swift:36-70",
+    "ios:Features/Social/SettingsView.swift:361-376",
+    "pc:Eblusha.Desktop/CLAUDE.md «Видео в ленте»"
+   ],
+   "scout": "native-pc-ui.md §4; ios-ui.md §7"
+  },
+  {
+   "id": "files.voice",
+   "section": "8",
+   "claim": "Голосовые: веб/ПК кнопкой, Android нажатием, iPhone удержанием; скорость и «Аа» только iPhone",
+   "src": [
+    "web:ui/pages/chats/render/MessagesPane.tsx:3117-3230",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:4241-4313",
+    "and:ui/chat/ChatScreen.kt:507-542,2913-2934",
+    "ios:Features/Chat/VoiceMessage.swift:60-115,468-580",
+    "ios:Core/Speech/VoiceTranscriber.swift:28-35"
+   ],
+   "scout": "все"
+  },
+  {
+   "id": "files.server-encryption",
+   "section": "8",
+   "claim": "Файлы обычных бесед зашифрованы ключом сервера",
+   "src": [
+    "srv:src/lib/nonSecretChatEncryption.ts",
+    "srv:src/routes/files.ts"
+   ],
+   "scout": "server-features.md §5.2"
+  },
+  {
+   "id": "calls.start",
+   "section": "9",
+   "claim": "Кнопки звонка в шапке; только из шапки; боту нельзя",
+   "src": [
+    "web:ui/pages/chats/render/MessagesPane.tsx:1262-1313",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:3497-3523",
+    "and:ui/chat/ChatScreen.kt:966-974",
+    "ios:Features/Chat/ChatHeader.swift:478-537",
+    "srv:docs/bot-system.md:158"
+   ],
+   "scout": "все"
+  },
+  {
+   "id": "calls.timeouts",
+   "section": "9",
+   "claim": "Исходящий 30 с, входящий веб/ПК 25 с, сервер 60 с",
+   "src": [
+    "web:ui/pages/chats/render/MessagesPane.tsx:992,1055",
+    "web:ui/pages/ChatsPage.tsx:3463-3468",
+    "srv:src/realtime/socket.ts:597",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml.cs:7527-7537"
+   ],
+   "scout": "server-features.md §10.2"
+  },
+  {
+   "id": "calls.group-incoming-pc",
+   "section": "9",
+   "claim": "На ПК о групповом звонке — только плашка «начал звонок» и красная точка",
+   "src": [
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml.cs:7614,7655-7680",
+    "pc:Eblusha.Desktop/Views/NoticeOverlay.cs:237-261"
+   ],
+   "scout": "native-pc-ui.md §7"
+  },
+  {
+   "id": "calls.mic-permission",
+   "section": "9",
+   "claim": "Нет доступа к микрофону — звонок не начнётся; ПК «Открыть параметры Windows»",
+   "src": [
+    "pc:Eblusha.Desktop/Services/CallService.MediaCheck.cs:86-95",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:7624-8078",
+    "web:ui/pages/ChatsPage.tsx:806-822"
+   ],
+   "scout": "native-pc-ui.md §7, §9"
+  },
+  {
+   "id": "calls.incoming-platforms",
+   "section": "9",
+   "claim": "Входящий: веб окно, ПК плашка «К звонку»/«Я перезвоню», Android полноэкранный (14+ разрешение), iPhone CallKit",
+   "src": [
+    "web:ui/pages/chats/render/MessagesPane.tsx:3752-3795",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:9985-10088",
+    "and:service/IncomingCallService.kt:58,198-258",
+    "and:MainActivity.kt:118-139",
+    "ios:Core/Push/CallKitController.swift:8-28,146-191"
+   ],
+   "scout": "все"
+  },
+  {
+   "id": "calls.join-move",
+   "section": "9",
+   "claim": "«Подключиться», «Тоже сюда», «Видео сюда», капсулы iPhone",
+   "src": [
+    "web:ui/pages/chats/render/MessagesPane.tsx:1083-1160",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:3512-3523",
+    "ios:Features/Chat/ChatListView.swift:488-507",
+    "ios:Features/Chat/ChatHeader.swift:483-537"
+   ],
+   "scout": "server-features.md §10.3"
+  },
+  {
+   "id": "calls.controls",
+   "section": "9",
+   "claim": "Кнопки в звонке по платформам",
+   "src": [
+    "web:ui/components/CallOverlay.tsx:3855-3890,3990-4070",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:5820-5934",
+    "and:ui/call/CallScreen.kt:484-601",
+    "ios:Features/Call/CallView.swift:229-290"
+   ],
+   "scout": "все"
+  },
+  {
+   "id": "calls.mini",
+   "section": "9",
+   "claim": "Свёрнутый звонок, Esc, шевроны, Ctrl+Shift+E/M",
+   "src": [
+    "web:ui/components/CallMini.tsx:345-360,425-462",
+    "web:ui/components/CallOverlay.tsx:3794-3803",
+    "pc:Eblusha.Desktop/Views/CallMini.xaml:106-374",
+    "pc:Eblusha.Desktop/Services/SystemIntegration.cs:865-873",
+    "and:ui/call/CallScreen.kt:346-381",
+    "ios:Features/Call/CallMiniView.swift:431-535"
+   ],
+   "scout": "все"
+  },
+  {
+   "id": "calls.volume-ring",
+   "section": "9",
+   "claim": "Громкость участника 0–150 % (веб, ПК)",
+   "src": [
+    "web:ui/components/CallOverlay.tsx:705-711,840-870",
+    "pc:Eblusha.Desktop/ViewModels/ChatItems.cs:2150-2225"
+   ],
+   "scout": "web-ui.md §8; native-pc-ui.md §7"
+  },
+  {
+   "id": "calls.no-chat-alone",
+   "section": "9",
+   "claim": "Чата в звонке нет; один в группе: 2 мин / 5 мин",
+   "src": [
+    "web:ui/components/CallOverlay.tsx:2609",
+    "srv:src/realtime/socket.ts:604-605"
+   ],
+   "scout": "server-features.md §10.4, §10.7"
+  },
+  {
+   "id": "calls.screenshare",
+   "section": "9",
+   "claim": "Параметры показа; звук: веб Chrome, ПК только Win11 всё кроме Еблуши; iPhone нельзя",
+   "src": [
+    "web:ui/components/ScreenShareSettings.tsx:31-48,152-281",
+    "pc:Eblusha.Desktop/Services/ShareQuality.cs:25-44",
+    "pc:Eblusha.Desktop/Services/ProcessLoopbackCapture.cs:56-58",
+    "and:ui/call/CallScreen.kt:484-601",
+    "ios:Features/Call/CallView.swift:6-11"
+   ],
+   "scout": "все"
+  },
+  {
+   "id": "calls.encryption",
+   "section": "9",
+   "claim": "1:1 «Шифрование через сервер», без шифрования не начинается; группы «Без шифрования»",
+   "src": [
+    "web:ui/components/callSecurity.ts:1-90",
+    "srv:src/routes/calls.ts:19",
+    "and:feature/call/CallE2eeGate.kt:142-155",
+    "ios:Core/Call/CallManager.swift:526-549,808-839"
+   ],
+   "scout": "server-features.md §10.6"
+  },
+  {
+   "id": "calls.relay",
+   "section": "9",
+   "claim": "Ретранслятор в вебе и на ПК (на ПК вкл. по умолчанию)",
+   "src": [
+    "web:ui/pages/chats/render/ChatModals.tsx:252-282",
+    "pc:Eblusha.Desktop/Services/AppSettings.cs:192-202",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:7558-7589"
+   ],
+   "scout": "server-features.md §10.7; native-pc-ui.md §7"
+  },
+  {
+   "id": "calls.server-switch",
+   "section": "9",
+   "claim": "ПК «Через СПб», iPhone «Источник» → зеркало с выходом",
+   "src": [
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:7479-7589",
+    "ios:Features/Social/SettingsView.swift:122-137,385-412"
+   ],
+   "scout": "native-pc-ui.md §9; ios-ui.md §11"
+  },
+  {
+   "id": "calls.reconnect-15s",
+   "section": "9",
+   "claim": "Обрыв до 15 с не рвёт личный звонок",
+   "src": [
+    "srv:src/realtime/socket.ts:592"
+   ],
+   "scout": "server-features.md §10.7"
+  },
+  {
+   "id": "notif.no-text",
+   "section": "10",
+   "claim": "В пушах нет текста; Android показывает текст при живом фоне",
+   "src": [
+    "srv:src/lib/messageFanout.ts:82-115",
+    "srv:src/push/apns.ts:182-195,218",
+    "and:service/EblushaMessagingService.kt:14-21,99-103"
+   ],
+   "scout": "server-features.md §6; android-ui.md §10"
+  },
+  {
+   "id": "notif.read-sync",
+   "section": "10",
+   "claim": "Прочитал в одном месте — гаснет везде; iPhone выгруженный — при открытии",
+   "src": [
+    "srv:src/push/readSync.ts:1-45",
+    "mem:eblusha-push-notifications.md"
+   ],
+   "scout": "server-features.md §6"
+  },
+  {
+   "id": "notif.web-sound-only",
+   "section": "10",
+   "claim": "Веб: только звук, кнопка «Включить звук сообщений и звонков»",
+   "src": [
+    "web:ui/pages/chats/hooks/useChatSocketSubscriptions.ts:135-147",
+    "web:ui/pages/ChatsPage.tsx:3750,6466-6485"
+   ],
+   "scout": "web-ui.md §12"
+  },
+  {
+   "id": "notif.pc",
+   "section": "10",
+   "claim": "ПК: плашки 5 с, звук, не показываются при окне перед глазами",
+   "src": [
+    "pc:Eblusha.Desktop/Views/NoticeOverlay.cs:30-39,249,287,534-541",
+    "pc:Eblusha.Desktop/Views/ChatsPage.Notices.cs:6-25,75"
+   ],
+   "scout": "native-pc-ui.md §8"
+  },
+  {
+   "id": "notif.android-channels",
+   "section": "10",
+   "claim": "Категории «Сообщения», «Входящие звонки», «Текущий звонок», «Соединение»",
+   "src": [
+    "and:service/MessageNotifier.kt:56-66",
+    "and:service/IncomingCallService.kt:282-298",
+    "and:service/OngoingCallService.kt:102-111",
+    "and:service/ConnectionService.kt:115-137"
+   ],
+   "scout": "android-ui.md §10"
+  },
+  {
+   "id": "notif.ios",
+   "section": "10",
+   "claim": "iPhone: разрешение после входа, нет счётчика, звук в открытом приложении",
+   "src": [
+    "ios:App/RootView.swift:139-148",
+    "ios:Core/Push/MessageNotifications.swift:29-45",
+    "ios:Features/Chat/ChatSounds.swift:1-20"
+   ],
+   "scout": "ios-ui.md §10"
+  },
+  {
+   "id": "notif.mute-workarounds",
+   "section": "10",
+   "claim": "Выключить всё сразу: вкладка, «Показывать уведомления поверх других окон» на ПК, категория уведомлений Android, настройки iOS",
+   "src": [
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:8536-8541",
+    "pc:Eblusha.Desktop/Services/AppSettings.cs:15-16",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml.cs:8362-8368",
+    "and:service/MessageNotifier.kt:56-66"
+   ],
+   "scout": "native-pc-ui.md §8; android-ui.md §10; ios-ui.md §10"
+  },
+  {
+   "id": "presence.status",
+   "section": "11",
+   "claim": "Статусы по подключению, значки устройств и цвета",
+   "src": [
+    "web:ui/pages/ChatsPage.tsx:6155-6181",
+    "web:ui/components/Avatar.tsx:140-153,283,313,342",
+    "pc:Eblusha.Desktop/Ui/PresenceBadge.cs:106-117",
+    "and:ui/components/PresenceBadge.kt:89-101",
+    "ios:UI/Components/Avatar.swift:123-128",
+    "mem:eblusha-presence-devices.md"
+   ],
+   "scout": "server-features.md §7"
+  },
+  {
+   "id": "presence.games",
+   "section": "11",
+   "claim": "«Играет в» только с ПК, выключено по умолчанию; Steam в вебе",
+   "src": [
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:8338-8455",
+    "pc:Eblusha.Desktop/Services/AppSettings.cs:18-19",
+    "web:ui/pages/chats/render/MessagesPane.tsx:642-725",
+    "srv:src/realtime/socket.ts:1941-2011"
+   ],
+   "scout": "native-pc-ui.md §9; web-ui.md §5"
+  },
+  {
+   "id": "localtime",
+   "section": "11",
+   "claim": "Местное время в 1:1, нет в группах и при совпадении; выключатель везде, общий",
+   "src": [
+    "web:ui/components/LocalTimeSettingsSection.tsx:70-115",
+    "web:ui/pages/chats/components/PeerLocalTimeLine.tsx:67",
+    "srv:src/routes/status.ts:131-178",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:7220-7242",
+    "and:ui/social/SettingsScreen.kt:194-204,322-379",
+    "ios:Features/Social/SettingsView.swift:276-312",
+    "mem:eblusha-local-time.md"
+   ],
+   "scout": "server-features.md §8"
+  },
+  {
+   "id": "secret.what",
+   "section": "12",
+   "claim": "Только 1:1, сквозное, без групп и бота",
+   "src": [
+    "srv:src/lib/secretLatch.ts:1-25",
+    "srv:src/routes/threads.ts:34-70",
+    "srv:src/routes/conversations.ts:600-602"
+   ],
+   "scout": "server-features.md §11.1"
+  },
+  {
+   "id": "secret.start-accept",
+   "section": "12",
+   "claim": "Пути начать: карточка «СЕКРЕТНЫЙ ЧАТ» и «Контакты» везде; «Начать секретный чат» в шапке — веб и ПК; Android — зелёный замок в шапке; «Секретный чат» в списке — веб, ПК, Android; на iPhone в меню беседы пункта нет. «Ждём подтверждения»; «Принять»/«Отклонить»",
+   "src": [
+    "web:ui/pages/chats/render/ChatModals.tsx:3262-3275,3376-3388",
+    "web:ui/pages/chats/render/MessagesPane.tsx:1545-1670",
+    "pc:Eblusha.Desktop/Services/Secret/SecretThreads.cs:206-221",
+    "and:ui/chat/ChatScreen.kt:467-486,1424-1500",
+    "ios:Features/Chat/SecretChatCards.swift:43-90",
+    "web:ui/pages/chats/render/ChatModals.tsx:3363-3387",
+    "pc:Eblusha.Desktop/Views/ChatsPage.Group.cs:1016-1031",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml.cs:8287-8296",
+    "and:ui/chat/ChatScreen.kt:950,975-1020",
+    "and:ui/chat/ChatListScreen.kt:498-506",
+    "ios:Features/Chat/ChatView.swift:785-815",
+    "ios:Features/Chat/ChatListView.swift:132-161",
+    "ios:UI/Components/UserProfileCard.swift:200"
+   ],
+   "scout": "все"
+  },
+  {
+   "id": "secret.limits",
+   "section": "12",
+   "claim": "Не работает: реакции, правка, пересылка из, превью, календарь, бот; удаление только веб; ответов нет на ПК и Android",
+   "src": [
+    "srv:src/routes/messages.ts:259-265,414-418",
+    "srv:src/routes/messages.ts:321-375 (отправитель может удалить)",
+    "srv:src/lib/messageFanout.ts:121-124",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:2515",
+    "and:ui/chat/ChatScreen.kt:2025-2030,2091",
+    "ios:Features/Chat/ChatViewModel.swift:1253,1296,1355,1379"
+   ],
+   "scout": "server-features.md §11.3; native-pc-ui.md §12; android-ui.md §7; ios-ui.md §8"
+  },
+  {
+   "id": "secret.close",
+   "section": "12",
+   "claim": "Завершить/закрыть у обоих; в вебе из списка без вопроса",
+   "src": [
+    "web:ui/pages/chats/render/MessagesPane.tsx:734-840",
+    "web:ui/pages/chats/render/ChatModals.tsx:3389-3399,3289-3292",
+    "srv:src/routes/threads.ts:174-200",
+    "and:ui/chat/ChatScreen.kt:566-570"
+   ],
+   "scout": "server-features.md §11.4"
+  },
+  {
+   "id": "secret.link-device",
+   "section": "12",
+   "claim": "Привязка: QR в шапке на старом, «Сканировать QR»/8 цифр на новом, код 5 минут",
+   "src": [
+    "web:ui/pages/chats/components/DeviceLinkInline.tsx:320-760",
+    "srv:src/routes/devices.ts:559",
+    "pc:Eblusha.Desktop/Views/ChatsPage.SecretLink.cs:111-459,801-829",
+    "and:ui/chat/ChatScreen.kt:955-965,3819-4040",
+    "ios:Features/Chat/SecretChatCards.swift:212-420"
+   ],
+   "scout": "server-features.md §11.5"
+  },
+  {
+   "id": "secret.menu-hint-mismatch",
+   "section": "12, 18",
+   "claim": "Карточка пишет «⋮ → Добавить устройство», на телефонах это значок QR",
+   "src": [
+    "and:ui/chat/ChatScreen.kt:3856-3857 vs :957-965",
+    "ios:Features/Chat/ChatView.swift:551-562,753-762"
+   ],
+   "scout": "android-ui.md §13; ios-ui.md §15"
+  },
+  {
+   "id": "secret.legacy-web-only",
+   "section": "12",
+   "claim": "Секретки «старого образца» только в вебе",
+   "src": [
+    "pc:Eblusha.Desktop/Views/ChatsPage.Secret.cs:292"
+   ],
+   "scout": "native-pc-ui.md §12"
+  },
+  {
+   "id": "bot.system",
+   "section": "13",
+   "claim": "Бот не участник, не добавляется, работает в любой обычной беседе, не в секретках, не звонят",
+   "src": [
+    "srv:docs/bot-system.md:1-60,158",
+    "srv:src/lib/systemBot.ts:575"
+   ],
+   "scout": "server-features.md §12.1"
+  },
+  {
+   "id": "bot.trigger",
+   "section": "13",
+   "claim": "«Еблуша,» / ответ боту; плашка «Б Еблуша», «Спросить», Backspace; пересылка и правка не зовут",
+   "src": [
+    "srv:src/lib/systemBot.ts:135-190",
+    "srv:docs/bot-system.md:93-119,101",
+    "web:ui/components/bot/BotUi.tsx:23-46",
+    "pc:Eblusha.Desktop/Services/BotRules.cs:1-53",
+    "and:feature/bot/BotRules.kt:39-73,191-215",
+    "ios:Core/Bot/SystemBot.swift:14-47"
+   ],
+   "scout": "server-features.md §12.2"
+  },
+  {
+   "id": "bot.ui",
+   "section": "13",
+   "claim": "Вид ответа, «Уточнить», «Уточнить у Еблуши» (Android), «Да»/«Нет»",
+   "src": [
+    "web:ui/pages/chats/render/ChatMessageRow.tsx:1535-1556",
+    "and:ui/chat/BotChatUi.kt:155-180",
+    "and:ui/chat/ChatScreen.kt:2124-2130",
+    "ios:Features/Chat/ChatView.swift:1660-1680"
+   ],
+   "scout": "server-features.md §12.3"
+  },
+  {
+   "id": "bot.chat",
+   "section": "13",
+   "claim": "«Чат с Еблушей» выключен по умолчанию; пути включения; карточка бота: «ОТКРЫТЬ ЧАТ С ЕБЛУШЕЙ»/«К ЧАТУ С ЕБЛУШЕЙ», на ПК «ВКЛЮЧИТЬ ЧАТ С ЕБЛУШЕЙ»/«ОТКРЫТЬ ЧАТ С ЕБЛУШЕЙ»; выключение сохраняет историю; «Удалить чат» у чата с ботом есть везде, кроме iPhone",
+   "src": [
+    "srv:docs/bot-system.md:121-142",
+    "srv:src/routes/bot.ts:95-110",
+    "web:ui/components/bot/BotUi.tsx:85-140",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:7267-7289",
+    "and:ui/social/SettingsScreen.kt:206-215,270-320",
+    "ios:Features/Social/SettingsView.swift:316-352",
+    "web:ui/pages/chats/render/ChatModals.tsx:388",
+    "pc:Eblusha.Desktop/Views/ChatsPage.Bot.cs:167-176,334",
+    "and:ui/components/UserProfileCard.kt:455",
+    "ios:UI/Components/UserProfileCard.swift:810",
+    "ios:Features/Chat/ChatView.swift:806-808",
+    "ios:Features/Chat/ChatListView.swift:221-233"
+   ],
+   "scout": "server-features.md §12.4"
+  },
+  {
+   "id": "bot.delete-reply",
+   "section": "13",
+   "claim": "Ответ бота удаляет спросивший / владелец «Чата с Еблушей»",
+   "src": [
+    "srv:src/lib/systemBot.ts:540-574",
+    "srv:src/routes/messages.ts:331-341"
+   ],
+   "scout": "server-features.md §12.5"
+  },
+  {
+   "id": "bot.voice-images",
+   "section": "13",
+   "claim": "Голосовые не слушает; картинки до 3",
+   "src": [
+    "srv:bot/src/core/bot.ts:309-317",
+    "srv:bot/README.md:1-25"
+   ],
+   "scout": "server-features.md §12.1"
+  },
+  {
+   "id": "bot.limits",
+   "section": "13",
+   "claim": "150 вопросов в сутки на человека + денежный потолок",
+   "src": [
+    "srv:bot/README.md:71-97",
+    "журнал контейнера eblusha-bot evt:boot (userDailyQuestions:150, userDailyUsd:10)",
+    "mem:eblusha-bot.md"
+   ],
+   "scout": "server-features.md §12.6"
+  },
+  {
+   "id": "bot.valheim-ui",
+   "section": "13",
+   "claim": "Карта с «Живая карта», планы с «Да»/«Нет»",
+   "src": [
+    "and:ui/chat/BotChatUi.kt:205-221",
+    "web:ui/pages/chats/render/ChatMessageRow.tsx:1081,1185-1196",
+    "srv:bot/src/modules/valheim/index.ts:91 (свой systemPrompt модуля)"
+   ],
+   "scout": "server-features.md §13"
+  },
+  {
+   "id": "pc.tray",
+   "section": "14",
+   "claim": "Крестик прячет в трей; меню трея; «Выход»",
+   "src": [
+    "pc:Eblusha.Desktop/MainWindow.xaml.cs:338-353",
+    "pc:Eblusha.Desktop/MainWindow.xaml:103-117",
+    "pc:Eblusha.Desktop/MainWindow.xaml.cs:494-529"
+   ],
+   "scout": "native-pc-ui.md §1"
+  },
+  {
+   "id": "pc.second-launch",
+   "section": "14",
+   "claim": "2.0.10: повторный запуск молча завершается (перепроверить после 2.0.11)",
+   "src": [
+    "pc:Eblusha.Desktop/App.xaml.cs:112-117",
+    "pc:Eblusha.Desktop/Services/SingleInstance.cs:29-49,79-98"
+   ],
+   "scout": "native-pc-ui.md §1, §17"
+  },
+  {
+   "id": "pc.autostart",
+   "section": "14",
+   "claim": "«Запускать при входе в Windows», старт в трей",
+   "src": [
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:8570-8575",
+    "pc:Eblusha.Desktop/App.xaml.cs:173-180"
+   ],
+   "scout": "native-pc-ui.md §1"
+  },
+  {
+   "id": "pc.settings-sections",
+   "section": "14",
+   "claim": "7 разделов, Ctrl+1…7, Ctrl+F, «Очистить кэш», окно ≥1000×720",
+   "src": [
+    "pc:Eblusha.Desktop/Views/ChatsPage.SettingsShell.cs:54-63,95-146",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml:8498-8657",
+    "pc:Eblusha.Desktop/MainWindow.xaml.cs:757-760"
+   ],
+   "scout": "native-pc-ui.md §9"
+  },
+  {
+   "id": "pc.hotkeys",
+   "section": "14",
+   "claim": "Таблица клавиш ПК",
+   "src": [
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml.cs:2626-2690,8385-8435",
+    "pc:Eblusha.Desktop/Services/SystemIntegration.cs:865-873"
+   ],
+   "scout": "native-pc-ui.md §2"
+  },
+  {
+   "id": "calendar.web-only",
+   "section": "15",
+   "claim": "Календарь доступности только в вебе, только в 1:1; на ПК «пока только в веб-версии»",
+   "src": [
+    "web:features/availability/AvailabilityButton.tsx:11",
+    "web:features/availability/AvailabilityOverlay.tsx:583-815",
+    "web:ui/pages/chats/render/MessagesPane.tsx:853-855",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml.cs:6306-6307",
+    "and:ui/chat/ChatScreen.kt:944-1023 (нет значка календаря)",
+    "ios:Features/Chat/ChatHeader.swift:483-537 (нет значка календаря)"
+   ],
+   "scout": "server-features.md §9"
+  },
+  {
+   "id": "cloud",
+   "section": "15",
+   "claim": "Облако: /cloud, «хуяпки», роли, корзина 30 дней, 64 ГБ",
+   "src": [
+    "srv:docs/eblusha-cloud.md:1-80,181-199,552-575",
+    "srv:src/cloud/config.ts:36-48",
+    "web:cloud/components/ShareDialog.tsx:27-381"
+   ],
+   "scout": "server-features.md §15; web-ui.md §14"
+  },
+  {
+   "id": "missing.grep",
+   "section": "16",
+   "claim": "Список «Чего пока нет»",
+   "src": [
+    "web: grep mute|Notification|search|Поиск|pinned|archiv|folder|sticker|poll|theme|DND|block|forgot|deleteAccount по ui/ domain/ core/ features/ utils/ — функций нет",
+    "srv: grep router.(get|post|put|patch|delete) в src/routes — нет поиска сообщений, исключения участника, сброса пароля, удаления своей учётки",
+    "and:data/remote/*Api.kt — нет мьюта, блокировки, поиска сообщений, исключения, смены пароля",
+    "and-root:app/src/main/AndroidManifest.xml:42-45 (нет ACTION_SEND)",
+    "ios: перебор ios/Eblusha/**/*.swift — нет mute, FaceID, Share-расширения, PiP, mention, poll",
+    "pc:Eblusha.Desktop/Services/AppSettings.cs (нет настроек звука/мьюта)"
+   ],
+   "scout": "server-features.md §17; web-ui.md §13; native-pc-ui.md §16; android-ui.md §12; ios-ui.md §14"
+  },
+  {
+   "id": "mismatch.web-link-hint",
+   "section": "18",
+   "claim": "Веб: «Настройки → Устройства → Привязать» есть только на скрытой странице /settings («Устройства» → «Привязать новое устройство»); ссылок на неё в интерфейсе нет",
+   "src": [
+    "web:ui/components/LinkDeviceModal.tsx:273",
+    "web:ui/pages/SettingsPage.tsx:86-94",
+    "web:router.tsx:63",
+    "web:ui/web-mobile/MobileTabBar.tsx:80 (компонент нигде не подключён)"
+   ],
+   "scout": "web-ui.md «Замечания владельцу» п.1"
+  },
+  {
+   "id": "mismatch.strike-u",
+   "section": "18",
+   "claim": "Веб: на «Зачёркнутый» буква «U»",
+   "src": [
+    "web:ui/pages/chats/render/MessagesPane.tsx:2702-2710"
+   ],
+   "scout": "web-ui.md «Замечания владельцу» п.5"
+  },
+  {
+   "id": "mismatch.profile-link-device",
+   "section": "18",
+   "claim": "«Привязать новое устройство» в «Профиле» Android/iPhone — QR EBLUSHA_LINK_DEVICE, сканер секретки его не принимает",
+   "src": [
+    "and:ui/social/SettingsScreen.kt:246-253,381-409",
+    "and:domain/model/SocialModels.kt:47-54",
+    "and:feature/chat/ChatViewModel.kt:649-656",
+    "ios:Features/Social/SettingsView.swift:418-532"
+   ],
+   "scout": "android-ui.md §3"
+  },
+  {
+   "id": "contacts.remove",
+   "section": "5",
+   "claim": "Удалить друга: веб и ПК «Удалить из друзей», Android ✕ «Удалить»; веб и Android без вопроса, ПК — «Убрать из друзей» → «Убрать»; iPhone — «Удалить из контактов?»",
+   "src": [
+    "web:ui/pages/chats/render/ChatModals.tsx:2517-2523",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml.cs:5555-5570",
+    "and:ui/social/ContactsScreen.kt:237",
+    "ios:Features/Social/ContactsView.swift:101-109"
+   ],
+   "scout": "независимая проверка 2026-10-11"
+  },
+  {
+   "id": "conv.delete-labels",
+   "section": "6",
+   "claim": "Удалить личную беседу: шапка — «Удалить чат» везде; список — веб и ПК «Удалить беседу», Android «Удалить чат», iPhone «Удалить чат» / свайп «Удалить»; веб без вопроса",
+   "src": [
+    "web:ui/pages/chats/render/ChatModals.tsx:3287-3292,3401-3424",
+    "pc:Eblusha.Desktop/Views/ChatsPage.xaml.cs:8300-8306",
+    "pc:Eblusha.Desktop/Views/ChatsPage.Group.cs:1032-1040,1096",
+    "and:ui/chat/ChatListScreen.kt:520-527",
+    "ios:Features/Chat/ChatListView.swift:221-233"
+   ],
+   "scout": "независимая проверка 2026-10-11"
+  },
+  {
+   "id": "secret.link-pc-code-only",
+   "section": "12",
+   "claim": "На ПК привязка секретного чата — только 8-значным кодом, сканера QR нет",
+   "src": [
+    "pc:Eblusha.Desktop/Views/ChatsPage.SecretLink.cs (нет «Сканировать»)",
+    "pc:Eblusha.Desktop/Services/Secret/SecretThreads.cs:208"
+   ],
+   "scout": "независимая проверка 2026-10-11"
+  },
+  {
+   "id": "layout.web-profile-vs-settings",
+   "section": "3",
+   "claim": "Веб: окно «Профиль» — почти все настройки; имя, «О себе», статус — только на /settings",
+   "src": [
+    "web:ui/pages/chats/render/ChatModals.tsx:522,1261-1298",
+    "web:ui/pages/SettingsPage.tsx:60-84"
+   ],
+   "scout": "независимая проверка 2026-10-11"
+  },
+  {
+   "id": "notif.mute",
+   "section": "10",
+   "claim": "«Без звука» для любой беседы: первый пункт меню беседы, сроки 1 час/8 часов/1 день/1 неделю/Навсегда, «Включить звук», значок, серое непрочитанное, пробития, синхронизация",
+   "src": [
+    "srv:docs/conversation-mute.md §6–§7",
+    "srv:src/lib/conversationMuteRules.ts",
+    "srv:src/routes/conversations.ts (POST /conversations/:id/mute)",
+    "web:domain/mute/muteRules.ts:34-49",
+    "web:ui/pages/chats/components/ConversationMuteUi.tsx",
+    "web:ui/pages/chats/render/ChatModals.tsx (MuteMenuSection)",
+    "pc(winui-git chat-mute):Eblusha.Desktop/Services/MuteRules.cs:56-100",
+    "pc(winui-git chat-mute):Eblusha.Desktop/Views/ChatsPage.Mute.cs:82",
+    "and:feature/mute/MuteRules.kt:30-32",
+    "and:ui/chat/MuteUi.kt",
+    "and:ui/chat/ChatListScreen.kt:562",
+    "and:ui/chat/ChatScreen.kt:1046",
+    "ios:Features/Chat/ConversationMuteUI.swift",
+    "ios:Features/Chat/ChatListView.swift:143-180",
+    "ios:Features/Chat/ChatView.swift:786"
+   ],
+   "scout": "сверено по коду ветки release/2026-10-11 (2026-10-11)"
+  },
+  {
+   "id": "notif.ios-badge",
+   "section": "10",
+   "claim": "число на иконке iPhone без заглушённых бесед, ведёт сервер (APNS_BADGE=on, caps badge)",
+   "src": [
+    "srv:src/push/badge.ts",
+    "srv:docs/ios-handoff.md §16",
+    "ios:Core/Push/PushRepository.swift"
+   ],
+   "scout": "ios-handoff §16"
+  },
+  {
+   "id": "bot.think-better",
+   "section": "13",
+   "claim": "«Подумай лучше» рядом с «Уточнить», «🧠 Подумал лучше», 5 в сутки",
+   "src": [
+    "srv:docs/bot-cards.md §4",
+    "srv:bot/README.md BOT_DEEP_USER_DAILY",
+    "web:ui/components/bot/BotAnswerActions.tsx:60-75",
+    "web:domain/bot/systemBot.ts:279-281",
+    "ios:Core/Bot/SystemBot.swift (ThinkBetter)",
+    "pc(winui-git promise-timer):Eblusha.Desktop/Services/BotRules.cs"
+   ],
+   "scout": "docs/bot-cards.md"
+  },
+  {
+   "id": "bot.memory",
+   "section": "13",
+   "claim": "бот помнит свои разговоры в беседе (обращения и ответы), в «Чате с Еблушей» — весь чат; удалённое забывает",
+   "src": [
+    "srv:bot/src/llm/prompt.ts INTRO_MEMORY",
+    "srv:bot/README.md «Память о своих разговорах»"
+   ],
+   "scout": "eblusha-bot.md выпуск 3"
+  },
+  {
+   "id": "bot.promise",
+   "section": "13",
+   "claim": "таймер обещания: как ставить, карточка «⏱ ТАЙМЕР», «Пришёл»/«Отменить»/«Вернуть», авто-отметка звонок/Valheim, продление, напоминания 0/+15/+30, 6 ч, 3 на беседу, пунктуальность",
+   "src": [
+    "srv:docs/bot-cards.md §2",
+    "srv:src/lib/promiseTimer.ts",
+    "web:domain/cards/promiseCard.ts:336-341",
+    "web:ui/components/bot/PromiseTimerCard.tsx:150-220",
+    "ios:Features/Chat/PromiseCardView.swift",
+    "and:scratchpad promise-timer/android-on-mute.patch",
+    "pc(winui-git promise-timer):Eblusha.Desktop/Services/PromiseRules.cs"
+   ],
+   "scout": "docs/bot-cards.md, docs/promise-card-vectors.json"
+  },
+  {
+   "id": "bot.share",
+   "section": "13",
+   "claim": "«поделиться перепиской»: карточка «🔒 ПЕРЕПИСКА», «Сегодня»/«Эта неделя»/«Всё время», «Включать фото», «Поделиться»/«Не делиться», час, «Еблуша, забудь переписку», 30 минут после отказа",
+   "src": [
+    "srv:docs/bot-cards.md §3",
+    "srv:src/lib/botShare.ts",
+    "web:ui/components/bot/ShareCard.tsx:120-195",
+    "web:domain/cards/shareCard.ts:14-15",
+    "ios:Features/Chat/ShareCardView.swift",
+    "pc(winui-git promise-timer):Eblusha.Desktop/Services/ShareRules.cs"
+   ],
+   "scout": "docs/bot-cards.md, docs/share-card-vectors.json"
+  },
+  {
+   "id": "bot.valheim-links-history",
+   "section": "13",
+   "claim": "привязка ника фразой, владелец привязывает любого; летопись сервера (valheim_history) раз в сутки",
+   "src": [
+    "srv:bot/src/core/links.ts",
+    "srv:bot/src/modules/valheim/history.ts",
+    "host:/DATA/valheim-history/export/history-bot.json"
+   ],
+   "scout": "eblusha-bot.md, valheim-history.md"
+  },
+  {
+   "id": "pc.window-2.0.11",
+   "section": "2, 14",
+   "claim": "окно ПК 2.0.11: не свёрнутым, повторный запуск поверх, помнит место и размер, после обновления поверх",
+   "src": [
+    "pc(winui-git fix-startwin):CHANGELOG.md «2.0.11»"
+   ],
+   "scout": "CHANGELOG натива"
+  }
+ ]
+}
