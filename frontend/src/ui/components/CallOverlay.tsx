@@ -54,7 +54,7 @@ if (typeof window !== 'undefined' && typeof navigator !== 'undefined' && navigat
   window.__eblushaEnumeratePatched = true
 }
 import { createPortal } from 'react-dom'
-import { LiveKitRoom, VideoConference, MediaDeviceSelect, useConnectionState, useLocalParticipant, useRoomContext } from '@livekit/components-react'
+import { LiveKitRoom, VideoConference, useConnectionState, useLocalParticipant, useMaybeLayoutContext, useRoomContext } from '@livekit/components-react'
 import '@livekit/components-styles'
 import { X } from 'lucide-react'
 import { convertToProxyUrl } from '../../utils/media'
@@ -63,6 +63,9 @@ import { normalizeLivekitServerUrl } from '../../utils/livekitUrl'
 import { signalApkCallActive } from '../../utils/apkCallSignal'
 import { installScreenShareAudioGuard } from '../../utils/screenShareAudio'
 import { callConnectOptions } from '../../utils/callRouting'
+import { useVoiceProcessing } from '../../utils/voiceProcessing'
+import { SettingsCenter } from '../settings/SettingsCenter'
+import { useLocalSettingsNav } from '../settings/settingsNav'
 import { CallConnecting } from './CallConnecting'
 import { CallMini } from './CallMini'
 import { CallStatusPill } from './CallSecurityMark'
@@ -156,32 +159,6 @@ type Props = {
   callStartedAt?: number | null
 }
 
-const LK_SETTINGS_KEYS = {
-  aec: 'eb.lk.webrtc.aec',
-  ns: 'eb.lk.webrtc.ns',
-  agc: 'eb.lk.webrtc.agc',
-} as const
-
-function readStoredBool(key: string, fallback: boolean): boolean {
-  if (typeof window === 'undefined') return fallback
-  try {
-    const raw = window.localStorage.getItem(key)
-    if (raw === null) return fallback
-    return raw === '1' || raw === 'true'
-  } catch {
-    return fallback
-  }
-}
-
-function writeStoredBool(key: string, value: boolean) {
-  if (typeof window === 'undefined') return
-  try {
-    window.localStorage.setItem(key, value ? '1' : '0')
-  } catch {
-    // ignore
-  }
-}
-
 function clampNumber(n: number, min: number, max: number) {
   return Math.min(max, Math.max(min, n))
 }
@@ -197,43 +174,6 @@ function isDebugFlagEnabled(storageKey: string, queryKey: string): boolean {
   } catch {
     return false
   }
-}
-
-function ToggleRow({
-  label,
-  description,
-  checked,
-  onChange,
-  disabled = false,
-  rightHint,
-}: {
-  label: string
-  description?: string
-  checked: boolean
-  onChange: (next: boolean) => void
-  disabled?: boolean
-  rightHint?: string
-}) {
-  return (
-    <div className="eb-toggle-row">
-      <div className="eb-toggle-text">
-        <div className="eb-toggle-label">{label}</div>
-        {description ? <div className="eb-toggle-desc">{description}</div> : null}
-      </div>
-      <div className="eb-toggle-right">
-        {rightHint ? <div className="eb-toggle-hint">{rightHint}</div> : null}
-        <label className={`eb-switch ${disabled ? 'is-disabled' : ''}`}>
-          <input
-            type="checkbox"
-            checked={checked}
-            disabled={disabled}
-            onChange={(e) => onChange(e.target.checked)}
-          />
-          <span className="eb-switch-track" aria-hidden="true" />
-        </label>
-      </div>
-    </div>
-  )
 }
 
 /**
@@ -1968,13 +1908,21 @@ function ConnectProgressWatcher({
   return null
 }
 
-function CallSettings() {
+/**
+ * «Настройки» в панели звонка (шестерёнка LiveKit). Раньше — окно с обработкой микрофона и тремя списками устройств;
+ * теперь это «Центр управления» на разделе «Звук и видео» (вкладка «Устройства»): тот же центр, что и вне звонка,
+ * но смонтирован ВНУТРИ комнаты LiveKit, чтобы списки устройств работали. Закрытие возвращает в звонок.
+ *
+ * Сам компонент по-прежнему монтируется всегда (VideoConference рисует SettingsComponent и скрывает его) —
+ * потому здесь живёт и применение AEC / NS / AGC к микрофону: ключи eb.lk.webrtc.* те же, что и раньше, но
+ * переключаются они теперь в центре и приходят сюда через общее хранилище (utils/voiceProcessing).
+ */
+export function CallSettings() {
   const room = useRoomContext()
   const { isMicrophoneEnabled, microphoneTrack } = useLocalParticipant()
-
-  const [aec, setAec] = useState<boolean>(() => readStoredBool(LK_SETTINGS_KEYS.aec, true))
-  const [ns, setNs] = useState<boolean>(() => readStoredBool(LK_SETTINGS_KEYS.ns, true))
-  const [agc, setAgc] = useState<boolean>(() => readStoredBool(LK_SETTINGS_KEYS.agc, true))
+  const { aec, ns, agc } = useVoiceProcessing()
+  const layout = useMaybeLayoutContext()
+  const open = !!layout?.widget?.state?.showSettings
 
   // Apply WebRTC constraints by restarting the mic track with AudioCaptureOptions.
   const lastAppliedRef = useRef<string>('')
@@ -1993,205 +1941,23 @@ function CallSettings() {
       .catch((e) => console.warn('[CallSettings] Failed to apply mic capture options', e))
   }, [room, isMicrophoneEnabled, aec, ns, agc, microphoneTrack?.trackSid])
 
-  // Clean device labels: remove device codes like "(0bda:0567)" or "(10d6:4801)" and wrap text in span for animation
-  // Also filter out duplicate devices with "Оборудование -" or "По умолчанию -" prefixes
-  useEffect(() => {
-    const cleanup = () => {
-      // First pass: remove duplicate devices with "Оборудование -" or "По умолчанию -" prefixes
-      const listItems = document.querySelectorAll('.call-container .lk-settings-menu-modal .lk-media-device-select li')
-      const devicesToRemove: HTMLElement[] = []
-      const deviceNames = new Map<string, HTMLElement[]>() // Map: normalized name -> list items
-      
-      listItems.forEach((li) => {
-        const btn = li.querySelector('.lk-button')
-        if (!btn) return
-        const rawText = btn.textContent || ''
-        // Check if it has prefix
-        const hasPrefix = /^(Оборудование\s*-\s*|По\s+умолчанию\s*-\s*)/i.test(rawText)
-        // Normalize name (remove prefix and codes for comparison)
-        let normalized = rawText.replace(/^(Оборудование\s*-\s*|По\s+умолчанию\s*-\s*)/i, '').trim()
-        normalized = normalized.replace(/\s*\([0-9a-fA-F]{4}:[0-9a-fA-F]{0,4}\)?\s*/g, '').trim()
-        
-        if (!deviceNames.has(normalized)) {
-          deviceNames.set(normalized, [])
-        }
-        deviceNames.get(normalized)!.push(li as HTMLElement)
-        
-        // Mark for removal if it has prefix
-        if (hasPrefix) {
-          devicesToRemove.push(li as HTMLElement)
-        }
-      })
-      
-      // Remove devices with prefixes (keep only versions without prefixes)
-      devicesToRemove.forEach((li) => {
-        li.remove()
-      })
-      
-      // Second pass: clean remaining device labels
-      const buttons = document.querySelectorAll('.call-container .lk-settings-menu-modal .lk-media-device-select li > .lk-button')
-      buttons.forEach((btn) => {
-        // Find text node or existing span
-        const textNode = Array.from(btn.childNodes).find((n) => n.nodeType === Node.TEXT_NODE) as Text | undefined
-        let span = btn.querySelector('span.eb-device-label') as HTMLSpanElement | null
-        
-        if (textNode && !span) {
-          // Wrap text in span if not already wrapped
-          const text = textNode.textContent || ''
-          span = document.createElement('span')
-          span.className = 'eb-device-label'
-          span.textContent = text
-          btn.replaceChild(span, textNode)
-        }
-        
-        if (span) {
-          let text = span.textContent || ''
-          // Remove prefixes "Оборудование - " and "По умолчанию - " to avoid duplicates
-          text = text.replace(/^(Оборудование\s*-\s*|По\s+умолчанию\s*-\s*)/i, '').trim()
-          // Remove device codes: patterns like "(0bda:0567)", "(10d6:4801)", "(08bb:2902)" etc.
-          // Also remove incomplete codes like "(0bda:(" at the end
-          text = text.replace(/\s*\([0-9a-fA-F]{4}:[0-9a-fA-F]{0,4}\)?\s*/g, '').trim()
-          // Remove trailing incomplete codes like "(0bda:("
-          text = text.replace(/\s*\([0-9a-fA-F]{4}:\s*$/, '').trim()
-          if (text !== span.textContent) {
-            span.textContent = text
-          }
-          
-          // Check if text overflows and mark for animation (animation will be enabled on hover via CSS)
-          // Need to measure after text update, so use a small delay
-          setTimeout(() => {
-            const btnRect = btn.getBoundingClientRect()
-            const spanRect = span.getBoundingClientRect()
-            const padding = 24 // 12px left + 12px right
-            const availableWidth = btnRect.width - padding
-            if (spanRect.width > availableWidth) {
-              // Mark as overflowing and calculate scroll distance to show full text
-              const scrollDistance = spanRect.width - availableWidth
-              span.setAttribute('data-overflows', 'true')
-              span.style.setProperty('--eb-device-scroll-distance', `${-scrollDistance}px`)
-            } else {
-              // Remove overflow marker
-              span.removeAttribute('data-overflows')
-              span.style.removeProperty('--eb-device-scroll-distance')
-            }
-          }, 10)
-        }
-      })
-    }
-    // Run immediately and also observe changes
-    cleanup()
-    const mo = new MutationObserver(() => {
-      // Small delay to let DOM settle
-      setTimeout(cleanup, 50)
-    })
-    const container = document.querySelector('.call-container .lk-settings-menu-modal')
-    if (container) {
-      mo.observe(container, { childList: true, subtree: true, characterData: true })
-      return () => mo.disconnect()
-    }
-  }, [])
+  if (!open) return null
+  return <CallSettingsCenter onClose={() => layout?.widget?.dispatch?.({ msg: 'toggle_settings' })} />
+}
 
+function CallSettingsCenter({ onClose }: { onClose: () => void }) {
+  const nav = useLocalSettingsNav({ kind: 'section', id: 'av' }, onClose)
+  if (!nav.view) return null
   return (
-    <div className="eb-call-settings" style={{ width: '100%' }}>
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: 12,
-          marginBottom: 12,
-        }}
-      >
-        <div style={{ fontSize: 18, fontWeight: 600 }}>Настройки</div>
-        <button
-          type="button"
-          className="btn btn-icon btn-ghost"
-          aria-label="Закрыть настройки"
-          title="Закрыть настройки"
-          onClick={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            // Close settings via LiveKit's native SettingsMenuToggle (it uses `.lk-settings-toggle`)
-            const toggle = document.querySelector('.call-container .lk-settings-toggle') as HTMLButtonElement | null
-            if (toggle) {
-              toggle.click()
-              return
-            }
-            // Fallback: hide the modal if the toggle button isn't found (should be rare)
-            const modal = document.querySelector('.call-container .lk-settings-menu-modal') as HTMLElement | null
-            if (modal) modal.style.display = 'none'
-          }}
-          style={{ padding: 8 }}
-        >
-          <X size={18} />
-        </button>
-      </div>
-
-      <div className="eb-settings-section">
-        <div className="eb-section-title">Обработка микрофона</div>
-        <ToggleRow
-          label="WebRTC: AEC (анти-эхо)"
-          description="Эхо‑подавление на уровне браузера (лучше включать почти всегда)."
-          checked={aec}
-          onChange={(v) => {
-            setAec(v)
-            writeStoredBool(LK_SETTINGS_KEYS.aec, v)
-          }}
-        />
-        <ToggleRow
-          label="WebRTC: NS (шумоподавление)"
-          description="Шумоподавление на уровне браузера."
-          checked={ns}
-          onChange={(v) => {
-            setNs(v)
-            writeStoredBool(LK_SETTINGS_KEYS.ns, v)
-          }}
-        />
-        <ToggleRow
-          label="WebRTC: AGC (автогейн)"
-          description="Автоматическая регулировка усиления микрофона."
-          checked={agc}
-          onChange={(v) => {
-            setAgc(v)
-            writeStoredBool(LK_SETTINGS_KEYS.agc, v)
-          }}
-        />
-        <div className="eb-settings-note">
-          Изменения AEC/NS/AGC применяются перезапуском микрофона и могут дать короткий “пик” при переключении.
-        </div>
-      </div>
-
-
-      <div
-        className="eb-settings-grid"
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-          gap: 16,
-          alignItems: 'start',
-          marginBottom: 12,
-        }}
-      >
-        <div className="eb-device-col" style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>Микрофон</div>
-          <MediaDeviceSelect kind="audioinput" requestPermissions />
-        </div>
-        <div className="eb-device-col" style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>Камера</div>
-          <MediaDeviceSelect kind="videoinput" requestPermissions />
-        </div>
-        <div className="eb-device-col" style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>Вывод звука</div>
-          <MediaDeviceSelect kind="audiooutput" requestPermissions />
-          <div style={{ fontSize: 11, opacity: 0.65, marginTop: 6 }}>
-            На Safari/iOS переключение устройства вывода может быть недоступно.
-          </div>
-        </div>
-      </div>
-      <div style={{ fontSize: 12, opacity: 0.8 }}>
-        Выберите устройства ввода. Закрыть это окно можно кнопкой «Настройки» внизу.
-      </div>
-    </div>
+    <SettingsCenter
+      portal
+      inRoom
+      fromCall
+      zIndex={1050}
+      nav={nav}
+      view={nav.view}
+      host={{ statusText: '', callActive: true }}
+    />
   )
 }
 
@@ -2722,6 +2488,8 @@ export function CallOverlay({ open, conversationId, onClose, onMinimize, minimiz
     .call-container .eb-switch.is-disabled { opacity: 0.55; pointer-events: none; }
 
     /* Settings modal: keep layout contained and prevent long device labels from breaking columns */
+    /* Центр настроек рисуется отдельным слоем (CallSettingsCenter); сам контейнер LiveKit не показываем. */
+    .call-container .lk-settings-menu-modal { display: none !important; }
     .call-container .lk-settings-menu-modal {
       width: min(980px, calc(100vw - 32px)) !important;
       max-width: min(980px, calc(100vw - 32px)) !important;

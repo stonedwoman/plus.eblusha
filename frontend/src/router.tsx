@@ -15,7 +15,7 @@ const RegisterPage = lazy(() => import('./ui/pages/RegisterPage'))
 const ChatsPage = lazy(() => import('./ui/pages/ChatsPage'))
 const MobileChatsRoute = lazy(() => import('./ui/web-mobile/MobileChatsRoute').then((module) => ({ default: module.MobileChatsRoute })))
 const ContactsPage = lazy(() => import('./ui/pages/ContactsPage'))
-const SettingsPage = lazy(() => import('./ui/pages/SettingsPage'))
+const SettingsRoute = lazy(() => import('./ui/pages/SettingsRoute'))
 // Dev-стенд экрана подключения к звонку: в production-сборке маршрута нет.
 const CallConnectingDemo = import.meta.env.DEV ? lazy(() => import('./ui/dev/CallConnectingDemo')) : null
 // Dev-стенд баннера «Переезжайте на новую Еблушу» (подставной window.native) — тоже только dev.
@@ -25,6 +25,8 @@ const CallLockDemo = import.meta.env.DEV ? lazy(() => import('./ui/dev/CallLockD
 // Dev-стенд «местного времени собеседника» под статусом в шапке 1:1 — только dev.
 const LocalTimeDemo = import.meta.env.DEV ? lazy(() => import('./ui/dev/LocalTimeDemo')) : null
 // Dev-стенд карточек бота (таймер обещания, «поделиться перепиской», «Подумай лучше») — только dev.
+// Dev-стенд «Настройки» из звонка (центр настроек внутри комнаты LiveKit без сервера) — только dev.
+const SettingsCallDemo = import.meta.env.DEV ? lazy(() => import('./ui/dev/SettingsCallDemo')) : null
 const BotCardsDemo = import.meta.env.DEV ? lazy(() => import('./ui/dev/BotCardsDemo')) : null
 
 
@@ -37,6 +39,7 @@ const messengerRoutes: RouteObject[] = [
   ...(ElectronMigrationDemo ? [{ path: '/__dev/electron-migration', element: withSuspense(<ElectronMigrationDemo />) }] : []),
   ...(CallLockDemo ? [{ path: '/__dev/call-lock', element: withSuspense(<CallLockDemo />) }] : []),
   ...(LocalTimeDemo ? [{ path: '/__dev/local-time', element: withSuspense(<LocalTimeDemo />) }] : []),
+  ...(SettingsCallDemo ? [{ path: '/__dev/settings-call', element: withSuspense(<SettingsCallDemo />) }] : []),
   ...(BotCardsDemo
     ? [
         { path: '/__dev/bot-cards', element: withSuspense(<BotCardsDemo />) },
@@ -68,7 +71,8 @@ const messengerRoutes: RouteObject[] = [
           { path: 'chats', element: withSuspense(<MobileChatsRoute />) },
           { path: 'chats/:conversationId', element: withSuspense(<MobileChatsRoute />) },
           { path: 'contacts', element: withSuspense(<ContactsPage />) },
-          { path: 'settings', element: withSuspense(<SettingsPage />) },
+          { path: 'settings', element: withSuspense(<SettingsRoute />) },
+          { path: 'settings/:section', element: withSuspense(<SettingsRoute />) },
           { path: '*', element: <Static404Redirect /> },
         ],
       },

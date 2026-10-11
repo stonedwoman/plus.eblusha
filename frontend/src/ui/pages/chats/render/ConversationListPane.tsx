@@ -539,7 +539,7 @@ export function renderConversationList(mobile: boolean, ctx: ConversationListPan
               const avatarUrl = (meInfoQuery.data as any)?.avatarUrl ?? me?.avatarUrl ?? undefined
               return (
                 <Avatar
-                  name={me?.displayName ?? me?.username ?? 'Me'}
+                  name={(meInfoQuery.data as any)?.displayName || me?.displayName || me?.username || 'Me'}
                   id={me?.id ?? 'me'}
                   presence={presenceWithGame}
                   inCall={isMeInAnyCall}
@@ -548,7 +548,7 @@ export function renderConversationList(mobile: boolean, ctx: ConversationListPan
               )
             })()}
             <div>
-              <div style={{ fontWeight: 700 }}>{me?.displayName ?? me?.username ?? 'Я'}</div>
+              <div style={{ fontWeight: 700 }}>{(meInfoQuery.data as any)?.displayName || me?.displayName || me?.username || 'Я'}</div>
               {(() => {
                 const myId = me?.id
                 const g = myId ? presenceGameByUserId[myId]?.game : undefined

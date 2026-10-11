@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import { execSync } from 'node:child_process'
 import path from 'node:path'
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
@@ -31,7 +32,18 @@ function copyPublicDirWithoutUpdates(): Plugin {
   }
 }
 
+// Метка сборки для строки «Еблуша в браузере · 7d5cc2a» в настройках: короткий хеш коммита.
+// Нет git (или собирают из архива) — метки нет, и строки в настройках тоже не будет.
+function buildLabel(): string {
+  try {
+    return execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim()
+  } catch {
+    return ''
+  }
+}
+
 export default defineConfig({
+  define: { __EB_BUILD__: JSON.stringify(buildLabel()) },
   plugins: [react(), copyPublicDirWithoutUpdates()],
   build: {
     // копирование public/ делает copyPublicDirWithoutUpdates (без updates/ и тяжёлых файлов)
