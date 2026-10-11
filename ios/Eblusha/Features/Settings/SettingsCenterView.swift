@@ -185,6 +185,7 @@ struct SettingsCenterView: View {
         let count = nav.matched.count
         return HStack(spacing: 10) {
             Image(systemName: "magnifyingglass").font(.system(size: 15)).foregroundStyle(Eb.textMuted)
+                .accessibilityHidden(true)
             TextField("", text: Binding(get: { nav.query }, set: { nav.query = String($0.prefix(80)) }),
                       prompt: Text("Найти настройку").foregroundStyle(Eb.textDim))
                 .ebFont(14.5)
@@ -518,6 +519,7 @@ struct SettingsCenterView: View {
                 Button { askExit = true } label: {
                     HStack(spacing: 10) {
                         Image(systemName: "rectangle.portrait.and.arrow.right").font(.system(size: 17, weight: .regular))
+                            .accessibilityHidden(true)
                         Text("Выйти из Еблуши").ebFont(15, .semibold)
                         Spacer(minLength: 0)
                     }

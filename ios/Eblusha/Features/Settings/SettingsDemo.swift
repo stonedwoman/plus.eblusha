@@ -136,7 +136,7 @@ private struct DemoAccessibilityBadge: View {
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        Text("reduceMotion=\(reduceMotion) type=\(String(describing: typeSize)) scheme=\(String(describing: scheme))")
+        Text(verbatim: "reduceMotion=\(reduceMotion) type=\(String(describing: typeSize)) scheme=\(String(describing: scheme))")
             .font(.system(size: 10, design: .monospaced))
             .foregroundStyle(.white)
             .padding(4)

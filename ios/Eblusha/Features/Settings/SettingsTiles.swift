@@ -73,6 +73,21 @@ struct SettingsTile<Content: View, Action: View>: View {
                 .padding(.bottom, 14)
         }
         .frame(minHeight: minHeight)
+        // «!» — значком на углу плитки, а не в строке головы: на узком экране (iPhone SE) название
+        // не должно сжиматься или обрезаться из-за него.
+        .overlay(alignment: .topTrailing) {
+            if attention {
+                Text("!")
+                    .font(.system(size: 11, weight: .heavy))
+                    .foregroundStyle(.white)
+                    .frame(width: 18, height: 18)
+                    .background(Circle().fill(Eb.danger))
+                    .overlay(Circle().strokeBorder(Eb.paper, lineWidth: 2))
+                    .offset(x: 5, y: -5)
+                    .accessibilityHidden(true)
+                    .allowsHitTesting(false)
+            }
+        }
     }
 
     private var head: some View {
@@ -82,23 +97,14 @@ struct SettingsTile<Content: View, Action: View>: View {
                 .ebFont(14.5, .bold, relativeTo: .subheadline)
                 .foregroundStyle(Eb.textPrimary)
                 .lineLimit(1)
-                .minimumScaleFactor(0.7)
+                .minimumScaleFactor(0.75)
             if dot {
                 Circle().fill(Eb.brand600).frame(width: 8, height: 8)
                     .padding(3)
                     .background(Circle().fill(Eb.brand600.opacity(0.18)))
                     .accessibilityHidden(true)
             }
-            Spacer(minLength: 4)
-            if attention {
-                Text("!")
-                    .font(.system(size: 11, weight: .heavy))
-                    .foregroundStyle(.white)
-                    .frame(width: 18, height: 18)
-                    .background(Circle().fill(Eb.danger))
-                    .overlay(Circle().strokeBorder(Eb.surface200, lineWidth: 2))
-                    .accessibilityHidden(true)
-            }
+            Spacer(minLength: 0)
         }
     }
 }
@@ -213,7 +219,7 @@ struct ConnectionTileContent: View {
                 .tracking(-0.3)
                 .foregroundStyle(Eb.logoCream)
                 .lineLimit(1)
-                .minimumScaleFactor(0.7)
+                .minimumScaleFactor(0.75)
             EbCapsule(height: 26, horizontal: 10) {
                 Text(server.title).ebFont(12, mono: true).foregroundStyle(Eb.textMuted).lineLimit(1)
             }

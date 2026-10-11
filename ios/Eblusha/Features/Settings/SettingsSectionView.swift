@@ -188,6 +188,7 @@ struct SettingsSectionView: View {
     private var photoRow: some View {
         let profile = vm.ui.profile
         let name = profile?.name ?? "?"
+        let busy = vm.ui.avatarBusy
         return EbRow(id: "p-photo") {
             VStack(alignment: .leading, spacing: 0) {
                 EbRowText(title: "Фото профиля", desc: "В круг попадёт центральная часть фото.", desc2: "Новое фото сохраняется сразу.")
@@ -196,11 +197,11 @@ struct SettingsSectionView: View {
                     PhotosPicker(selection: $avatarItem, matching: .images) {
                         ZStack {
                             AvatarView(name: name, avatarUrl: profile?.avatarUrl, size: 56)
-                            if vm.ui.avatarBusy { ProgressView().tint(.white) }
+                            if busy { ProgressView().tint(.white) }
                         }
                     }
                     .buttonStyle(.plain)
-                    .disabled(vm.ui.avatarBusy)
+                    .disabled(busy)
                     .accessibilityHidden(true)
                     PhotosPicker(selection: $avatarItem, matching: .images) {
                         EbPillLabel(title: profile?.avatarUrl == nil ? "Добавить фото" : "Заменить фото", symbol: "photo")
