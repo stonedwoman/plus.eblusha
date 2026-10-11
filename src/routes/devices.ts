@@ -209,8 +209,9 @@ router.post("/:deviceId/push", async (req, res) => {
       token: z.string().min(10).max(4096),
       provider: z.enum(["fcm", "apns", "apns-voip"]).default("fcm"),
       // Что умеет приложение сверх базового контракта; незнакомое игнорируется. Сейчас одно: "badge" —
-      // iOS-сборка сама сбрасывает значок и просит сервер вести его число (push/badge.ts).
-      caps: z.array(z.string().max(32)).max(16).optional(),
+      // iOS-сборка сама сбрасывает значок и просит сервер вести его число (push/badge.ts). Кривое поле
+      // регистрацию токена не роняет (catch): без пушей человек остался бы из-за необязательного признака.
+      caps: z.array(z.unknown()).max(64).optional().catch(undefined),
     })
     .safeParse(req.body);
   if (!parsed.success) {

@@ -727,6 +727,13 @@ async function main() {
         assert.ok(!(await redis.hExists(capKey, uNew)), "VoIP-регистрация объявление не ставит");
         const fcm = await call("POST", `/api/devices/${uPc}/push`, { token: U.token, device: uPc, body: { token: `fcm_${b64()}`, provider: "fcm" } });
         assert.deepEqual(fcm.body, { ok: true });
+        // Кривое caps регистрацию не роняет: токен записан, значок не ведётся.
+        for (const caps of ["badge", [1, null, { x: 1 }], Array.from({ length: 100 }, () => "badge")]) {
+          const bad = await regPush(uOld, { token: tokOld, provider: "apns", caps });
+          assert.equal(bad.status, 200, JSON.stringify(bad.body));
+          assert.equal(bad.body.badge, false, JSON.stringify(caps).slice(0, 40));
+        }
+        assert.equal((await prisma.userDevice.findUnique({ where: { id: uOld } }))?.pushToken, tokOld);
         // Итог для следующих шагов: uNew — с caps, uOld — без.
         (env as any).APNS_BADGE = "on";
         const e = await regPush(uNew, { token: tokNew, provider: "apns", caps: ["badge"] });
