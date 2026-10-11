@@ -3,79 +3,23 @@ import { createPortal } from 'react-dom'
 import { useLocalParticipant, useRoomContext } from '@livekit/components-react'
 import { X } from 'lucide-react'
 import { installScreenShareAudioGuard } from '../../utils/screenShareAudio'
+import {
+  DEFAULT_AUDIO,
+  DEFAULT_FPS,
+  DEFAULT_RESOLUTION,
+  FPS_OPTIONS,
+  RESOLUTION_PRESETS,
+  STORAGE_KEYS,
+  readAudio,
+  readFps,
+  readResolution,
+  writeStored,
+  type FpsValue,
+  type ResolutionKey,
+} from '../../utils/screenSharePrefs'
+export type { FpsValue, ResolutionKey } from '../../utils/screenSharePrefs'
 
 installScreenShareAudioGuard()
-
-// Storage keys (per-browser preferences)
-const STORAGE_KEYS = {
-  resolution: 'eb.lk.screenShare.resolution',
-  fps: 'eb.lk.screenShare.fps',
-  audio: 'eb.lk.screenShare.audio',
-} as const
-
-export type ResolutionKey = '480p' | '720p' | '1080p' | '1440p' | '4k' | 'source'
-export type FpsValue = 5 | 15 | 30 | 60
-
-type ResolutionPreset = {
-  label: string
-  hint: string
-  width: number
-  height: number
-} | {
-  label: string
-  hint: string
-  width: null
-  height: null
-}
-
-const RESOLUTION_PRESETS: Record<ResolutionKey, ResolutionPreset> = {
-  '480p': { label: '480p', hint: '854 × 480', width: 854, height: 480 },
-  '720p': { label: '720p', hint: '1280 × 720', width: 1280, height: 720 },
-  '1080p': { label: '1080p', hint: '1920 × 1080', width: 1920, height: 1080 },
-  '1440p': { label: '1440p', hint: '2560 × 1440', width: 2560, height: 1440 },
-  '4k': { label: '4K', hint: '3840 × 2160', width: 3840, height: 2160 },
-  'source': { label: 'Исходное', hint: 'без понижения', width: null, height: null },
-}
-
-const FPS_OPTIONS: FpsValue[] = [5, 15, 30, 60]
-
-const DEFAULT_RESOLUTION: ResolutionKey = '1080p'
-const DEFAULT_FPS: FpsValue = 30
-const DEFAULT_AUDIO = false
-
-function readStored(key: string, fallback: string): string {
-  if (typeof window === 'undefined') return fallback
-  try {
-    const raw = window.localStorage.getItem(key)
-    return raw ?? fallback
-  } catch {
-    return fallback
-  }
-}
-
-function writeStored(key: string, value: string) {
-  if (typeof window === 'undefined') return
-  try {
-    window.localStorage.setItem(key, value)
-  } catch {
-    // ignore
-  }
-}
-
-function readResolution(): ResolutionKey {
-  const raw = readStored(STORAGE_KEYS.resolution, DEFAULT_RESOLUTION) as ResolutionKey
-  return (raw in RESOLUTION_PRESETS ? raw : DEFAULT_RESOLUTION) as ResolutionKey
-}
-
-function readFps(): FpsValue {
-  const raw = Number(readStored(STORAGE_KEYS.fps, String(DEFAULT_FPS)))
-  return (FPS_OPTIONS.includes(raw as FpsValue) ? (raw as FpsValue) : DEFAULT_FPS)
-}
-
-function readAudio(): boolean {
-  const raw = readStored(STORAGE_KEYS.audio, DEFAULT_AUDIO ? '1' : '0')
-  return raw === '1' || raw === 'true'
-}
 
 // Approximate per-codec bitrates (bits per second) tuned for screen content.
 // Discord uses similar tiers; we pick generous middle values that work well

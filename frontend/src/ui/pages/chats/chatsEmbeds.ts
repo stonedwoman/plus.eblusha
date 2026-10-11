@@ -148,6 +148,21 @@ export function getYouTubeOpenMode(): YouTubeOpenMode {
   return getDefaultYouTubeOpenMode()
 }
 
+/** Режим YouTube в строке «Встроенный проигрыватель» (Приложение): вкл = 'embed', выкл = 'external'. */
+export function isYouTubeEmbedEnabled(): boolean {
+  return getYouTubeOpenMode() === 'embed'
+}
+
+/** Записать режим и убедиться, что запись прижилась (в приватном режиме localStorage может не принять). */
+export function setYouTubeEmbedEnabled(enabled: boolean): boolean {
+  try {
+    localStorage.setItem('youtubeOpenMode', enabled ? 'embed' : 'external')
+  } catch {
+    return false
+  }
+  return isYouTubeEmbedEnabled() === enabled
+}
+
 export async function openUrlSystemBrowser(url: string) {
   // Best-effort: Capacitor Browser plugin if present; fallback to window.open.
   const w: any = typeof window !== 'undefined' ? window : null
