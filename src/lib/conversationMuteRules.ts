@@ -102,7 +102,10 @@ export function shouldAlert(opts: {
   replyToSenderId?: string | null;
   /** isCallSystemMessage(message) */
   callSystem?: boolean;
-  /** Кого упомянули (@) — когда упоминания появятся; сейчас их нет ни на сервере, ни в клиентах. */
+  /**
+   * Кого сообщение упоминает: сейчас — только напоминание таймера обещания обещавшему (metadata.bot.mentions →
+   * publishNewMessage({mentions}) → loadAlertGate). @-упоминаний людьми пока нет ни на сервере, ни в клиентах.
+   */
   mentionedUserIds?: readonly string[] | null;
 }): boolean {
   if (!isMutedAt(opts.mutedUntil, opts.nowMs)) return true;
