@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { SETTINGS_SECTIONS, parseSettingsParam, settingsParamValue, viewFromSearch } from './settingsNav'
+import { SETTINGS_SECTIONS, modalOwnsKeyboard, parseSettingsParam, settingsParamValue, viewFromSearch } from './settingsNav'
 
 describe('адрес центра настроек', () => {
   it('?settings= без значения и «overview» — обзор', () => {
@@ -34,5 +34,22 @@ describe('адрес центра настроек', () => {
 
   it('порядок разделов — как у натива, пять штук', () => {
     expect([...SETTINGS_SECTIONS]).toEqual(['profile', 'conn', 'av', 'security', 'app'])
+  })
+})
+
+describe('чьи клавиши: центра или окна поверх него', () => {
+  const panel = { insideCenter: true, isPanel: true }
+  it('одна панель центра — клавиши его', () => {
+    expect(modalOwnsKeyboard([panel])).toBe(false)
+    expect(modalOwnsKeyboard([])).toBe(false)
+  })
+  it('окно снаружи центра (редактор кадра) забирает клавиши', () => {
+    expect(modalOwnsKeyboard([panel, { insideCenter: false, isPanel: false }])).toBe(true)
+  })
+  it('окно внутри центра, но не панель (галерея фото, привязка), забирает клавиши', () => {
+    expect(modalOwnsKeyboard([panel, { insideCenter: true, isPanel: false }])).toBe(true)
+  })
+  it('чужая панель с таким же классом снаружи — тоже чужое окно', () => {
+    expect(modalOwnsKeyboard([{ insideCenter: false, isPanel: true }])).toBe(true)
   })
 })

@@ -17,6 +17,18 @@ export type SettingsAvTab = 'dev' | 'proc' | 'video'
 /** Порядок плиток и колонки — как у натива (лишние плитки платформы просто выпадают). */
 export const SETTINGS_SECTIONS: readonly SettingsSectionId[] = ['profile', 'conn', 'av', 'security', 'app']
 
+/** Окно с aria-modal на странице: лежит ли оно внутри корня центра и не сама ли это панель центра. */
+export type ModalOnPage = { insideCenter: boolean; isPanel: boolean }
+
+/**
+ * Лежит ли поверх центра другое окно, которому и принадлежит клавиатура (Esc, Ctrl+F, Ctrl+,): снаружи центра
+ * (редактор кадра, привязка) или ВНУТРИ него, но не панель (галерея фото профиля, окно привязки в разделе).
+ * Иначе один Esc закрывал бы и окно, и шаг центра: галерея пропадала, а центр уходил из раздела в обзор.
+ */
+export function modalOwnsKeyboard(modals: readonly ModalOnPage[]): boolean {
+  return modals.some((m) => !m.insideCenter || !m.isPanel)
+}
+
 export type SettingsView = { kind: 'overview' } | { kind: 'section'; id: SettingsSectionId }
 
 const PARAM = 'settings'

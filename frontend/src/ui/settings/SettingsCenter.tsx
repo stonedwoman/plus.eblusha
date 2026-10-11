@@ -16,7 +16,7 @@ import { SettingsModelProvider, useSearchResult, useSettingsModelState, WEB_SECT
 import { SECTION_ICONS, OverviewTiles, ResultGroup, type TilesCtx } from './settingsTiles'
 import { OVERVIEW_GRID_AREAS, nearestTile, phoneSpans, useSettingsMode } from './settingsLayout'
 import { SECTION_NAMES, type IndexRow } from './settingsIndex'
-import { viewFromSearch, type SettingsAvTab, type SettingsNav, type SettingsSectionId, type SettingsView } from './settingsNav'
+import { modalOwnsKeyboard, viewFromSearch, type SettingsAvTab, type SettingsNav, type SettingsSectionId, type SettingsView } from './settingsNav'
 import { collapseToTile, expandFromTile, prefersReducedMotion } from './settingsMotion'
 import { pluralRu } from './settingsFormat'
 import { ProfileSection } from './sections/ProfileSection'
@@ -75,10 +75,9 @@ function visible(el: HTMLElement): boolean {
 
 function hasForeignModal(root: HTMLElement | null): boolean {
   const list = document.querySelectorAll('[aria-modal="true"]')
-  for (const el of Array.from(list)) {
-    if (!root || !root.contains(el)) return true
-  }
-  return false
+  return modalOwnsKeyboard(
+    Array.from(list).map((el) => ({ insideCenter: !!root && root.contains(el), isPanel: el.classList.contains('ebs-panel') })),
+  )
 }
 
 // ───────────────────────────── капсула звонка ─────────────────────────────

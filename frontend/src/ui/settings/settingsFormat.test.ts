@@ -7,9 +7,11 @@ import {
   hasOwnDevice,
   lastSeenLabel,
   platformLabel,
+  seenShort,
   serverHint,
   serverRoute,
   sessionKind,
+  sessionTileLine,
   shareSummary,
   voiceSummary,
 } from './settingsFormat'
@@ -102,6 +104,29 @@ describe('сеансы', () => {
     expect(lastSeenLabel(new Date(2026, 9, 10, 23, 5), now)).toBe('был в сети вчера, 23:05')
     expect(lastSeenLabel(new Date(2026, 9, 2, 18, 52), now)).toBe('был в сети 02.10.2026, 18:52')
     expect(lastSeenLabel(null, now)).toBe('')
+  })
+})
+
+describe('сеанс на плитке «Безопасность»', () => {
+  const now = new Date(2026, 9, 11, 15, 0)
+  const row = (over: Partial<{ platform: string; lastSeenAt: Date; availablePrekeys: number; id: string }>, cur = 'me') =>
+    groupSessions([{ id: 'x1', name: 'Телефон', platform: 'ios', lastSeenAt: new Date(2026, 9, 11, 11, 52), availablePrekeys: 5, ...over }], cur)[0]
+
+  it('«сегодня, ЧЧ:ММ» / «вчера, ЧЧ:ММ» / дата — как у натива', () => {
+    expect(seenShort(new Date(2026, 9, 11, 11, 52), now)).toBe('сегодня, 11:52')
+    expect(seenShort(new Date(2026, 9, 10, 23, 5), now)).toBe('вчера, 23:05')
+    expect(seenShort(new Date(2026, 9, 2, 18, 52), now)).toBe('02.10.2026')
+    expect(seenShort(null, now)).toBe('')
+    expect(seenShort('не дата', now)).toBe('')
+  })
+  it('чужое устройство: платформа и время; своё — «сейчас»; без ключей — янтарная пометка', () => {
+    expect(sessionTileLine(row({}), now)).toBe('iOS · сегодня, 11:52')
+    expect(sessionTileLine(row({ platform: 'windows', lastSeenAt: new Date(2026, 9, 10, 12, 13) }), now)).toBe('Windows · вчера, 12:13')
+    expect(sessionTileLine(row({ id: 'me' }), now)).toBe('Это устройство · сейчас')
+    expect(sessionTileLine(row({ availablePrekeys: 0 }), now)).toBe('Ключи не готовы')
+  })
+  it('нет времени — только платформа', () => {
+    expect(sessionTileLine(row({ lastSeenAt: undefined as unknown as Date }), now)).toBe('iOS')
   })
 })
 

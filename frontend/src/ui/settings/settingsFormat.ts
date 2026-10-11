@@ -186,6 +186,29 @@ export function lastSeenLabel(value: string | Date | null | undefined, now: Date
   return `был в сети ${pad2(d.getDate())}.${pad2(d.getMonth() + 1)}.${d.getFullYear()}, ${hm}`
 }
 
+/** Коротко, как у натива: «сегодня, 11:52» / «вчера, 23:05» / «02.10.2026». Пусто — времени нет. */
+export function seenShort(value: string | Date | null | undefined, now: Date = new Date()): string {
+  if (!value) return ''
+  const d = new Date(value)
+  if (!Number.isFinite(d.getTime())) return ''
+  const startOf = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime()
+  const days = Math.round((startOf(now) - startOf(d)) / 86_400_000)
+  const hm = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+  if (days === 0) return `сегодня, ${hm}`
+  if (days === 1) return `вчера, ${hm}`
+  return `${pad2(d.getDate())}.${pad2(d.getMonth() + 1)}.${d.getFullYear()}`
+}
+
+/**
+ * Вторая строка сеанса на плитке «Безопасность» (макет и натив): «Это устройство · сейчас» / «iOS · сегодня, 11:52» /
+ * «Ключи не готовы» (янтарём, ключей нет — время не показываем).
+ */
+export function sessionTileLine(r: SessionRow, now: Date = new Date()): string {
+  if (!r.keysReady) return 'Ключи не готовы'
+  if (r.isCurrent) return 'Это устройство · сейчас'
+  return [platformLabel(r.device.platform), seenShort(r.device.lastSeenAt as string | Date | null | undefined, now)].filter(Boolean).join(' · ')
+}
+
 // ───────────────────────────── прочее ─────────────────────────────
 
 /** Подпись пары «разрешение показа экрана» для строки плитки: «1080p · 30 кадр/с · со звуком». */

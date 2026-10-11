@@ -8,7 +8,7 @@ import { Avatar } from '../components/Avatar'
 import { usePresenceDevice } from '../../domain/store/presenceDeviceStore'
 import { statusDotColor } from '../components/UserProfileCard'
 import { RESOLUTION_PRESETS } from '../../utils/screenSharePrefs'
-import { deviceCount, deviceWord, pluralRu as plural, shareSummary, voiceSummary } from './settingsFormat'
+import { deviceCount, deviceWord, pluralRu as plural, sessionTileLine, shareSummary, voiceSummary } from './settingsFormat'
 import { excerptFor, SECTION_NAMES, type IndexRow, type Seg } from './settingsIndex'
 import { resultsPerTile, type SettingsMode } from './settingsLayout'
 import type { SettingsSectionId } from './settingsNav'
@@ -368,7 +368,7 @@ function SecurityTile({ ctx, span }: { ctx: TilesCtx; span?: 1 | 2 }) {
                       {r.count > 1 ? <span className="ebs-mut" style={{ fontWeight: 500 }}> +{r.count - 1}</span> : null}
                     </b>
                     <span className={`ebs-tsess__m ${r.keysReady ? 'ebs-mut' : 'ebs-amb'}`} style={r.keysReady ? undefined : { fontWeight: 600 }}>
-                      {r.keysReady ? (r.isCurrent ? 'Это устройство · сейчас' : r.meta.split(' · ')[0]) : 'Ключи не готовы'}
+                      {sessionTileLine(r)}
                     </span>
                   </span>
                 </div>
