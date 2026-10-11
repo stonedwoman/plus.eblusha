@@ -54,9 +54,12 @@ export async function publishNewMessage(opts: {
   pushTo?: string[];
   /**
    * Кого это сообщение упоминает (напоминание таймера — обещавшего, metadata.bot.mentions). Сейчас ничего не меняет
-   * (будятся все); при слиянии с «Без звука» (feat/chat-mute) упомянутый будится и в заглушённой беседе — как ответ
-   * на его сообщение. Решение конфликта при слиянии:
-   *   const wake = (rid) => (alert(rid) || mentioned.has(rid)) && (!pushSet || pushSet.has(rid));
+   * (будятся все); после слияния с «Без звука» (feat/chat-mute) упомянутый будится и в заглушённой ГРУППЕ — как ответ
+   * на его сообщение (conversationMuteRules.shouldAlert уже умеет mentionedUserIds). Решение конфликта при слиянии
+   * (проверено пробным слиянием; скрипт — scratchpad promise-timer/../fix/merge-resolution/resolve.py):
+   *   loadAlertGate(conversationId, { isGroup, replyToSenderId, mentionedUserIds: opts.mentions ?? null })
+   *   (+ AlertContext.mentionedUserIds → shouldAlert в conversationMute.ts);
+   *   const wake = (rid) => alert(rid) && (!pushSet || pushSet.has(rid));
    *   message:notify … muted: !wake(rid);   enqueuePush(recipients.filter((rid) => rid !== senderId && wake(rid)), …)
    */
   mentions?: string[];
