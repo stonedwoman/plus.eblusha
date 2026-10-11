@@ -253,10 +253,15 @@ private struct HomeNavView: View {
     let onLogout: () -> Void
 
     @StateObject private var listVM: ChatListViewModel
+    /// «Центр управления»: состояние живёт, пока открыт любой из его экранов (обзор ↔ раздел),
+    /// поэтому правка профиля и запрос поиска переживают переход между ними.
+    @StateObject private var settings: SettingsHostModel
+    @Namespace private var settingsZoom
     @State private var path: [HomeRoute] = []
 
     init(container: AppContainer, onLogout: @escaping () -> Void) {
         self.onLogout = onLogout
+        _settings = StateObject(wrappedValue: SettingsHostModel(api: container.profileRepository))
         _listVM = StateObject(wrappedValue: ChatListViewModel(
             repo: container.chatRepository,
             realtime: container.realtimeClient,
@@ -290,11 +295,33 @@ private struct HomeNavView: View {
                 case .contacts:
                     ContactsView(onBack: { path.removeAll() }, onOpenConversation: open(ref:))
                 case .settings:
-                    SettingsView(onBack: { path.removeAll() }, onLogout: onLogout)
+                    SettingsCenterView(
+                        host: settings, zoom: settingsZoom,
+                        onOpenSection: { section, _ in
+                            // Двойной тап по плитке не кладёт раздел в стек дважды.
+                            if case .settingsSection = path.last { return }
+                            path.append(.settingsSection(section))
+                        },
+                        onClose: { path.removeAll() },
+                        onLogout: onLogout
+                    )
+                case .settingsSection(let section):
+                    SettingsSectionView(host: settings, section: section, zoom: settingsZoom, onLogout: onLogout)
                 }
             }
         }
         .tint(Eb.brand)
+        // Центр закрыт совсем (назад к беседам, тап по уведомлению, «Чат с Еблушей»): несохранённая
+        // правка и запрос поиска не должны дожить до следующего открытия.
+        .onChange(of: path) { _, new in
+            let inSettings = new.contains { route in
+                switch route {
+                case .settings, .settingsSection: return true
+                default: return false
+                }
+            }
+            if !inSettings { settings.reset() }
+        }
         // «Без звука на 1 час» / «Звук включён» / ошибка — и над списком, и над беседой.
         .muteToast()
         // Тап по уведомлению о сообщении — открыть ту самую беседу.
@@ -323,6 +350,7 @@ enum HomeRoute: Hashable {
     case newGroup
     case contacts
     case settings
+    case settingsSection(SettingsSectionID)
 }
 
 #Preview {

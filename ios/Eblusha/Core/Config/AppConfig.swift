@@ -39,6 +39,15 @@ enum AppConfig {
             case .mirror: return "Зеркало"
             }
         }
+
+        /// Подпись маршрута в «Центре управления» (как «Сервер» у натива): основной адрес —
+        /// «Напрямую», российское зеркало — «Через СПб».
+        var routeTitle: String {
+            switch self {
+            case .main: return "Напрямую"
+            case .mirror: return "Через СПб"
+            }
+        }
     }
 
     private static let storageKey = "eblusha.server"

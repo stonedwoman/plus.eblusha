@@ -428,6 +428,16 @@ final class LocalTimeService: ObservableObject {
 
     private struct ShareBody: Encodable { let shareLocalTime: Bool }
 
+    #if DEBUG
+    /// Стенд «Центра управления» (Features/Settings/SettingsDemo): значения без сети и без входа.
+    func seedDemo(share: LocalTimeShareState?, visibleToPeers: LocalTimeInfo?, error: String? = nil) {
+        self.share = share
+        self.visibleToPeers = visibleToPeers
+        self.serverSupported = true
+        self.error = error
+    }
+    #endif
+
     // MARK: Выход
 
     /// Выход из аккаунта: настройка в памяти принадлежала прошлой сессии.
