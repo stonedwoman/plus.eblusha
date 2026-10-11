@@ -13,7 +13,7 @@ import { Check } from 'lucide-react'
 import { Avatar } from '../Avatar'
 import { systemToast } from '../../../domain/store/systemUiStore'
 import { nextActionExpiry, type BotCard } from '../../../domain/cards/cardEnvelope'
-import { serverNowMs, useCardClock } from '../../../domain/cards/cardClock'
+import { getClockSkewMs, serverNowMs, useCardClock } from '../../../domain/cards/cardClock'
 import { refreshCardOnce, runCardAction } from '../../../domain/cards/cardActions'
 import {
   buildPromiseCard,
@@ -60,9 +60,25 @@ export function PromiseTimerCard({ messageId, card, env }: { messageId: string; 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messageId])
 
-  // Кольцо: одна анимация на весь остаток срока; пересоздаётся только при смене срока/режима.
+  // Кольцо: одна анимация на весь остаток срока; пересоздаётся при смене срока/режима, при поправке часов сервера
+  // (GET карточки после первой отрисовки, событие) и после сна/фона — анимация идёт по монотонным часам и иначе
+  // разошлась бы с цифрами.
   const depleting = depletes(model.view) && !reduced
-  const ringKey = `${d.startAt ?? ''}|${d.deadlineAt ?? ''}|${depleting ? 'run' : 'static'}`
+  const skewSec = Math.round(getClockSkewMs() / 1000)
+  const lastTick = useRef<number>(now)
+  const [wakeEpoch, setWakeEpoch] = useState(0)
+  useEffect(() => {
+    if (Math.abs(now - lastTick.current) > 5000) setWakeEpoch((x) => x + 1)
+    lastTick.current = now
+  }, [now])
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === 'visible') setWakeEpoch((x) => x + 1)
+    }
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
+  }, [])
+  const ringKey = `${d.startAt ?? ''}|${d.deadlineAt ?? ''}|${depleting ? 'run' : 'static'}|${skewSec}|${wakeEpoch}`
   const arcAnim = useMemo(() => {
     if (!depleting) return null
     const start = Date.parse(String(d.startAt ?? '')) || serverNowMs()

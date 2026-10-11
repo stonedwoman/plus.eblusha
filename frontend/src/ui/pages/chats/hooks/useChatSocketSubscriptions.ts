@@ -107,10 +107,15 @@ export function useChatSocketSubscriptions(opts: {
     const onUpdate = (payload: any) => {
       if (!payload) return
       const conversationId = payload.conversationId
-      if (!activeId || conversationId !== activeId) return
       // Карточка бота (reason "card"; таймер до поправок — "promise"): свежая версия по rev и смещение часов
-      // сервера — сразу в хранилище карточек; старее того, что уже в кэше, — сообщение не трогаем.
-      if (applyCardUpdateEvent(payload)) {
+      // сервера — сразу в хранилище карточек, В ЛЮБОЙ беседе: вернулся в неё раньше, чем лента перечиталась, —
+      // карточка всё равно свежая (а не «опаздывает» у уже пришедшего).
+      const isCard = applyCardUpdateEvent(payload)
+      if (!activeId || conversationId !== activeId) {
+        if (isCard && conversationId) client.invalidateQueries({ queryKey: ['messages', conversationId] })
+        return
+      }
+      if (isCard) {
         const old = client.getQueryData(['messages', activeId])
         if (isStaleCardMessage(old, payload.message)) return
       }

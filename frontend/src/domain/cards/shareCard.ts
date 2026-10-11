@@ -182,7 +182,9 @@ export function buildShareCard(card: BotCard, nowMs: number, viewer: ShareViewer
       const disabled = photoCount <= 0
       const used = opt?.photosUsed != null && opt.photosUsed < photoCount ? opt.photosUsed : null
       const note = disabled ? '(нет фото)' : used != null ? `(${used} последних из ${groupDigits(photoCount)})` : `(${groupDigits(photoCount)})`
-      const checked = !disabled && !!(local.photos ?? d.suggest?.photos ?? false)
+      // Галка «Включать фото» по умолчанию выключена ВСЕГДА (решение владельца): фото включает человек, а не
+      // подсказка модели (suggest.photos игнорируем — сервер и так шлёт false).
+      const checked = !disabled && local.photos === true
       const shownPhotos = used ?? photoCount
       return {
         ...empty,
