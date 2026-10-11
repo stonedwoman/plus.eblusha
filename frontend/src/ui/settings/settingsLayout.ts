@@ -3,12 +3,13 @@
  * Чистые функции — тесты в settingsLayout.test.ts.
  */
 import { useEffect, useState } from 'react'
+import { MOBILE_MAX_WIDTH } from '../pages/chats/hooks/useChatsResponsive'
 import type { SettingsSectionId } from './settingsNav'
 
 export type SettingsMode = 'wide' | 'cmp' | 'phone'
 
-/** Тот же порог, что isMobile в useChatsResponsive.ts — не дублируем число, а держим рядом. */
-export const PHONE_MAX_WIDTH = 768
+/** Тот же порог, что isMobile в useChatsResponsive.ts (число не дублируется). */
+export const PHONE_MAX_WIDTH = MOBILE_MAX_WIDTH
 
 /** Панель на вебе: min(1240, W − 48) × min(760, H − 48). */
 export function panelSize(W: number, H: number): { w: number; h: number } {

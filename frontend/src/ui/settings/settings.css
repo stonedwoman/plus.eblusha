@@ -37,6 +37,7 @@
   --tm-l: 150px; --row-t: 15px; --row-d: 14px; --row-dlh: 21px; --grp-top: 22px; --srch-w: 320px;
   --field-w: 300px; --sel-w: 380px;
 
+  color-scheme: dark;
   position: fixed; inset: 0; z-index: 90;
   display: grid; place-items: center;
   background: rgba(9, 11, 15, .70);

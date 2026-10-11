@@ -307,6 +307,11 @@ export default function ChatsPage() {
   // «Центр управления» (настройки плитками) живёт в адресе ?settings=…: «Назад» браузера делает шаг
   // раздел → обзор → закрыть. Прежнее окно «Профиль» (mePopupOpen) заменено им.
   const settingsNav = useSettingsNav()
+  // Центр настроек — отдельный чанк: подгружаем заранее в простое, чтобы первое открытие было мгновенным.
+  useEffect(() => {
+    const t = window.setTimeout(() => { void import('../settings/SettingsCenter') }, 4000)
+    return () => window.clearTimeout(t)
+  }, [])
   const settingsNavRef = useRef(settingsNav)
   settingsNavRef.current = settingsNav
   const mePopupOpen = settingsNav.view !== null

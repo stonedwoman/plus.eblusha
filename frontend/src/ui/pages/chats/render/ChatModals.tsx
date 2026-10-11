@@ -3,7 +3,7 @@
  * контакты, контекст-меню сообщения, лайтбокс, просмотр видео, пересылка и т.п.).
  * Вынесено из ChatsPage; обычная функция рендера, значения — через ctx.
  */
-import { lazy, useState } from 'react'
+import { Suspense, lazy, useState } from 'react'
 
 import { api, getUploadUrl } from '../../../../utils/api'
 import type { AxiosError } from 'axios'
@@ -13,6 +13,9 @@ import { AvailabilityButton } from '../../../../features/availability/Availabili
 import { AvailabilityOverlay } from '../../../../features/availability/AvailabilityOverlay'
 import { getFallbackTimeZone } from '../../../../features/availability/availability.time'
 const CallOverlay = lazy(() => import('../../../components/CallOverlay').then(m => ({ default: m.CallOverlay })))
+// «Центр управления» (настройки) тянет за собой LiveKit-компоненты для списков устройств — грузим по требованию,
+// а не вместе со страницей чатов.
+const SettingsCenter = lazy(() => import('../../../settings/SettingsCenter').then(m => ({ default: m.SettingsCenter })))
 const preloadCallOverlay = () => import('../../../components/CallOverlay')
 import { useAppStore } from '../../../../domain/store/appStore'
 import { Avatar } from '../../../components/Avatar'
@@ -23,7 +26,6 @@ import { VideoViewer } from '../../../components/VideoViewer'
 import { VideoMessageBubble } from '../../../components/VideoMessageBubble'
 import { LazyImage } from '../../../components/LazyImage'
 import { LinkDeviceModal } from '../../../components/LinkDeviceModal'
-import { SettingsCenter } from '../../../settings/SettingsCenter'
 import { AvatarEditorModal } from '../../../settings/AvatarEditorModal'
 import { canDeleteBotReply, canDeleteMessageForAll, isBotChatConversation, isBotUser, type BotChatState, type SystemBotInfo } from '../../../../domain/bot/systemBot'
 import LoadingSpinner from '../../../components/LoadingSpinner'
@@ -385,6 +387,7 @@ export function renderChatModals(ctx: ChatModalsCtx) {
       try { setAvatarPreviewUrl(URL.createObjectURL(file)) } catch {}
     }} style={{ display: 'none' }} />
     {settingsNav?.view && (
+      <Suspense fallback={null}>
       <SettingsCenter
         nav={settingsNav}
         view={settingsNav.view}
@@ -405,6 +408,7 @@ export function renderChatModals(ctx: ChatModalsCtx) {
           call: settingsCall,
         }}
       />
+      </Suspense>
     )}
     {avatarPreviewUrl && (
       <AvatarEditorModal

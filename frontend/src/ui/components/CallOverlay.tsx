@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 declare global {
   interface Window {
@@ -64,7 +64,6 @@ import { signalApkCallActive } from '../../utils/apkCallSignal'
 import { installScreenShareAudioGuard } from '../../utils/screenShareAudio'
 import { callConnectOptions } from '../../utils/callRouting'
 import { useVoiceProcessing } from '../../utils/voiceProcessing'
-import { SettingsCenter } from '../settings/SettingsCenter'
 import { useLocalSettingsNav } from '../settings/settingsNav'
 import { CallConnecting } from './CallConnecting'
 import { CallMini } from './CallMini'
@@ -1945,19 +1944,24 @@ export function CallSettings() {
   return <CallSettingsCenter onClose={() => layout?.widget?.dispatch?.({ msg: 'toggle_settings' })} />
 }
 
+// Центр настроек не нужен для самого звонка — грузим, когда нажали шестерёнку.
+const SettingsCenter = lazy(() => import('../settings/SettingsCenter').then((m) => ({ default: m.SettingsCenter })))
+
 function CallSettingsCenter({ onClose }: { onClose: () => void }) {
   const nav = useLocalSettingsNav({ kind: 'section', id: 'av' }, onClose)
   if (!nav.view) return null
   return (
-    <SettingsCenter
-      portal
-      inRoom
-      fromCall
-      zIndex={1050}
-      nav={nav}
-      view={nav.view}
-      host={{ statusText: '', callActive: true }}
-    />
+    <Suspense fallback={null}>
+      <SettingsCenter
+        portal
+        inRoom
+        fromCall
+        zIndex={1050}
+        nav={nav}
+        view={nav.view}
+        host={{ statusText: '', callActive: true }}
+      />
+    </Suspense>
   )
 }
 
