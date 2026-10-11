@@ -218,15 +218,22 @@ struct ChatHeaderTitle: View {
     @ObservedObject private var calls = CallStatusStore.shared
     @ObservedObject private var callManager = AppContainer.shared.callManager
     @ObservedObject private var localTimes = PeerLocalTimeStore.shared
+    /// «Без звука» этой беседы — перечёркнутый колокольчик после названия.
+    @ObservedObject private var mutes = ConversationMuteStore.shared
 
     var body: some View {
         HStack(spacing: 8) {
             avatar
             VStack(alignment: .leading, spacing: peerLocalTime == nil ? 1 : 0) {
-                Text(model.title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(model.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    if mutes.isMuted(model.conversationId) {
+                        MutedBellIcon(size: 11, tip: mutes.tip(model.conversationId))
+                    }
+                }
                 subtitle
                 // Местное время собеседника — третьей строкой ПОД статусом (в т.ч. под чипом
                 // секретки и под «печатает…»: строка не должна прыгать от набора текста).

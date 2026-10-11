@@ -17,6 +17,19 @@ struct ConvHeader {
     let subtitle: String?
 }
 
+/// Что список бесед сообщил о «Без звука» и непрочитанном — для ConversationMuteStore и значка.
+struct ConversationListMuteBatch {
+    let owner: String?
+    /// Срок «Без звука» по беседам — только строки, где сервер прислал поле (старый сервер не шлёт).
+    let mutes: [String: Int64?]
+    /// serverNow ответа (мс); nil — старый сервер.
+    let serverNowMs: Int64?
+    /// Когда ушёл запрос (местные часы, мс).
+    let requestedAtMs: Int64
+    /// unreadCount каждой беседы.
+    let unread: [String: Int]
+}
+
 final class ChatRepository {
     private let api: APIClient
     private let session: SessionStore
@@ -31,6 +44,12 @@ final class ChatRepository {
     // Кеш бесед по id (роль Room-таблицы conversations) — ПОЛНЫЙ список, включая скрытые
     // из выдачи (PENDING-секретка создателя, открытая по realtime-событию).
     private var conversationsById: [String: Conversation] = [:]
+
+    /// Список бесед загружен — «Без звука» и значок приложения. Подключает AppContainer; у
+    /// репозиториев в тестах хука нет, и общие хранилища они не трогают.
+    var onListLoaded: ((ConversationListMuteBatch) -> Void)?
+    /// Беседу отметили прочитанной (с экрана или из меню) — значок пересчитывается.
+    var onConversationRead: ((String) -> Void)?
 
     private let cacheURL: URL = {
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
@@ -76,6 +95,10 @@ final class ChatRepository {
                 }
             }
             PeerLocalTimeStore.shared.apply(Self.peerLocalTimes(items.map(\.conversation), meId: me), asOf: requestedAt)
+            if let hook = onListLoaded {
+                let batch = Self.muteBatch(response, owner: me, requestedAt: requestedAt)
+                await MainActor.run { hook(batch) }
+            }
             let list = Self.sortedByFreshness(
                 items.map { toDomain($0.conversation, meId: me, unreadCount: $0.unreadCount) }
             )
@@ -85,6 +108,24 @@ final class ChatRepository {
             persistCache(list)
             return presentConversations(list)
         }
+    }
+
+    /// «Без звука» и непрочитанное из ответа списка (docs/conversation-mute.md §2).
+    static func muteBatch(_ response: ConversationsResponse, owner: String?, requestedAt: Date) -> ConversationListMuteBatch {
+        var mutes: [String: Int64?] = [:]
+        var unread: [String: Int] = [:]
+        for item in response.conversations {
+            let id = item.conversation.id
+            unread[id] = item.unreadCount
+            if item.hasMuteField { mutes[id] = .some(item.muteUntilMs) }
+        }
+        return ConversationListMuteBatch(
+            owner: owner,
+            mutes: mutes,
+            serverNowMs: parseIsoToMillis(response.serverNow),
+            requestedAtMs: Int64(requestedAt.timeIntervalSince1970 * 1000),
+            unread: unread
+        )
     }
 
     /// Местное время собеседников из списка бесед: только 1:1 (в группах сервер поля не кладёт,
@@ -281,12 +322,16 @@ final class ChatRepository {
     }
 
     func markConversationRead(_ conversationId: String) async -> ApiResult<Void> {
-        await safeApiCall {
+        let result: ApiResult<Void> = await safeApiCall {
             try await api.postIgnoringResponse(
                 "messages/mark-conversation-read",
                 body: MarkReadRequest(conversationId: conversationId)
             )
         }
+        if case .success = result, let hook = onConversationRead {
+            await MainActor.run { hook(conversationId) }
+        }
+        return result
     }
 
     /// Местное время собеседника по 1:1 (GET /users/:id/local-time, LocalTime.swift).

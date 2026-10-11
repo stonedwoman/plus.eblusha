@@ -5,20 +5,48 @@ import Foundation
 
 struct ConversationsResponse: Decodable {
     var conversations: [ConversationListItemDto] = []
+    /// Момент ДО чтения списка (часы сервера) — свежесть «Без звука» из этого ответа
+    /// (docs/conversation-mute.md §4). Старый сервер поля не шлёт.
+    var serverNow: String?
+    /// Общий счётчик непрочитанного без заглушённых бесед (то же правило — у значка, AppBadge).
+    var totalUnread: Int?
+
+    private enum CodingKeys: String, CodingKey { case conversations, serverNow, totalUnread }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        conversations = try c.decodeIfPresent([ConversationListItemDto].self, forKey: .conversations) ?? []
+        serverNow = (try? c.decodeIfPresent(String.self, forKey: .serverNow)) ?? nil
+        totalUnread = (try? c.decodeIfPresent(Int.self, forKey: .totalUnread)) ?? nil
+    }
 }
 
 /// GET /conversations отдаёт строки участника, оборачивающие беседу + непрочитанные.
 struct ConversationListItemDto: Decodable {
     let conversation: ConversationDto
     var unreadCount: Int = 0
+    /// Свой «Без звука» (ISO, часы сервера; истёкший сервер отдаёт null). Чужие сроки сервер не
+    /// отдаёт никому — в participants[] их нет.
+    var mutedUntil: String?
+    var mutedForever = false
+    /// Поле `mutedUntil` вообще было в строке: старый сервер о нём не знает — тогда «Без звука»
+    /// из списка не трогаем (null от нового сервера значит «звук включён»).
+    var hasMuteField = false
 
-    private enum CodingKeys: String, CodingKey { case conversation, unreadCount }
+    private enum CodingKeys: String, CodingKey { case conversation, unreadCount, mutedUntil, mutedForever }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         conversation = try c.decode(ConversationDto.self, forKey: .conversation)
         unreadCount = try c.decodeIfPresent(Int.self, forKey: .unreadCount) ?? 0
+        hasMuteField = c.contains(.mutedUntil)
+        // Битое поле не должно ронять весь список бесед.
+        mutedUntil = hasMuteField ? ((try? c.decodeIfPresent(String.self, forKey: .mutedUntil)) ?? nil) : nil
+        mutedForever = (try? c.decodeIfPresent(Bool.self, forKey: .mutedForever)) ?? false
     }
+
+    /// Срок «Без звука» в мс; nil — звук включён.
+    var muteUntilMs: Int64? { MuteWire.until(mutedUntil, forever: mutedForever).ms }
 }
 
 struct ConversationDto: Decodable, Identifiable {

@@ -291,6 +291,8 @@ private struct HomeNavView: View {
             }
         }
         .tint(Eb.brand)
+        // «Без звука на 1 час» / «Звук включён» / ошибка — и над списком, и над беседой.
+        .muteToast()
         // Тап по уведомлению о сообщении — открыть ту самую беседу.
         .onReceive(AppLifecycle.shared.$pendingOpen) { target in
             guard let target else { return }

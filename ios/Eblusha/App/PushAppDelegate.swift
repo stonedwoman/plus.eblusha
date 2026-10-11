@@ -35,6 +35,16 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
     ) {
+        #if DEBUG
+        // Только стенды (-connectDemo, сессии нет): токен симулятора — в UserDefaults, чтобы
+        // проверить Notification Service Extension настоящим sandbox-пушем (handoff §16:
+        // `xcrun simctl push` расширение не запускает).
+        if CallConnectingDemo.requestedScenario != nil {
+            UserDefaults.standard.set(
+                deviceToken.map { String(format: "%02x", $0) }.joined(), forKey: "eb.debug.alertToken"
+            )
+        }
+        #endif
         PushRepository.shared.updateAlertToken(deviceToken)
     }
 
@@ -60,6 +70,9 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate {
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
         if let read = ReadPush.parse(userInfo) {
+            // Значок: прочитанная беседа выходит из общего счётчика (число на иконке выгруженного
+            // приложения поправит badge-only пуш сервера, идущий следом).
+            AppBadge.shared.conversationRead(read.conversationId)
             MessageNotifications.shared.clearDelivered(
                 conversationId: read.conversationId, deliveredBefore: read.deliveredUpTo
             ) { removed in

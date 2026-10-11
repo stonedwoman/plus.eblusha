@@ -19,6 +19,9 @@ import XCTest
 ///   type:текст                        набрать в поле с фокусом
 ///   typeEnv:ПЕРЕМЕННАЯ                набрать значение переменной окружения (пароль сюда, а не в скрипт)
 ///   drag:x1,y1,x2,y2                  протяжка пальцем
+///   press:x,y[,сек]                   долгое нажатие (контекстное меню; по умолчанию 1 с)
+///   allow                             нажать «Разрешить»/«Allow» в системном запросе (уведомления)
+///   home                              кнопка «Домой» (рабочий стол — видно значок и баннеры)
 ///   dragHold:x1,y1,x2,y2,сек,имя      протяжка с выдержкой в конце и скриншотом посреди неё
 ///   wait:подстрока|сек                дождаться элемента с подписью
 ///
@@ -95,6 +98,24 @@ final class DriveTests: XCTestCase {
                 let p = numbers(argument)
                 guard p.count >= 4 else { fail("drag: нужны x1,y1,x2,y2"); continue }
                 coordinate(app, p[0], p[1]).press(forDuration: 0.15, thenDragTo: coordinate(app, p[2], p[3]))
+            case "press":
+                let p = numbers(argument)
+                guard p.count >= 2 else { fail("press: нужны x,y"); continue }
+                coordinate(app, p[0], p[1]).press(forDuration: p.count > 2 ? Double(p[2]) : 1.0)
+            case "allow":
+                // Системные запросы разрешений рисует SpringBoard, а не приложение.
+                let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+                let button = springboard.buttons.matching(
+                    NSPredicate(format: "label IN %@", ["Allow", "Разрешить", "Разреш."])
+                ).firstMatch
+                if button.waitForExistence(timeout: 5) {
+                    button.tap()
+                    note("разрешено")
+                } else {
+                    fail("системного запроса нет")
+                }
+            case "home":
+                XCUIDevice.shared.press(.home)
             case "dragHold":
                 // x1,y1,x2,y2,сек,имя — довели палец и держим; на половине выдержки экран
                 // снимается из фонового потока (жест держит главный) — так видно призрак магнита.

@@ -77,6 +77,10 @@ final class ChatListViewModel: ObservableObject {
     private static let botTypingTTL: TimeInterval = 12
     private var typingSweep: Task<Void, Never>?
 
+    /// «Без звука»: своё правило для звука входящего, когда сервер не сказал сам.
+    private let mutes = ConversationMuteStore.shared
+    private let soundGate = IncomingSoundGate()
+
     /// Звонки живут в ядре, а не в этом экране: список только читает состояние и просит
     /// подключиться. Берём из контейнера, а не через init, чтобы не менять точку сборки.
     private let callManager = AppContainer.shared.callManager
@@ -206,23 +210,28 @@ final class ChatListViewModel: ObservableObject {
                 }
             }
 
-        case .messageNew(let conversationId, let messageId, let senderId, _),
-             .messageNotify(let conversationId, let messageId, let senderId, _):
+        case .messageNew(let conversationId, let messageId, let senderId, let message):
             // Звук входящего живёт ЗДЕСЬ, а не на экране беседы: подписка списка не
             // умирает вместе с открытым чатом, и звучать должно как раз то, что пришло
             // мимо него. Все условия («не своё», не в фоне, беседа не открыта, не идёт
-            // звонок или запись) — внутри ChatSounds.
-            ChatSounds.messageArrived(
-                conversationId: conversationId,
+            // звонок или запись) — внутри ChatSounds; «Без звука» — IncomingSoundGate.
+            soundGate.onNew(
                 messageId: messageId,
-                senderId: senderId,
-                currentUserId: repo.currentUserId()
-            )
-            // Ответ бота пришёл — «Еблуша печатает…» гаснет сразу, не дожидаясь срока.
-            if SystemBotStore.shared.isBotUser(senderId), botTypingRows.removeValue(forKey: conversationId) != nil {
-                bumpTyping()
+                localAlert: localAlert(conversationId: conversationId, senderId: senderId, message: message)
+            ) { [weak self] in
+                self?.playIncoming(conversationId: conversationId, messageId: messageId, senderId: senderId)
             }
-            scheduleRefresh()
+            onIncoming(conversationId: conversationId, senderId: senderId)
+
+        case .messageNotify(let conversationId, let messageId, let senderId, let message, let muted):
+            soundGate.onNotify(
+                messageId: messageId,
+                serverMuted: muted,
+                localAlert: localAlert(conversationId: conversationId, senderId: senderId, message: message)
+            ) {
+                playIncoming(conversationId: conversationId, messageId: messageId, senderId: senderId)
+            }
+            onIncoming(conversationId: conversationId, senderId: senderId)
 
         case .conversationsChanged, .secretChatAccepted:
             scheduleRefresh()
@@ -231,6 +240,53 @@ final class ChatListViewModel: ObservableObject {
             break
         }
     }
+
+    // MARK: - Входящее: звук и «Без звука»
+
+    private func playIncoming(conversationId: String, messageId: String, senderId: String) {
+        ChatSounds.messageArrived(
+            conversationId: conversationId,
+            messageId: messageId,
+            senderId: senderId,
+            currentUserId: repo.currentUserId()
+        )
+    }
+
+    /// Своё правило «будить ли» (MuteRules.shouldAlert) — для `message:new` и для старого сервера
+    /// без `message:notify.muted`. «Группа» — серверный флаг беседы из списка.
+    private func localAlert(conversationId: String, senderId: String, message: MessageDto?) -> Bool {
+        var missed = false
+        var ended = false
+        if case .bool(true)? = message?.metadata?["missed"] { missed = true }
+        if case .bool(true)? = message?.metadata?["ended"] { ended = true }
+        return MuteRules.shouldAlert(
+            untilMs: mutes.untilMs(conversationId),
+            nowMs: mutes.nowMs,
+            isGroup: ui.conversations.first { $0.id == conversationId }?.isGroup ?? false,
+            recipientId: repo.currentUserId(),
+            senderId: senderId,
+            replyToSenderId: message?.replyTo?.senderId,
+            callSystem: MuteRules.isCallSystemMessage(type: message?.type, missed: missed, ended: ended)
+        )
+    }
+
+    private func onIncoming(conversationId: String, senderId: String) {
+        // Ответ бота пришёл — «Еблуша печатает…» гаснет сразу, не дожидаясь срока.
+        if SystemBotStore.shared.isBotUser(senderId), botTypingRows.removeValue(forKey: conversationId) != nil {
+            bumpTyping()
+        }
+        scheduleRefresh()
+    }
+
+    #if DEBUG
+    /// Стенд «Без звука» (MuteDemo): готовый список без сети. Собственная загрузка вью-модели без
+    /// входа падает молча и список не трогает.
+    func demoSeed(_ list: [Conversation]) {
+        ui.loading = false
+        ui.error = nil
+        ui.conversations = list
+    }
+    #endif
 
     /// Последний известный статус побеждает; только неизвестный падает на фолбэк сокета.
     private func recomputeSelfPresence() {

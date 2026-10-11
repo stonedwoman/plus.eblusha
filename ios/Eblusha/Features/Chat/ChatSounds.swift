@@ -67,7 +67,8 @@ enum ChatSounds {
     // MARK: - События
 
     /// Пришло сообщение по сокету (из общеприложенческой подписки списка бесед).
-    /// Все условия — здесь, чтобы вызывающему не приходилось их повторять.
+    /// Все условия — здесь, чтобы вызывающему не приходилось их повторять. Кроме «Без звука»:
+    /// его решает IncomingSoundGate (сервер в `message:notify.muted` или своё правило) до вызова.
     static func messageArrived(
         conversationId: String, messageId: String, senderId: String, currentUserId: String?
     ) {
@@ -143,6 +144,61 @@ enum ChatSounds {
         }
         loaded[kind.rawValue] = id
         return id
+    }
+}
+
+/// Кто решает, звенеть ли входящему с учётом «Без звука» (docs/conversation-mute.md §3, §6).
+///
+/// Про одно сообщение приходят два события: `message:new` (в комнату беседы, первым, без поля
+/// `muted`) и `message:notify` (в мою комнату, следом, с `muted`, посчитанным СЕРВЕРОМ для меня).
+/// Сервер — главный: у него свежее состояние «Без звука» и правила пробития. Поэтому:
+///  - `message:notify` с полем — решает он; отложенный звук по `message:new` отменяется;
+///  - `message:notify` без поля (старый сервер) — своё правило;
+///  - `message:new` — своё правило, но звук откладывается на `deferral`: обычно за это время
+///    приходит `message:notify` и решает сам. Записи о звонке 1:1 (пропущенный, «продлился»)
+///    приходят только `message:new` — им звенит отложенный звук.
+/// Двойного звука не бывает: ChatSounds.messageArrived гасит повтор того же сообщения.
+@MainActor
+final class IncomingSoundGate {
+    private let deferral: Duration
+    /// Сообщения, о которых уже сказал сервер (хвост ограничен).
+    private var decided: [String] = []
+    private var deferred: [String: Task<Void, Never>] = [:]
+    private static let decidedLimit = 64
+
+    nonisolated init(deferral: Duration = .milliseconds(350)) {
+        self.deferral = deferral
+    }
+
+    /// `message:new`. localAlert — своё правило (MuteRules.shouldAlert) по своему состоянию.
+    func onNew(messageId: String, localAlert: Bool, play: @escaping () -> Void) {
+        guard !decided.contains(messageId), localAlert, deferred[messageId] == nil else { return }
+        let deferral = self.deferral
+        deferred[messageId] = Task { [weak self] in
+            try? await Task.sleep(for: deferral)
+            guard !Task.isCancelled, let self else { return }
+            self.deferred[messageId] = nil
+            play()
+        }
+    }
+
+    /// `message:notify`. serverMuted — поле сервера (nil — старый сервер).
+    func onNotify(messageId: String, serverMuted: Bool?, localAlert: Bool, play: () -> Void) {
+        let pending = deferred.removeValue(forKey: messageId)
+        pending?.cancel()
+        if let serverMuted {
+            remember(messageId)
+            if !serverMuted { play() }
+            return
+        }
+        if localAlert || pending != nil { play() }
+    }
+
+    private func remember(_ messageId: String) {
+        decided.append(messageId)
+        if decided.count > Self.decidedLimit {
+            decided.removeFirst(decided.count - Self.decidedLimit)
+        }
     }
 }
 

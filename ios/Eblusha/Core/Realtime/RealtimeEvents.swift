@@ -5,7 +5,9 @@ enum RealtimeEvent {
     /// Сокет заново подключился (реконнект): состояние комнат на сервере обнулилось.
     case socketReconnected
     case messageNew(conversationId: String, messageId: String, senderId: String, message: MessageDto?)
-    case messageNotify(conversationId: String, messageId: String, senderId: String, message: MessageDto?)
+    /// `muted` — «Без звука» ЭТОГО получателя, посчитанный сервером (docs/conversation-mute.md §3):
+    /// true — не звенеть. nil — старый сервер без поля: решать своим правилом (MuteRules.shouldAlert).
+    case messageNotify(conversationId: String, messageId: String, senderId: String, message: MessageDto?, muted: Bool?)
     case messageUpdate(conversationId: String, messageId: String)
     case messageReaction(conversationId: String, messageId: String)
     case receipts(conversationId: String, messageIds: [String], userId: String?, status: String?)
@@ -77,6 +79,8 @@ struct MessageEventPayload: Decodable {
     let messageId: String
     let senderId: String
     var message: MessageDto?
+    /// Только у `message:notify` нового сервера («Без звука» получателя).
+    var muted: Bool?
 }
 
 struct ReceiptsPayload: Decodable {
