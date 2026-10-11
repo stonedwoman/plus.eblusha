@@ -3,7 +3,7 @@
  * контакты, контекст-меню сообщения, лайтбокс, просмотр видео, пересылка и т.п.).
  * Вынесено из ChatsPage; обычная функция рендера, значения — через ctx.
  */
-import { lazy, useState } from 'react'
+import { Suspense, lazy, useState } from 'react'
 
 import { api, getUploadUrl } from '../../../../utils/api'
 import type { AxiosError } from 'axios'
@@ -13,6 +13,9 @@ import { AvailabilityButton } from '../../../../features/availability/Availabili
 import { AvailabilityOverlay } from '../../../../features/availability/AvailabilityOverlay'
 import { getFallbackTimeZone } from '../../../../features/availability/availability.time'
 const CallOverlay = lazy(() => import('../../../components/CallOverlay').then(m => ({ default: m.CallOverlay })))
+// «Центр управления» (настройки) тянет за собой LiveKit-компоненты для списков устройств — грузим по требованию,
+// а не вместе со страницей чатов.
+const SettingsCenter = lazy(() => import('../../../settings/SettingsCenter').then(m => ({ default: m.SettingsCenter })))
 const preloadCallOverlay = () => import('../../../components/CallOverlay')
 import { useAppStore } from '../../../../domain/store/appStore'
 import { Avatar } from '../../../components/Avatar'
@@ -23,13 +26,11 @@ import { VideoViewer } from '../../../components/VideoViewer'
 import { VideoMessageBubble } from '../../../components/VideoMessageBubble'
 import { LazyImage } from '../../../components/LazyImage'
 import { LinkDeviceModal } from '../../../components/LinkDeviceModal'
-import { LocalTimeSettingsSection } from '../../../components/LocalTimeSettingsSection'
-import { BotChatSettingsSection } from '../../../components/bot/BotUi'
+import { AvatarEditorModal } from '../../../settings/AvatarEditorModal'
 import { canDeleteBotReply, canDeleteMessageForAll, isBotChatConversation, isBotUser, type BotChatState, type SystemBotInfo } from '../../../../domain/bot/systemBot'
 import LoadingSpinner from '../../../components/LoadingSpinner'
 import { systemConfirm, systemToast } from '../../../../domain/store/systemUiStore'
 import { canForwardFromConversation } from '../../../../domain/secret/secretInboxGuards'
-import { isRelayOnlyEnabled, setRelayOnlyEnabled } from '../../../../utils/callRouting'
 
 import { getStoredDeviceInfo } from '../../../../domain/device/deviceManager'
 import { wipeLocalDeviceData } from '../../../../domain/device/deviceWipe'
@@ -141,7 +142,9 @@ export interface ChatModalsCtx {
   localDeviceIdForLinking: any
   me: any
   meInfoQuery: any
-  mePopupOpen: any
+  /** «Центр управления»: навигация по адресу (?settings=…) и капсула идущего звонка */
+  settingsNav: any
+  settingsCall: { label: string; since: number | null } | null
   menuRef: any
   multiSelectMode: any
   myEblid: any
@@ -209,7 +212,6 @@ export interface ChatModalsCtx {
   setHeaderMenu: any
   setLightbox: any
   setLinkDeviceModalOpen: any
-  setMePopupOpen: any
   setMobileView: any
   setMultiSelectMode: any
   setNewGroupAvatarBlob: any
@@ -242,121 +244,9 @@ export interface ChatModalsCtx {
   videoViewer: any
 }
 
-/**
- * Смена пароля в профиле. Отдельный компонент, а не кусок renderChatModals:
- * renderChatModals — обычная функция рендера, hooks в ней нельзя.
- */
-/**
- * Выбор пути для звонков. Живёт в профиле, а не в настройках внутри звонка: человеку
- * с рвущейся связью некогда искать галочку посреди разговора, да и применяется она
- * всё равно со следующего звонка.
- */
-function CallRoutingSection() {
-  const [relayOnly, setRelayOnly] = useState(() => isRelayOnlyEnabled())
-  return (
-    <div style={{ marginBottom: 18, border: '1px solid var(--surface-border)', borderRadius: 14, background: 'var(--surface-100)', padding: 12 }}>
-      <div style={{ fontWeight: 800, fontSize: 13, color: 'var(--text-muted)', letterSpacing: 0.2, marginBottom: 10 }}>ЗВОНКИ</div>
-      <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer', userSelect: 'none' }}>
-        <input
-          type="checkbox"
-          checked={relayOnly}
-          onChange={(e) => {
-            const v = e.target.checked
-            setRelayOnly(v)
-            setRelayOnlyEnabled(v)
-            systemToast.success(v ? 'Звонки пойдут через ретранслятор — со следующего звонка' : 'Путь для звонков снова выбирается автоматически')
-          }}
-          style={{ marginTop: 3 }}
-        />
-        <span>
-          <div style={{ fontSize: 14, color: 'var(--text-primary)', fontWeight: 600 }}>Всегда соединяться через ретранслятор</div>
-          <div style={{ fontSize: 12.5, color: 'var(--text-muted)', lineHeight: 1.45, marginTop: 3 }}>
-            Обычно путь к серверу выбирается сам: сначала короткий, а ретранслятор — если короткий не сложился.
-            Включите, если в звонках рвётся связь или голос звучит «роботом»: через ретранслятор дольше, но заметно надёжнее.
-            Применится со следующего звонка.
-          </div>
-        </span>
-      </label>
-    </div>
-  )
-}
-
-function ChangePasswordSection({ username }: { username?: string }) {
-  const [open, setOpen] = useState(false)
-  const [current, setCurrent] = useState('')
-  const [next, setNext] = useState('')
-  const [repeat, setRepeat] = useState('')
-  const [revokeOthers, setRevokeOthers] = useState(false)
-  const [busy, setBusy] = useState(false)
-
-  const inputStyle = {
-    width: '100%',
-    padding: '10px 12px',
-    borderRadius: 10,
-    border: '1px solid var(--surface-border)',
-    background: 'var(--surface-200)',
-    color: 'var(--text-primary)',
-    fontSize: 14,
-    outline: 'none',
-  } as const
-
-  const submit = async () => {
-    if (busy) return
-    if (next.length < 6) { systemToast.error('Новый пароль — минимум 6 символов'); return }
-    if (next !== repeat) { systemToast.error('Пароли не совпадают'); return }
-    setBusy(true)
-    try {
-      const resp = await api.post('/auth/change-password', {
-        currentPassword: current,
-        newPassword: next,
-        revokeOtherSessions: revokeOthers,
-      })
-      const revoked = Number(resp?.data?.revokedSessions ?? 0)
-      systemToast.success(revoked > 0 ? 'Пароль изменён, остальные сеансы завершены' : 'Пароль изменён')
-      setCurrent(''); setNext(''); setRepeat(''); setRevokeOthers(false)
-      setOpen(false)
-    } catch (e: any) {
-      const status = e?.response?.status
-      if (status === 403) systemToast.error('Неверный текущий пароль')
-      else if (status === 429) systemToast.error('Слишком много попыток — подождите минуту')
-      else systemToast.error('Не удалось сменить пароль')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <div style={{ marginBottom: 18, border: '1px solid var(--surface-border)', borderRadius: 14, background: 'var(--surface-100)', padding: 12 }}>
-      <div
-        onClick={() => setOpen((v) => !v)}
-        style={{ cursor: 'pointer', fontWeight: 800, fontSize: 13, color: 'var(--text-muted)', letterSpacing: 0.2, userSelect: 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
-      >
-        <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}><KeyRound size={14} /> СМЕНА ПАРОЛЯ</span>
-        <span style={{ fontSize: 11 }}>{open ? '\u25b4' : '\u25be'}</span>
-      </div>
-      {open && (
-        <form onSubmit={(e) => { e.preventDefault(); submit() }} style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {/* Скрытый логин — подсказка менеджеру паролей, к какой учётке относится смена. */}
-          <input type="text" name="username" autoComplete="username" value={username ?? ''} readOnly style={{ display: 'none' }} />
-          <input type="password" autoComplete="current-password" placeholder="Текущий пароль" value={current} onChange={(e) => setCurrent(e.target.value)} style={inputStyle} />
-          <input type="password" autoComplete="new-password" placeholder="Новый пароль (минимум 6 символов)" value={next} onChange={(e) => setNext(e.target.value)} style={inputStyle} />
-          <input type="password" autoComplete="new-password" placeholder="Новый пароль ещё раз" value={repeat} onChange={(e) => setRepeat(e.target.value)} style={inputStyle} />
-          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 13, color: 'var(--text-muted)', cursor: 'pointer', userSelect: 'none' }}>
-            <input type="checkbox" checked={revokeOthers} onChange={(e) => setRevokeOthers(e.target.checked)} style={{ marginTop: 2 }} />
-            <span>Завершить остальные сеансы. Отметьте, если пароль мог попасть в чужие руки.</span>
-          </label>
-          <button type="submit" className="btn btn-primary" disabled={busy || !current || !next || !repeat} style={{ width: '100%' }}>
-            {busy ? 'Меняем…' : 'Сменить пароль'}
-          </button>
-        </form>
-      )}
-    </div>
-  )
-}
-
 export function renderChatModals(ctx: ChatModalsCtx) {
   const { botId, systemBot, toggleBotChat } = ctx
-  const { activeConversation, activeId, activePendingMessages, addParticipantsEblDigits, addParticipantsEblRefs, addParticipantsFoundUser, addParticipantsFoundUserStatus, addParticipantsLoading, addParticipantsModal, addParticipantsMode, addParticipantsSearchError, addParticipantsSearching, addParticipantsSelectedIds, applyEblidPaste, availabilityContext, avatarPresenceForUser, avatarPresenceForUserIdAndStatus, avatarPreviewUrl, clearEblidSearch, clearMessageMultiSelect, client, closeAddParticipantsModal, closeNewGroupModal, composerEditorRef, contactsInviteCode, contactsInviteCopied, contactsInviteRefreshing, contactsInviteRemainingLabel, contactsOpen, contactsQuery, contextMenu, convMenu, convMenuRef, conversationsQuery, copyContactsInviteCode, copyMyEblid, creatingGroup, crop, cropCanvasRef, currentUserId, devicesQuery, displayOutgoingWithRejected, displayedMessages, eblDigits, eblRefs, editorRef, effectiveUserStatus, eligibleContactsForAdd, fileInputRef, formatPresence, formattedContactsInviteCode, forwardModal, foundUser, getSelectedMessagesOrdered, groupAvatarEditor, groupAvatarPreviewUrl, groupCrop, groupCropCanvasRef, groupEditorRef, groupFileInputRef, groupImageRef, groupSelectedAvatarFile, groupTitle, groupTitleEditValue, handleAddParticipantByEbl, handleAddParticipants, headerMenu, headerMenuRef, identityBottomRowStyle, identityBubbleStyle, identityDividerStyle, identityHelperTextStyle, identityIconButtonStyle, identityInputsRowStyle, identitySectionHeaderStyle, identitySectionTitleStyle, imageRef, incomingContactsQuery, initiateSecretChat, isMobile, lightbox, linkDeviceModalOpen, localDeviceIdForLinking, me, meInfoQuery, mePopupOpen, menuRef, multiSelectMode, myEblid, myEblidCopied, myEblidMiniCardStyle, myPresence, newGroupAvatarBlob, newGroupAvatarEditorOpen, newGroupAvatarFile, newGroupAvatarHover, newGroupAvatarPreviewUrl, newGroupAvatarSourceUrl, newGroupCrop, newGroupCropCanvasRef, newGroupDragOver, newGroupEditorRef, newGroupFileInputRef, newGroupImageRef, newGroupOpen, onChangeAddParticipantsDigit, onChangeDigit, onKeyDownAddParticipantsDigit, onKeyDownDigit, openUserCard, outgoingContactsQuery, presenceGameByUserId, refreshContactsInviteCode, registrationInviteCodeQuery, registrationMiniCardStyle, resolveFirstImageAttachmentUrl, savingGroupTitle, secretHistoryGate, secretRequestLoading, selectConversation, selectedAvatarFile, selectedIds, selectedMessageIds, sendInvite, sendMessageToConversation, sendingInvite, setActiveId, setAddParticipantsEblDigits, setAddParticipantsFoundUser, setAddParticipantsModal, setAddParticipantsMode, setAddParticipantsSearchError, setAddParticipantsSearching, setAddParticipantsSelectedIds, setAvailabilityContext, setAvatarPreviewUrl, setContactsOpen, setContextMenu, setConvMenu, setCreatingGroup, setCrop, setEndSecretModalOpen, setForwardComposerDraft, setForwardModal, setGroupAvatarEditor, setGroupAvatarPreviewUrl, setGroupCrop, setGroupSelectedAvatarFile, setGroupTitle, setGroupTitleEditValue, setHeaderMenu, setLightbox, setLinkDeviceModalOpen, setMePopupOpen, setMobileView, setMultiSelectMode, setNewGroupAvatarBlob, setNewGroupAvatarEditorOpen, setNewGroupAvatarFile, setNewGroupAvatarHover, setNewGroupAvatarPreviewUrl, setNewGroupAvatarSourceUrl, setNewGroupCrop, setNewGroupDragOver, setRejectedOutgoing, setReplyTo, setSavingGroupTitle, setSecretHistoryGate, setSelectedAvatarFile, setSelectedIds, setSelectedMessageIds, setUploadMessage, setUploadProgress, setUploadingAvatar, setUserCardUser, setVideoViewer, sortedAcceptedContacts, startEdit, uploadMessage, uploadProgress, uploadingAvatar, userCardUser, usersById, videoViewer } = ctx
+  const { activeConversation, activeId, activePendingMessages, addParticipantsEblDigits, addParticipantsEblRefs, addParticipantsFoundUser, addParticipantsFoundUserStatus, addParticipantsLoading, addParticipantsModal, addParticipantsMode, addParticipantsSearchError, addParticipantsSearching, addParticipantsSelectedIds, applyEblidPaste, availabilityContext, avatarPresenceForUser, avatarPresenceForUserIdAndStatus, avatarPreviewUrl, clearEblidSearch, clearMessageMultiSelect, client, closeAddParticipantsModal, closeNewGroupModal, composerEditorRef, contactsInviteCode, contactsInviteCopied, contactsInviteRefreshing, contactsInviteRemainingLabel, contactsOpen, contactsQuery, contextMenu, convMenu, convMenuRef, conversationsQuery, copyContactsInviteCode, copyMyEblid, creatingGroup, crop, cropCanvasRef, currentUserId, devicesQuery, displayOutgoingWithRejected, displayedMessages, eblDigits, eblRefs, editorRef, effectiveUserStatus, eligibleContactsForAdd, fileInputRef, formatPresence, formattedContactsInviteCode, forwardModal, foundUser, getSelectedMessagesOrdered, groupAvatarEditor, groupAvatarPreviewUrl, groupCrop, groupCropCanvasRef, groupEditorRef, groupFileInputRef, groupImageRef, groupSelectedAvatarFile, groupTitle, groupTitleEditValue, handleAddParticipantByEbl, handleAddParticipants, headerMenu, headerMenuRef, identityBottomRowStyle, identityBubbleStyle, identityDividerStyle, identityHelperTextStyle, identityIconButtonStyle, identityInputsRowStyle, identitySectionHeaderStyle, identitySectionTitleStyle, imageRef, incomingContactsQuery, initiateSecretChat, isMobile, lightbox, linkDeviceModalOpen, localDeviceIdForLinking, me, meInfoQuery, menuRef, multiSelectMode, myEblid, myEblidCopied, myEblidMiniCardStyle, myPresence, newGroupAvatarBlob, newGroupAvatarEditorOpen, newGroupAvatarFile, newGroupAvatarHover, newGroupAvatarPreviewUrl, newGroupAvatarSourceUrl, newGroupCrop, newGroupCropCanvasRef, newGroupDragOver, newGroupEditorRef, newGroupFileInputRef, newGroupImageRef, newGroupOpen, onChangeAddParticipantsDigit, onChangeDigit, onKeyDownAddParticipantsDigit, onKeyDownDigit, openUserCard, outgoingContactsQuery, presenceGameByUserId, refreshContactsInviteCode, registrationInviteCodeQuery, registrationMiniCardStyle, resolveFirstImageAttachmentUrl, savingGroupTitle, secretHistoryGate, secretRequestLoading, selectConversation, selectedAvatarFile, selectedIds, selectedMessageIds, sendInvite, sendMessageToConversation, sendingInvite, setActiveId, setAddParticipantsEblDigits, setAddParticipantsFoundUser, setAddParticipantsModal, setAddParticipantsMode, setAddParticipantsSearchError, setAddParticipantsSearching, setAddParticipantsSelectedIds, setAvailabilityContext, setAvatarPreviewUrl, setContactsOpen, setContextMenu, setConvMenu, setCreatingGroup, setCrop, setEndSecretModalOpen, setForwardComposerDraft, setForwardModal, setGroupAvatarEditor, setGroupAvatarPreviewUrl, setGroupCrop, setGroupSelectedAvatarFile, setGroupTitle, setGroupTitleEditValue, setHeaderMenu, setLightbox, setLinkDeviceModalOpen, setMobileView, setMultiSelectMode, setNewGroupAvatarBlob, setNewGroupAvatarEditorOpen, setNewGroupAvatarFile, setNewGroupAvatarHover, setNewGroupAvatarPreviewUrl, setNewGroupAvatarSourceUrl, setNewGroupCrop, setNewGroupDragOver, setRejectedOutgoing, setReplyTo, setSavingGroupTitle, setSecretHistoryGate, setSelectedAvatarFile, setSelectedIds, setSelectedMessageIds, setUploadMessage, setUploadProgress, setUploadingAvatar, setUserCardUser, setVideoViewer, sortedAcceptedContacts, startEdit, uploadMessage, uploadProgress, uploadingAvatar, userCardUser, usersById, videoViewer, settingsNav, settingsCall } = ctx
   return (
     <>
     {userCardUser && (
@@ -399,7 +289,7 @@ export function renderChatModals(ctx: ChatModalsCtx) {
               : []
             return (
               <UserProfileCard
-                user={{ ...userCardUser, displayName: userCardUser.displayName || systemBot?.bot.displayName || 'Еблуша', bio: userCardUser.bio || systemBot?.bot.bio || null }}
+                user={{ ...userCardUser, displayName: userCardUser.displayName || systemBot?.bot.displayName || 'Еблуша' }}
                 isBot
                 statusText="бот"
                 eblid={null}
@@ -486,825 +376,57 @@ export function renderChatModals(ctx: ChatModalsCtx) {
         </div>
       </div>
     )}
-    {mePopupOpen && (
-      <div
-        className="eb-no-drag"
-        style={{
-          position: 'fixed',
-          inset: 0,
-          background: 'rgba(10,12,16,0.55)',
-          backdropFilter: 'blur(4px) saturate(110%)',
-          display: 'flex',
-          alignItems: isMobile ? 'flex-start' : 'center',
-          justifyContent: 'center',
-          zIndex: 80,
-          padding: isMobile ? '16px 12px' : 0,
-          overflowY: isMobile ? 'auto' : undefined,
+    {/* Выбор файла для нового фото: «Заменить фото» в разделе «Профиль» центра настроек */}
+    <input ref={fileInputRef} type="file" accept="image/*" aria-label="Выбрать фото профиля" onChange={(e) => {
+      const file = e.target.files?.[0]
+      e.target.value = ''
+      if (!file) return
+      setSelectedAvatarFile(file)
+      try { setAvatarPreviewUrl(URL.createObjectURL(file)) } catch {}
+    }} style={{ display: 'none' }} />
+    {settingsNav?.view && (
+      <Suspense fallback={null}>
+      <SettingsCenter
+        nav={settingsNav}
+        view={settingsNav.view}
+        urlGuard
+        host={{
+          statusText: (() => {
+            const myId = me?.id
+            const g = myId ? presenceGameByUserId[myId]?.game : undefined
+            if (g?.name) return `Играю в ${g.name}`
+            return formatPresence({ ...(me ?? {}), status: myPresence ?? (meInfoQuery.data as any)?.status })
+          })(),
+          presence: avatarPresenceForUser({ ...(me ?? {}), status: myPresence ?? (meInfoQuery.data as any)?.status }),
+          pickAvatar: () => fileInputRef.current?.click(),
+          avatarMsg: uploadMessage,
+          avatarBusy: uploadingAvatar,
+          openChat: (conversationId: string) => selectConversation(String(conversationId)),
+          callActive: !!settingsCall,
+          call: settingsCall,
         }}
-        onClick={() => setMePopupOpen(false)}
-      >
-        <div
-          style={{
-            background: 'var(--surface-200)',
-            padding: isMobile ? 16 : 24,
-            borderRadius: 16,
-            width: isMobile ? '100%' : 440,
-            maxWidth: '90vw',
-            border: '1px solid var(--surface-border)',
-            boxShadow: 'var(--shadow-medium)',
-            maxHeight: isMobile ? 'calc(100vh - 32px)' : '90vh',
-            display: 'flex',
-            flexDirection: 'column',
-            overflow: 'hidden',
-          }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexShrink: 0 }}>
-            <div style={{ fontWeight: 700, fontSize: 20, color: 'var(--text-primary)' }}>Профиль</div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-              <button className="btn btn-icon btn-ghost" title="Изменить аватар" onClick={() => fileInputRef.current?.click()}><Pencil size={16} /></button>
-              <button className="btn btn-icon btn-ghost" onClick={() => setMePopupOpen(false)}><X size={18} /></button>
-            </div>
-          </div>
-          <div style={{ overflowY: 'auto', flex: 1, minHeight: 0, paddingRight: isMobile ? 2 : 4 }}>
-          <div style={{ marginBottom: 20, borderRadius: 16, overflow: 'hidden', border: '1px solid var(--surface-border)', background: 'var(--surface-100)', paddingBottom: 16 }}>
-            <UserProfileHero
-              compact
-              user={{
-                id: me?.id ?? 'me',
-                displayName: me?.displayName,
-                avatarUrl: avatarPreviewUrl ?? meInfoQuery.data?.avatarUrl ?? me?.avatarUrl,
-                status: (myPresence ?? (meInfoQuery.data as any)?.status ?? 'ONLINE') as any,
-                bio: (meInfoQuery.data as any)?.bio,
-              }}
-              statusText={(() => {
-                const myId = me?.id
-                const g = myId ? presenceGameByUserId[myId]?.game : undefined
-                if (g?.name) return `Играю в ${g.name}`
-                return formatPresence({ ...(me ?? {}), status: myPresence ?? (meInfoQuery.data as any)?.status })
-              })()}
-              presence={avatarPresenceForUser({ ...(me ?? {}), status: myPresence ?? (meInfoQuery.data as any)?.status })}
-              eblid={meInfoQuery.data?.eblid ?? ''}
-              avatars={[avatarPreviewUrl ?? (meInfoQuery.data as any)?.avatarUrl ?? me?.avatarUrl, ...(((meInfoQuery.data as any)?.avatarHistory ?? []) as string[])].filter((u): u is string => typeof u === 'string' && u.length > 0)}
-              canManageAvatars
-              onDeleteAvatar={async (url) => { try { await api.post('/status/me/avatars/remove', { url }); meInfoQuery.refetch() } catch { systemToast.error('Не удалось удалить аватар') } }}
-            />
-          </div>
-          <input ref={fileInputRef} type="file" accept="image/*" onChange={(e) => {
-            const file = e.target.files?.[0]
-            if (!file) return
-            setSelectedAvatarFile(file)
-            try { setAvatarPreviewUrl(URL.createObjectURL(file)) } catch {}
-          }} style={{ display: 'none' }} />
-          {avatarPreviewUrl && (
-            <div style={{ border: '1px solid var(--surface-border)', borderRadius: 16, padding: 16, marginTop: 16, background: 'var(--surface-100)', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
-              <div style={{ fontSize: 14, color: 'var(--text-primary)', marginBottom: 12, fontWeight: 600 }}>Настройка аватара</div>
-              <div 
-                ref={editorRef}
-                onWheel={(e) => {
-                  e.preventDefault()
-                  const delta = -e.deltaY * 0.001
-                  const newScale = Math.max(0.1, Math.min(10, crop.scale * (1 + delta)))
-                  const rect = editorRef.current?.getBoundingClientRect()
-                  if (rect) {
-                    const x = e.clientX - rect.left
-                    const y = e.clientY - rect.top
-                    const scaleChange = newScale / crop.scale
-                    const newX = x - (x - crop.x) * scaleChange
-                    const newY = y - (y - crop.y) * scaleChange
-                    setCrop({ x: newX, y: newY, scale: newScale })
-                  }
-                }}
-                  onPointerDown={(e) => {
-                  if (e.pointerType === 'touch') return // Touch обрабатывается в addEventListener
-                  const rect = editorRef.current?.getBoundingClientRect()
-                  if (!rect) return
-                  const editorWidth = rect.width
-                  const editorHeight = rect.height
-                  const centerX = editorWidth / 2
-                  const centerY = editorHeight / 2
-                  const cropSizeValue = 240
-                  const radius = cropSizeValue / 2
-                  const x = e.clientX - rect.left
-                  const y = e.clientY - rect.top
-                  
-                  // Проверяем, что клик внутри круга
-                  const dx = x - centerX
-                  const dy = y - centerY
-                  if (dx * dx + dy * dy > radius * radius) {
-                    return
-                  }
-                  
-                    try { (e.currentTarget as any).setPointerCapture?.((e as any).pointerId) } catch {}
-                  const startX = e.clientX
-                  const startY = e.clientY
-                  const start = { ...crop }
-                    const onMove = (ev: PointerEvent) => {
-                      ev.preventDefault()
-                    const deltaX = ev.clientX - startX
-                    const deltaY = ev.clientY - startY
-                    setCrop({ ...start, x: start.x + deltaX, y: start.y + deltaY })
-                    }
-                    const onUp = () => {
-                      window.removeEventListener('pointermove', onMove as any)
-                      window.removeEventListener('pointerup', onUp)
-                    }
-                    window.addEventListener('pointermove', onMove as any, { passive: false } as any)
-                    window.addEventListener('pointerup', onUp, { passive: true } as any)
-                }}
-                style={{ 
-                position: 'relative', 
-                width: '100%', 
-                height: 320, 
-                background: 'var(--surface-200)', 
-                overflow: 'hidden', 
-                borderRadius: 12, 
-                touchAction: 'none',
-                border: '1px solid var(--surface-border)',
-                boxShadow: 'inset 0 2px 8px rgba(0,0,0,0.1)',
-                cursor: 'move'
-              }}>
-                <img 
-                  ref={imageRef}
-                  src={avatarPreviewUrl} 
-                  alt="preview" 
-                  style={{ 
-                    position: 'absolute', 
-                    left: crop.x, 
-                    top: crop.y, 
-                    transform: `scale(${crop.scale})`, 
-                    transformOrigin: 'top left',
-                    willChange: 'transform',
-                    pointerEvents: 'none'
-                  }} 
-                  draggable={false}
-                  onLoad={(e) => {
-                    const img = e.currentTarget
-                    const editor = editorRef.current
-                    if (!editor) return
-                    const editorWidth = editor.clientWidth
-                    const editorHeight = editor.clientHeight
-                    const cropSizeValue = 240
-                    const imgWidth = img.naturalWidth
-                    const imgHeight = img.naturalHeight
-                    const centerX = editorWidth / 2
-                    const centerY = editorHeight / 2
-                    
-                    // Рассчитываем масштаб, чтобы изображение максимально заполняло круг
-                    const scaleX = cropSizeValue / imgWidth
-                    const scaleY = cropSizeValue / imgHeight
-                    const initialScale = Math.max(scaleX, scaleY) * 1.2 // 1.2 для запаса
-                    
-                    // Центрируем изображение относительно центра круга
-                    const initialX = centerX - (imgWidth * initialScale) / 2
-                    const initialY = centerY - (imgHeight * initialScale) / 2
-                    
-                    setCrop({ x: initialX, y: initialY, scale: initialScale })
-                  }}
-                />
-                {/* Маска с градиентом для более плавного эффекта */}
-                <div style={{ 
-                  position: 'absolute', 
-                  inset: 0, 
-                  pointerEvents: 'none', 
-                  borderRadius: '50%', 
-                  boxShadow: '0 0 0 9999px rgba(0,0,0,0.65)', 
-                  width: 240, 
-                  height: 240, 
-                  margin: 'auto',
-                  border: '2px solid rgba(255,255,255,0.3)',
-                  boxSizing: 'border-box'
-                }} />
-                {/* Сетка для лучшего позиционирования */}
-                <div style={{
-                  position: 'absolute',
-                  inset: 0,
-                  pointerEvents: 'none',
-                  borderRadius: '50%',
-                  width: 240,
-                  height: 240,
-                  margin: 'auto',
-                  background: `
-                    linear-gradient(to right, rgba(255,255,255,0.1) 1px, transparent 1px),
-                    linear-gradient(to bottom, rgba(255,255,255,0.1) 1px, transparent 1px)
-                  `,
-                  backgroundSize: '60px 60px',
-                  opacity: 0.5
-                }} />
-              </div>
-              <div style={{ marginTop: 16 }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                  <div style={{ fontSize: 13, color: 'var(--text-muted)', fontWeight: 500 }}>Масштаб</div>
-                  <div style={{ fontSize: 12, color: 'var(--text-muted)', background: 'var(--surface-200)', padding: '4px 8px', borderRadius: 6 }}>
-                    {Math.round(crop.scale * 100)}%
-              </div>
-                </div>
-                <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <div style={{ fontSize: 18, color: 'var(--text-muted)', cursor: 'pointer', userSelect: 'none' }} onClick={() => setCrop((c: any) => ({ ...c, scale: Math.max(0.1, c.scale - 0.1) }))}>−</div>
-                  <input 
-                    type="range" 
-                    min={0.1} 
-                    max={10} 
-                    step={0.05} 
-                    value={crop.scale} 
-                    onChange={(e) => setCrop((c: any) => ({ ...c, scale: parseFloat(e.target.value) }))} 
-                    style={{ 
-                      flex: 1, 
-                      height: 6,
-                      background: 'var(--surface-200)',
-                      borderRadius: 3,
-                      outline: 'none',
-                      cursor: 'pointer'
-                    }}
-                  />
-                  <div style={{ fontSize: 18, color: 'var(--text-muted)', cursor: 'pointer', userSelect: 'none' }} onClick={() => setCrop((c: any) => ({ ...c, scale: Math.min(10, c.scale + 0.1) }))}>+</div>
-                </div>
-                <div style={{ display: 'flex', gap: 8, marginTop: 12, fontSize: 11, color: 'var(--text-muted)' }}>
-                  <div style={{ flex: 1, textAlign: 'center', padding: '6px', background: 'var(--surface-200)', borderRadius: 6 }}>
-                    {isMobile ? 'Два пальца для масштаба, один для перемещения' : 'Перетащите для перемещения, колесико мыши для масштаба'}
-                  </div>
-                </div>
-              </div>
-              <canvas ref={cropCanvasRef} width={240} height={240} style={{ display: 'none' }} />
-            </div>
-          )}
-          {selectedAvatarFile && (
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 8 }}>
-              <button className="btn btn-secondary" onClick={() => { setSelectedAvatarFile(null); if (avatarPreviewUrl) URL.revokeObjectURL(avatarPreviewUrl); setAvatarPreviewUrl(null) }}>Отмена</button>
-              <button className="btn btn-primary" disabled={uploadingAvatar} onClick={async () => {
-                if (!selectedAvatarFile) return
-                setUploadingAvatar(true)
-                setUploadProgress(0)
-                try {
-                  let blobToSend: Blob | null = null
-                  if (cropCanvasRef.current && avatarPreviewUrl) {
-                    const img = await new Promise<HTMLImageElement>((resolve) => { const i = new Image(); i.onload = () => resolve(i); i.src = avatarPreviewUrl })
-                    const ctx = cropCanvasRef.current.getContext('2d')!
-                    const size = 240
-                    ctx.clearRect(0,0,size,size)
-                    ctx.save()
-                    ctx.beginPath(); ctx.arc(size/2, size/2, size/2, 0, Math.PI*2); ctx.closePath(); ctx.clip()
-                    const vw = editorRef.current?.clientWidth ?? 320
-                    const vh = editorRef.current?.clientHeight ?? 320
-                    const viewportCenter = { x: vw / 2, y: vh / 2 }
-                    const viewRect = { x: viewportCenter.x - size/2, y: viewportCenter.y - size/2, w: size, h: size }
-                    const srcX = (viewRect.x - crop.x) / crop.scale
-                    const srcY = (viewRect.y - crop.y) / crop.scale
-                    const srcW = viewRect.w / crop.scale
-                    const srcH = viewRect.h / crop.scale
-                    ctx.drawImage(img, srcX, srcY, srcW, srcH, 0, 0, size, size)
-                    ctx.restore()
-                    blobToSend = await new Promise<Blob | null>((resolve) => cropCanvasRef.current!.toBlob((b: any) => resolve(b), 'image/png'))
-                  }
-                  const form = new FormData()
-                  form.append('file', blobToSend ?? selectedAvatarFile)
-                    const url = await new Promise<string>((resolve, reject) => {
-                    const xhr = new XMLHttpRequest()
-                    xhr.open('POST', getUploadUrl())
-                    try { const token = useAppStore.getState().session?.accessToken; if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`) } catch {}
-                    xhr.upload.onprogress = (e) => {
-                      const total = e.lengthComputable ? e.total : ((blobToSend ?? selectedAvatarFile)?.size ?? 0)
-                      if (total > 0) setUploadProgress(Math.min(100, Math.round(100 * e.loaded / total)))
-                    }
-                    xhr.onreadystatechange = () => {
-                      if (xhr.readyState === 4) {
-                        if (xhr.status >= 200 && xhr.status < 300) {
-                          try { const resp = JSON.parse(xhr.responseText); resolve(resp.url) } catch (err) { reject(err) }
-                        } else reject(new Error('upload failed'))
-                      }
-                    }
-                    xhr.onerror = () => reject(new Error('upload failed'))
-                    xhr.send(form)
-                  })
-                  await api.patch('/status/me', { avatarUrl: url })
-                  setSelectedAvatarFile(null)
-                  if (avatarPreviewUrl) URL.revokeObjectURL(avatarPreviewUrl)
-                  setAvatarPreviewUrl(null)
-                  meInfoQuery.refetch()
-                } catch {}
-                setUploadingAvatar(false)
-                setUploadMessage('Готово')
-                setTimeout(() => setUploadMessage(null), 2200)
-              }}>{uploadingAvatar ? 'Загрузка...' : 'Загрузить'}</button>
-            </div>
-          )}
-          {uploadingAvatar && (
-            <div style={{ height: 8, background: 'var(--surface-100)', borderRadius: 6, overflow: 'hidden', marginTop: 12 }}>
-              <div style={{ width: `${uploadProgress}%`, height: '100%', background: 'var(--brand)', transition: 'width 0.2s ease' }} />
-            </div>
-          )}
-          {uploadMessage && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, color: '#16a34a', fontSize: 14 }}>
-              <CheckCircle size={16} />
-              <span>{uploadMessage}</span>
-            </div>
-          )}
-
-          {/* divider */}
-          <div style={{ borderTop: '1px solid var(--surface-border)', marginTop: 18, paddingTop: 18 }} />
-
-          {/* Active sessions (device list) */}
-          {isMobile ? (
-            <details
-              style={{
-                marginTop: 0,
-                marginBottom: 18,
-                border: '1px solid var(--surface-border)',
-                borderRadius: 14,
-                background: 'var(--surface-100)',
-                padding: 12,
-              }}
-            >
-              <summary
-                style={{
-                  cursor: 'pointer',
-                  fontWeight: 800,
-                  fontSize: 13,
-                  color: 'var(--text-muted)',
-                  letterSpacing: 0.2,
-                  userSelect: 'none',
-                }}
-              >
-                АКТИВНЫЕ СЕАНСЫ
-              </summary>
-              <div style={{ marginTop: 12 }}>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'space-between' }}>
-                  <button
-                    type="button"
-                    className="btn btn-ghost"
-                    onClick={async () => {
-                      const currentId = String(localDeviceIdForLinking ?? '').trim()
-                      const others = (devicesQuery.data || [])
-                        .filter((d: any) => !d?.revokedAt)
-                        .filter((d: any) => String(d?.id ?? '').trim() && String(d.id).trim() !== currentId)
-                      if (!others.length) return
-                      const ok = await systemConfirm({
-                        title: 'Отключить все другие устройства?',
-                        message: 'Они будут разлогинены и перестанут получать секретные сообщения.',
-                        confirmText: 'Отключить',
-                        cancelText: 'Отмена',
-                        danger: true,
-                      })
-                      if (!ok) return
-                      await api.post('/devices/revoke-others')
-                      devicesQuery.refetch()
-                      systemToast.success('Другие устройства отключены')
-                    }}
-                    disabled={!localDeviceIdForLinking || (devicesQuery.data || []).filter((d: any) => !d?.revokedAt).length <= 1}
-                    title="Отключить все другие устройства"
-                    style={{ padding: '6px 10px', height: 32, borderRadius: 999 }}
-                  >
-                    <X size={14} /> Отключить все другие
-                  </button>
-                </div>
-
-                <div style={{ marginTop: 10 }}>
-                  {(() => {
-                    const listAll = (devicesQuery.data || [])
-                      .filter((d: any) => !d?.revokedAt)
-                      .slice()
-                      .sort((a: any, b: any) => {
-                        const ta = a?.lastSeenAt ? new Date(a.lastSeenAt).getTime() : 0
-                        const tb = b?.lastSeenAt ? new Date(b.lastSeenAt).getTime() : 0
-                        return tb - ta
-                      })
-                    if (!listAll.length) {
-                      return <div style={{ padding: '12px 2px', fontSize: 13, color: 'var(--text-muted)' }}>Нет устройств</div>
-                    }
-                    const norm = (v: any) => String(v ?? '').trim().toLowerCase()
-                    const pickTs = (d: any) => {
-                      const t1 = d?.lastSeenAt ? new Date(d.lastSeenAt).getTime() : 0
-                      const t2 = d?.createdAt ? new Date(d.createdAt).getTime() : 0
-                      return Math.max(t1, t2)
-                    }
-                    const grouped = new Map<string, { device: any; count: number }>()
-                    for (const d of listAll) {
-                      const id = String(d?.id ?? '').trim()
-                      const kBase = `${norm(d?.name)}|${norm(d?.platform)}|${norm(d?.lastIp)}|${norm(d?.lastCity)}|${norm(d?.lastCountry)}`
-                      const key = kBase === '||||' ? `id:${id}` : kBase
-                      const prev = grouped.get(key)
-                      if (!prev) {
-                        grouped.set(key, { device: d, count: 1 })
-                        continue
-                      }
-                      const nextCount = prev.count + 1
-                      const keep = pickTs(d) >= pickTs(prev.device) ? d : prev.device
-                      grouped.set(key, { device: keep, count: nextCount })
-                    }
-                    const currentId = String(localDeviceIdForLinking ?? '').trim()
-                    const rows = Array.from(grouped.values()).sort((a, b) => {
-                      const aCurrent = !!currentId && String(a.device?.id ?? '').trim() === currentId
-                      const bCurrent = !!currentId && String(b.device?.id ?? '').trim() === currentId
-                      if (aCurrent && !bCurrent) return -1
-                      if (!aCurrent && bCurrent) return 1
-                      return pickTs(b.device) - pickTs(a.device)
-                    })
-                    const iconFor = (platformRaw: any) => {
-                      const p = String(platformRaw ?? '').toLowerCase()
-                      if (p.includes('ios') || p.includes('iphone') || p.includes('android')) return <Smartphone size={18} />
-                      if (p.includes('ipad') || p.includes('tablet')) return <Tablet size={18} />
-                      return <Monitor size={18} />
-                    }
-                    const statusFor = (d: any) => {
-                      const n = typeof d?.availablePrekeys === 'number' ? d.availablePrekeys : null
-                      if (n != null && n > 0) return { text: 'Ключи готовы', color: '#86efac' }
-                      return { text: 'Ключи не готовы', color: 'var(--text-muted)' }
-                    }
-                    return (
-                      <div style={{ maxHeight: 260, overflowY: 'auto' }}>
-                        {rows.map((row: any, idx: number) => {
-                          const d = row.device
-                          const isCurrent = !!currentId && String(d?.id ?? '').trim() === currentId
-                          const status = statusFor(d)
-                          const lastSeen = d?.lastSeenAt ? new Date(d.lastSeenAt).toLocaleString() : null
-                          const platform = d?.platform ? String(d.platform) : '—'
-                          const ip = String(d?.lastIp ?? '').trim()
-                          const city = String(d?.lastCity ?? '').trim()
-                          const country = String(d?.lastCountry ?? '').trim()
-                          const loc = [city, country].filter(Boolean).join(', ')
-                          const locIp = (loc && ip) ? `${loc} • ${ip}` : (loc || ip || '')
-                          return (
-                            <div
-                              key={String(d?.id ?? idx)}
-                              style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'space-between',
-                                gap: 12,
-                                padding: '12px 2px',
-                                borderBottom: idx === rows.length - 1 ? 'none' : '1px solid rgba(255,255,255,0.06)',
-                                opacity: 1,
-                              }}
-                            >
-                              <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
-                                <div
-                                  style={{
-                                    width: 40,
-                                    height: 40,
-                                    borderRadius: 999,
-                                    background: 'rgba(255,255,255,0.06)',
-                                    border: '1px solid var(--surface-border)',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    color: 'var(--text-primary)',
-                                    flexShrink: 0,
-                                  }}
-                                >
-                                  {iconFor(d?.platform)}
-                                </div>
-                                <div style={{ minWidth: 0, flex: 1 }}>
-                                  <div style={{ fontWeight: 800, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, minWidth: 0 }}>
-                                    <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                      {d?.name ? String(d.name) : String(d?.id ?? '')}
-                                      {row?.count > 1 ? (
-                                        <span style={{ marginLeft: 4, fontSize: 11, color: 'var(--text-muted)', fontWeight: 800 }}>
-                                          +{Number(row.count) - 1}
-                                        </span>
-                                      ) : null}
-                                    </span>
-                                    {isCurrent ? (
-                                      <span
-                                        className="device-current-badge"
-                                        style={{
-                                          fontSize: 11,
-                                          padding: '2px 8px',
-                                          borderRadius: 999,
-                                          border: '1px solid rgba(34,197,94,0.25)',
-                                          background: 'rgba(34,197,94,0.12)',
-                                          color: '#86efac',
-                                          fontWeight: 800,
-                                          flexShrink: 0,
-                                        }}
-                                        title="Это устройство"
-                                      >
-                                        <span className="device-current-long">Это устройство</span>
-                                        <span className="device-current-short">Мы</span>
-                                      </span>
-                                    ) : null}
-                                  </div>
-                                  <div style={{ fontSize: 12, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                                    <span>{platform}</span>
-                                    {locIp ? (
-                                      <>
-                                        <span>•</span>
-                                        <span>{locIp}</span>
-                                      </>
-                                    ) : null}
-                                    <span>•</span>
-                                    <span style={{ color: status.color, fontWeight: 700 }}>{status.text}</span>
-                                    {lastSeen ? (
-                                      <>
-                                        <span>•</span>
-                                        <span>{lastSeen}</span>
-                                      </>
-                                    ) : null}
-                                  </div>
-                                </div>
-                              </div>
-
-                              <button
-                                type="button"
-                                className="btn btn-icon btn-ghost"
-                                title={isCurrent ? 'Нельзя отключить текущее устройство' : 'Отключить'}
-                                disabled={isCurrent}
-                                onClick={async () => {
-                                  if (isCurrent) return
-                                  const ok = await systemConfirm({
-                                    title: 'Отключить устройство?',
-                                    message: 'Оно перестанет получать секретные сообщения и ключи.',
-                                    confirmText: 'Отключить',
-                                    cancelText: 'Отмена',
-                                    danger: true,
-                                  })
-                                  if (!ok) return
-                                  await api.delete(`/devices/${encodeURIComponent(String(d.id))}`)
-                                  devicesQuery.refetch()
-                                  systemToast.success('Устройство отключено')
-                                }}
-                                style={{ flexShrink: 0 }}
-                              >
-                                <X size={18} />
-                              </button>
-                            </div>
-                          )
-                        })}
-                      </div>
-                    )
-                  })()}
-                </div>
-              </div>
-            </details>
-          ) : (
-            <div style={{ marginTop: 0, marginBottom: 18 }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
-                <div style={{ fontWeight: 800, fontSize: 13, color: 'var(--text-muted)', letterSpacing: 0.2 }}>АКТИВНЫЕ СЕАНСЫ</div>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <button
-                    type="button"
-                    className="btn btn-ghost"
-                    onClick={async () => {
-                      const currentId = String(localDeviceIdForLinking ?? '').trim()
-                      const others = (devicesQuery.data || [])
-                        .filter((d: any) => !d?.revokedAt)
-                        .filter((d: any) => String(d?.id ?? '').trim() && String(d.id).trim() !== currentId)
-                      if (!others.length) return
-                      const ok = await systemConfirm({
-                        title: 'Отключить все другие устройства?',
-                        message: 'Они будут разлогинены и перестанут получать секретные сообщения.',
-                        confirmText: 'Отключить',
-                        cancelText: 'Отмена',
-                        danger: true,
-                      })
-                      if (!ok) return
-                      await api.post('/devices/revoke-others')
-                      devicesQuery.refetch()
-                      systemToast.success('Другие устройства отключены')
-                    }}
-                    disabled={!localDeviceIdForLinking || (devicesQuery.data || []).filter((d: any) => !d?.revokedAt).length <= 1}
-                    title="Отключить все другие устройства"
-                    style={{ padding: '6px 10px', height: 32, borderRadius: 999 }}
-                  >
-                    <X size={14} /> Отключить все другие
-                  </button>
-                </div>
-              </div>
-
-              <div
-                style={{
-                  border: '1px solid var(--surface-border)',
-                  borderRadius: 14,
-                  background: 'var(--surface-100)',
-                  overflow: 'hidden',
-                }}
-              >
-                {(() => {
-                  const listAll = (devicesQuery.data || [])
-                    .filter((d: any) => !d?.revokedAt)
-                    .slice()
-                    .sort((a: any, b: any) => {
-                      const ta = a?.lastSeenAt ? new Date(a.lastSeenAt).getTime() : 0
-                      const tb = b?.lastSeenAt ? new Date(b.lastSeenAt).getTime() : 0
-                      return tb - ta
-                    })
-                  if (!listAll.length) {
-                    return (
-                      <div style={{ padding: '12px 14px', fontSize: 13, color: 'var(--text-muted)' }}>
-                        Нет устройств
-                      </div>
-                    )
-                  }
-                  const norm = (v: any) => String(v ?? '').trim().toLowerCase()
-                  const pickTs = (d: any) => {
-                    const t1 = d?.lastSeenAt ? new Date(d.lastSeenAt).getTime() : 0
-                    const t2 = d?.createdAt ? new Date(d.createdAt).getTime() : 0
-                    return Math.max(t1, t2)
-                  }
-                  const grouped = new Map<string, { device: any; count: number }>()
-                  for (const d of listAll) {
-                    const id = String(d?.id ?? '').trim()
-                    const kBase = `${norm(d?.name)}|${norm(d?.platform)}|${norm(d?.lastIp)}|${norm(d?.lastCity)}|${norm(d?.lastCountry)}`
-                    const key = kBase === '||||' ? `id:${id}` : kBase
-                    const prev = grouped.get(key)
-                    if (!prev) {
-                      grouped.set(key, { device: d, count: 1 })
-                      continue
-                    }
-                    const nextCount = prev.count + 1
-                    const keep = pickTs(d) >= pickTs(prev.device) ? d : prev.device
-                    grouped.set(key, { device: keep, count: nextCount })
-                  }
-                  const currentId = String(localDeviceIdForLinking ?? '').trim()
-                  const rows = Array.from(grouped.values()).sort((a, b) => {
-                    const aCurrent = !!currentId && String(a.device?.id ?? '').trim() === currentId
-                    const bCurrent = !!currentId && String(b.device?.id ?? '').trim() === currentId
-                    if (aCurrent && !bCurrent) return -1
-                    if (!aCurrent && bCurrent) return 1
-                    return pickTs(b.device) - pickTs(a.device)
-                  })
-                  const iconFor = (platformRaw: any) => {
-                    const p = String(platformRaw ?? '').toLowerCase()
-                    if (p.includes('ios') || p.includes('iphone') || p.includes('android')) return <Smartphone size={18} />
-                    if (p.includes('ipad') || p.includes('tablet')) return <Tablet size={18} />
-                    return <Monitor size={18} />
-                  }
-                  const statusFor = (d: any) => {
-                    const n = typeof d?.availablePrekeys === 'number' ? d.availablePrekeys : null
-                    if (n != null && n > 0) return { text: 'Ключи готовы', color: '#86efac' }
-                    return { text: 'Ключи не готовы', color: 'var(--text-muted)' }
-                  }
-                  return (
-                    <div style={{ maxHeight: 320, overflowY: 'auto' }}>
-                      {rows.map((row: any, idx: number) => {
-                        const d = row.device
-                        const isCurrent = !!currentId && String(d?.id ?? '').trim() === currentId
-                        const status = statusFor(d)
-                        const lastSeen = d?.lastSeenAt ? new Date(d.lastSeenAt).toLocaleString() : null
-                        const platform = d?.platform ? String(d.platform) : '—'
-                        const ip = String(d?.lastIp ?? '').trim()
-                        const city = String(d?.lastCity ?? '').trim()
-                        const country = String(d?.lastCountry ?? '').trim()
-                        const loc = [city, country].filter(Boolean).join(', ')
-                        const locIp = (loc && ip) ? `${loc} • ${ip}` : (loc || ip || '')
-                        return (
-                          <div
-                            key={String(d?.id ?? idx)}
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'space-between',
-                              gap: 12,
-                              padding: '12px 14px',
-                              borderBottom: idx === rows.length - 1 ? 'none' : '1px solid var(--surface-border)',
-                              opacity: 1,
-                            }}
-                          >
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
-                              <div
-                                style={{
-                                  width: 40,
-                                  height: 40,
-                                  borderRadius: 999,
-                                  background: 'rgba(255,255,255,0.06)',
-                                  border: '1px solid var(--surface-border)',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'center',
-                                  color: 'var(--text-primary)',
-                                  flexShrink: 0,
-                                }}
-                              >
-                                {iconFor(d?.platform)}
-                              </div>
-                              <div style={{ minWidth: 0, flex: 1 }}>
-                                <div style={{ fontWeight: 800, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, minWidth: 0 }}>
-                                  <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                    {d?.name ? String(d.name) : String(d?.id ?? '')}
-                                    {row?.count > 1 ? (
-                                      <span style={{ marginLeft: 4, fontSize: 11, color: 'var(--text-muted)', fontWeight: 800 }}>
-                                        +{Number(row.count) - 1}
-                                      </span>
-                                    ) : null}
-                                  </span>
-                                  {isCurrent ? (
-                                    <span
-                                      className="device-current-badge"
-                                      style={{
-                                        fontSize: 11,
-                                        padding: '2px 8px',
-                                        borderRadius: 999,
-                                        border: '1px solid rgba(34,197,94,0.25)',
-                                        background: 'rgba(34,197,94,0.12)',
-                                        color: '#86efac',
-                                        fontWeight: 800,
-                                        flexShrink: 0,
-                                      }}
-                                      title="Это устройство"
-                                    >
-                                      <span className="device-current-long">Это устройство</span>
-                                      <span className="device-current-short">Мы</span>
-                                    </span>
-                                  ) : null}
-                                </div>
-                                <div style={{ fontSize: 12, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                                  <span>{platform}</span>
-                                  {locIp ? (
-                                    <>
-                                      <span>•</span>
-                                      <span>{locIp}</span>
-                                    </>
-                                  ) : null}
-                                  <span>•</span>
-                                  <span style={{ color: status.color, fontWeight: 700 }}>{status.text}</span>
-                                  {lastSeen ? (
-                                    <>
-                                      <span>•</span>
-                                      <span>{lastSeen}</span>
-                                    </>
-                                  ) : null}
-                                </div>
-                              </div>
-                            </div>
-
-                            <button
-                              type="button"
-                              className="btn btn-icon btn-ghost"
-                              title={isCurrent ? 'Нельзя отключить текущее устройство' : 'Отключить'}
-                              disabled={isCurrent}
-                              onClick={async () => {
-                                if (isCurrent) return
-                                const ok = await systemConfirm({
-                                  title: 'Отключить устройство?',
-                                  message: 'Оно перестанет получать секретные сообщения и ключи.',
-                                  confirmText: 'Отключить',
-                                  cancelText: 'Отмена',
-                                  danger: true,
-                                })
-                                if (!ok) return
-                                await api.delete(`/devices/${encodeURIComponent(String(d.id))}`)
-                                devicesQuery.refetch()
-                                systemToast.success('Устройство отключено')
-                              }}
-                              style={{ flexShrink: 0 }}
-                            >
-                              <X size={18} />
-                            </button>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  )
-                })()}
-              </div>
-            </div>
-          )}
-
-          <LocalTimeSettingsSection />
-
-          <BotChatSettingsSection
-            onOpenChat={(conversationId) => {
-              setMePopupOpen(false)
-              selectConversation(String(conversationId))
-            }}
-          />
-
-          <CallRoutingSection />
-
-          <ChangePasswordSection username={(me as any)?.username} />
-
-          <div style={{ borderTop: '1px solid var(--surface-border)', marginTop: 24, paddingTop: 20 }}>
-            <button 
-              className="btn btn-secondary" 
-              onClick={async () => {
-                // Best-effort: revoke this device server-side, then wipe all local device material and logout.
-                try {
-                  const did = getStoredDeviceInfo()?.deviceId
-                  if (did) {
-                    await api.delete(`/devices/${encodeURIComponent(String(did))}`)
-                  }
-                } catch {}
-                try {
-                  const refreshToken = useAppStore.getState().session?.refreshToken
-                  await api.post('/auth/logout', refreshToken ? { refreshToken } : undefined)
-                } catch {
-                  // Ignore errors during logout
-                }
-                wipeLocalDeviceData()
-                useAppStore.getState().setSession(null)
-                setMePopupOpen(false)
-              }}
-              style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, color: '#f87171' }}
-            >
-              <LogOut size={18} />
-              <span>Выйти из Еблуши</span>
-            </button>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
-            <button className="btn btn-ghost" onClick={() => setMePopupOpen(false)}>Закрыть</button>
-          </div>
-          </div>
-        </div>
-      </div>
+      />
+      </Suspense>
+    )}
+    {avatarPreviewUrl && (
+      <AvatarEditorModal
+        isMobile={isMobile}
+        avatarPreviewUrl={avatarPreviewUrl}
+        selectedAvatarFile={selectedAvatarFile}
+        crop={crop}
+        setCrop={setCrop}
+        editorRef={editorRef}
+        imageRef={imageRef}
+        cropCanvasRef={cropCanvasRef}
+        uploadingAvatar={uploadingAvatar}
+        uploadProgress={uploadProgress}
+        setSelectedAvatarFile={setSelectedAvatarFile}
+        setAvatarPreviewUrl={setAvatarPreviewUrl}
+        setUploadingAvatar={setUploadingAvatar}
+        setUploadProgress={setUploadProgress}
+        setUploadMessage={setUploadMessage}
+        refetchMe={() => { void meInfoQuery.refetch() }}
+      />
     )}
     {newGroupAvatarEditorOpen && (
       <div

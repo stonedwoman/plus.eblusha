@@ -62,6 +62,7 @@ import { ingestConversationsResponse } from '../../domain/mute/muteSync'
 import { callOverlayCoversChat, canReadNow, createInputPresence } from '../../domain/readSync/readGate'
 import { useChatTyping } from './chats/hooks/useChatTyping'
 import { useChatsResponsive } from './chats/hooks/useChatsResponsive'
+import { useSettingsNav } from '../settings/settingsNav'
 import { useChatUiStore } from '../../core/chat-sync/chatUiStore'
 import { renderActiveCallOverlay } from './chats/render/CallOverlayHost'
 import { renderConversationList } from './chats/render/ConversationListPane'
@@ -197,7 +198,8 @@ export default function ChatsPage() {
     const g = mobileNavGuardRef.current
     if (g.from === target && g.to === location.pathname && now - g.at < 700) return
     mobileNavGuardRef.current = { from: location.pathname, to: target, at: now }
-    navigate(target, { replace: true })
+    // ?settings=… (центр настроек) и его глубина истории при смене пути /→/chats не теряются
+    navigate({ pathname: target, search: location.search, hash: location.hash }, { replace: true, state: location.state })
   }, [activeId, location.pathname, mobileView, navigate])
 
   const {
@@ -302,7 +304,20 @@ export default function ChatsPage() {
   const [contactsInviteNow, setContactsInviteNow] = useState(() => Date.now())
   const [contactsInviteCopied, setContactsInviteCopied] = useState(false)
   const [contactsInviteRefreshing, setContactsInviteRefreshing] = useState(false)
-  const [mePopupOpen, setMePopupOpen] = useState(false)
+  // «Центр управления» (настройки плитками) живёт в адресе ?settings=…: «Назад» браузера делает шаг
+  // раздел → обзор → закрыть. Прежнее окно «Профиль» (mePopupOpen) заменено им; setMePopupOpen оставлен для плитки в списке бесед.
+  const settingsNav = useSettingsNav()
+  // Центр настроек — отдельный чанк: подгружаем заранее в простое, чтобы первое открытие было мгновенным.
+  useEffect(() => {
+    const t = window.setTimeout(() => { void import('../settings/SettingsCenter') }, 4000)
+    return () => window.clearTimeout(t)
+  }, [])
+  const settingsNavRef = useRef(settingsNav)
+  settingsNavRef.current = settingsNav
+  const setMePopupOpen = (open: boolean) => {
+    if (open) settingsNavRef.current.open({ kind: 'overview' })
+    else settingsNavRef.current.close()
+  }
   const [uploadingAvatar, setUploadingAvatar] = useState(false)
   const [selectedAvatarFile, setSelectedAvatarFile] = useState<File | null>(null)
   const [avatarPreviewUrl, setAvatarPreviewUrl] = useState<string | null>(null)
@@ -570,9 +585,9 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   const [userCardUser, setUserCardUser] = useState<any | null>(null)
   const openUserCard = useCallback((u: any) => {
     if (!u || typeof u !== 'object' || !u.id) return
-    if (me?.id && String(u.id) === String(me.id)) { setMePopupOpen(true); return }
+    if (me?.id && String(u.id) === String(me.id)) { settingsNavRef.current.open({ kind: 'section', id: 'profile' }); return }
     setUserCardUser(u)
-    // Enrich with bio/createdAt from the public mini-profile endpoint (best-effort).
+    // Enrich with createdAt/avatars from the public mini-profile endpoint (best-effort).
     void api.get(`/users/${encodeURIComponent(String(u.id))}`)
       .then((r) => {
         const full = r.data?.user
@@ -1714,6 +1729,22 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     }
   }
 
+  // Ctrl/⌘+, — открыть настройки. Молчит над редактором, просмотром картинки/видео и выбором реакции.
+  // Открытым центром занимается он сам (закрытие спросит про несохранённый профиль).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return
+      if (e.key !== ',' && e.code !== 'Comma') return
+      if (settingsNavRef.current.view) return
+      if (avatarPreviewUrl || lightbox.open || videoViewer.open || groupAvatarEditor || newGroupAvatarEditorOpen) return
+      if (document.querySelector('.msg-reaction-extended-popover, [aria-modal="true"]')) return
+      e.preventDefault()
+      settingsNavRef.current.open({ kind: 'overview' })
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [avatarPreviewUrl, lightbox.open, videoViewer.open, groupAvatarEditor, newGroupAvatarEditorOpen])
+
   const meInfoQuery = useQuery({
     queryKey: ['me-info'],
     queryFn: async () => {
@@ -2843,7 +2874,7 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
     // профиля, иначе его сообщения, цитаты и «печатает» подписывались бы «User» / «Участник».
     if (systemBot && !map[systemBot.bot.id]) {
       const b = systemBot.bot
-      map[b.id] = { id: b.id, displayName: b.displayName, avatarUrl: b.avatarUrl, bio: b.bio, isBot: true }
+      map[b.id] = { id: b.id, displayName: b.displayName, avatarUrl: b.avatarUrl, isBot: true }
     }
     return map
   }, [activeConversation, me, systemBot])
@@ -6377,8 +6408,20 @@ useEffect(() => { pendingFilesRef.current = pendingFiles }, [pendingFiles])
   // (мобильная и десктопная ветки вызывают renderConversationList/renderMessagesPane).
   // ==========================================================================
   // Контекст для вынесенных рендер-функций: пробрасываем нужные значения компонента.
+  // Центр настроек: капсула «Звонок с …» в шапке, пока идёт звонок (в любом виде: окно, миниатюра, дозвон).
+  const settingsCallConvId = callConvId ?? callStore.activeConvId ?? minimizedCallConvId ?? outgoingCall?.conversationId ?? null
+  const settingsCall = (() => {
+    if (!settingsCallConvId) return null
+    const conv = getConversationFromCache(settingsCallConvId)
+    const peer = (conv?.participants ?? []).map((cp: any) => cp?.user).find((u: any) => u && String(u.id) !== String(me?.id ?? ''))
+    const label = conv?.isGroup || (conv?.participants?.length ?? 0) > 2
+      ? `Звонок · ${conv?.title ?? 'беседа'}`
+      : `Звонок с ${peer?.displayName || peer?.username || 'собеседником'}`
+    const since = activeCalls?.[settingsCallConvId]?.startedAt ?? outgoingCall?.startedAt ?? null
+    return { label, since: typeof since === 'number' ? since : null }
+  })()
   const convListCtx = { botId, isConversationMuted, activeCalls, activeId, avatarPresenceForUser, callConvId, callStore, contactsQuery, convHasBottomFade, convHasTopFade, convScrollRef, conversationsQuery, currentUserId, effectiveUserStatus, formatDuration, formatPresence, incomingContactsQuery, isSocketOnline, me, meInfoQuery, minimizedCallConvId, myPresence, openContactsOverlay, openUserCard, outgoingCall, presenceGameByUserId, selectConversation, setConvMenu, setMePopupOpen, setNewGroupOpen, typingByConversationId }
-  const chatModalsCtx = { botId, systemBot, toggleBotChat, activeConversation, activeId, activePendingMessages, addParticipantsEblDigits, addParticipantsEblRefs, addParticipantsFoundUser, addParticipantsFoundUserStatus, addParticipantsLoading, addParticipantsModal, addParticipantsMode, addParticipantsSearchError, addParticipantsSearching, addParticipantsSelectedIds, applyEblidPaste, availabilityContext, avatarPresenceForUser, avatarPresenceForUserIdAndStatus, avatarPreviewUrl, clearEblidSearch, clearMessageMultiSelect, client, closeAddParticipantsModal, closeNewGroupModal, composerEditorRef, contactsInviteCode, contactsInviteCopied, contactsInviteRefreshing, contactsInviteRemainingLabel, contactsOpen, contactsQuery, contextMenu, convMenu, convMenuRef, conversationsQuery, copyContactsInviteCode, copyMyEblid, creatingGroup, crop, cropCanvasRef, currentUserId, devicesQuery, displayOutgoingWithRejected, displayedMessages, eblDigits, eblRefs, editorRef, effectiveUserStatus, eligibleContactsForAdd, fileInputRef, formatPresence, formattedContactsInviteCode, forwardModal, foundUser, getSelectedMessagesOrdered, groupAvatarEditor, groupAvatarPreviewUrl, groupCrop, groupCropCanvasRef, groupEditorRef, groupFileInputRef, groupImageRef, groupSelectedAvatarFile, groupTitle, groupTitleEditValue, handleAddParticipantByEbl, handleAddParticipants, headerMenu, headerMenuRef, identityBottomRowStyle, identityBubbleStyle, identityDividerStyle, identityHelperTextStyle, identityIconButtonStyle, identityInputsRowStyle, identitySectionHeaderStyle, identitySectionTitleStyle, imageRef, incomingContactsQuery, initiateSecretChat, isMobile, lightbox, linkDeviceModalOpen, localDeviceIdForLinking, me, meInfoQuery, mePopupOpen, menuRef, multiSelectMode, myEblid, myEblidCopied, myEblidMiniCardStyle, myPresence, newGroupAvatarBlob, newGroupAvatarEditorOpen, newGroupAvatarFile, newGroupAvatarHover, newGroupAvatarPreviewUrl, newGroupAvatarSourceUrl, newGroupCrop, newGroupCropCanvasRef, newGroupDragOver, newGroupEditorRef, newGroupFileInputRef, newGroupImageRef, newGroupOpen, onChangeAddParticipantsDigit, onChangeDigit, onKeyDownAddParticipantsDigit, onKeyDownDigit, openUserCard, outgoingContactsQuery, presenceGameByUserId, refreshContactsInviteCode, registrationInviteCodeQuery, registrationMiniCardStyle, resolveFirstImageAttachmentUrl, savingGroupTitle, secretHistoryGate, secretRequestLoading, selectConversation, selectedAvatarFile, selectedIds, selectedMessageIds, sendInvite, sendMessageToConversation, sendingInvite, setActiveId, setAddParticipantsEblDigits, setAddParticipantsFoundUser, setAddParticipantsModal, setAddParticipantsMode, setAddParticipantsSearchError, setAddParticipantsSearching, setAddParticipantsSelectedIds, setAvailabilityContext, setAvatarPreviewUrl, setContactsOpen, setContextMenu, setConvMenu, setCreatingGroup, setCrop, setEndSecretModalOpen, setForwardComposerDraft, setForwardModal, setGroupAvatarEditor, setGroupAvatarPreviewUrl, setGroupCrop, setGroupSelectedAvatarFile, setGroupTitle, setGroupTitleEditValue, setHeaderMenu, setLightbox, setLinkDeviceModalOpen, setMePopupOpen, setMobileView, setMultiSelectMode, setNewGroupAvatarBlob, setNewGroupAvatarEditorOpen, setNewGroupAvatarFile, setNewGroupAvatarHover, setNewGroupAvatarPreviewUrl, setNewGroupAvatarSourceUrl, setNewGroupCrop, setNewGroupDragOver, setRejectedOutgoing, setReplyTo, setSavingGroupTitle, setSecretHistoryGate, setSelectedAvatarFile, setSelectedIds, setSelectedMessageIds, setUploadMessage, setUploadProgress, setUploadingAvatar, setUserCardUser, setVideoViewer, sortedAcceptedContacts, startEdit, uploadMessage, uploadProgress, uploadingAvatar, userCardUser, usersById, videoViewer }
+  const chatModalsCtx = { botId, systemBot, toggleBotChat, activeConversation, activeId, activePendingMessages, addParticipantsEblDigits, addParticipantsEblRefs, addParticipantsFoundUser, addParticipantsFoundUserStatus, addParticipantsLoading, addParticipantsModal, addParticipantsMode, addParticipantsSearchError, addParticipantsSearching, addParticipantsSelectedIds, applyEblidPaste, availabilityContext, avatarPresenceForUser, avatarPresenceForUserIdAndStatus, avatarPreviewUrl, clearEblidSearch, clearMessageMultiSelect, client, closeAddParticipantsModal, closeNewGroupModal, composerEditorRef, contactsInviteCode, contactsInviteCopied, contactsInviteRefreshing, contactsInviteRemainingLabel, contactsOpen, contactsQuery, contextMenu, convMenu, convMenuRef, conversationsQuery, copyContactsInviteCode, copyMyEblid, creatingGroup, crop, cropCanvasRef, currentUserId, devicesQuery, displayOutgoingWithRejected, displayedMessages, eblDigits, eblRefs, editorRef, effectiveUserStatus, eligibleContactsForAdd, fileInputRef, formatPresence, formattedContactsInviteCode, forwardModal, foundUser, getSelectedMessagesOrdered, groupAvatarEditor, groupAvatarPreviewUrl, groupCrop, groupCropCanvasRef, groupEditorRef, groupFileInputRef, groupImageRef, groupSelectedAvatarFile, groupTitle, groupTitleEditValue, handleAddParticipantByEbl, handleAddParticipants, headerMenu, headerMenuRef, identityBottomRowStyle, identityBubbleStyle, identityDividerStyle, identityHelperTextStyle, identityIconButtonStyle, identityInputsRowStyle, identitySectionHeaderStyle, identitySectionTitleStyle, imageRef, incomingContactsQuery, initiateSecretChat, isMobile, lightbox, linkDeviceModalOpen, localDeviceIdForLinking, me, meInfoQuery, menuRef, multiSelectMode, myEblid, myEblidCopied, myEblidMiniCardStyle, myPresence, newGroupAvatarBlob, newGroupAvatarEditorOpen, newGroupAvatarFile, newGroupAvatarHover, newGroupAvatarPreviewUrl, newGroupAvatarSourceUrl, newGroupCrop, newGroupCropCanvasRef, newGroupDragOver, newGroupEditorRef, newGroupFileInputRef, newGroupImageRef, newGroupOpen, onChangeAddParticipantsDigit, onChangeDigit, onKeyDownAddParticipantsDigit, onKeyDownDigit, openUserCard, outgoingContactsQuery, presenceGameByUserId, refreshContactsInviteCode, registrationInviteCodeQuery, registrationMiniCardStyle, resolveFirstImageAttachmentUrl, savingGroupTitle, secretHistoryGate, secretRequestLoading, selectConversation, selectedAvatarFile, selectedIds, selectedMessageIds, sendInvite, sendMessageToConversation, sendingInvite, setActiveId, setAddParticipantsEblDigits, setAddParticipantsFoundUser, setAddParticipantsModal, setAddParticipantsMode, setAddParticipantsSearchError, setAddParticipantsSearching, setAddParticipantsSelectedIds, setAvailabilityContext, setAvatarPreviewUrl, setContactsOpen, setContextMenu, setConvMenu, setCreatingGroup, setCrop, setEndSecretModalOpen, setForwardComposerDraft, setForwardModal, setGroupAvatarEditor, setGroupAvatarPreviewUrl, setGroupCrop, setGroupSelectedAvatarFile, setGroupTitle, setGroupTitleEditValue, setHeaderMenu, setLightbox, setLinkDeviceModalOpen, setMobileView, setMultiSelectMode, setNewGroupAvatarBlob, setNewGroupAvatarEditorOpen, setNewGroupAvatarFile, setNewGroupAvatarHover, setNewGroupAvatarPreviewUrl, setNewGroupAvatarSourceUrl, setNewGroupCrop, setNewGroupDragOver, setRejectedOutgoing, setReplyTo, setSavingGroupTitle, setSecretHistoryGate, setSelectedAvatarFile, setSelectedIds, setSelectedMessageIds, setUploadMessage, setUploadProgress, setUploadingAvatar, setUserCardUser, setVideoViewer, sortedAcceptedContacts, startEdit, uploadMessage, uploadProgress, uploadingAvatar, userCardUser, usersById, videoViewer, settingsNav, settingsCall }
   const messagesPaneCtx = { botId, systemBot, botAsk, setBotAskDismissed, syncBotAskPrefix, getBotAskSendMeta, activeIsBotChat, botSecretRefusalText, startBotClarify, sendBotConfirmAnswer, botConfirmBusyId, sendBotThinkBetter, botThinkBusyId, typingNameFor, acceptSecretInvite, activeCalls, activeConversation, activeId, activePendingMessages, activeSecretQueuedCount, activeSecretUiState, addComposerFile, addComposerImage, applyComposerImageEdit, applyComposerSelectionFormat, applyWysiwygFormat, attachCanceling, attachDragDepthRef, attachDragOver, attachInputRef, attachProcessingMessageIndex, attachProgress, attachUploadSpeed, attachUploadState, attachUploading, attachmentDecryptMap, attachmentHeadInfoMap, avatarPresenceForUser, backToList, beginOutgoingCallGuard, callConvId, callPermissionError, callStore, cancelActiveAttachUpload, cancelEdit, cancelSecretInviteAsCreator, cancelVoiceRecording, clearMessageMultiSelect, client, closeComposerSelectionToolbar, composerBarRef, composerEditorRef, composerEmpty, composerFocused, composerSelectionAnchor, composerSelectionFmt, composerSelectionToolbarRef, composerSelectionToolbarStyle, contactsQuery, conversationsQuery, creatorAwaitPeerAccept, currentUserId, declineSecretInvite, deviceLinkInviteOpen, displayedMessages, editBusy, editState, editingImage, editingImageId, effectiveUserStatus, endSecretModalOpen, eventHasFiles, executeForwardPayloadDelivery, failedImages, formatDuration, formatPresence, forwardComposerDraft, getComposerValue, getSelectedMessagesOrdered, groupIncomingBubbleBg, handleChatDropFiles, hasAnySecretThreadKeys, hasOtherTrustedDevice, hashToGray, insertPlainTextIntoComposer, insertMarkdownIntoComposer, isMobile, isNarrowHeaderButtons, leftAlignAll, loadedImages, loadOlderMessages, me, messagesContentRef, messagesRef, virtuosoRef, virtuosoBaseRef, virtuosoRowsRef, minimizedCallConvId, multiSelectMode, nameColorForUser, nearBottomRef, nodesByMessageId, notifyTyping, olderLoading, openUserCard, outgoingCall, outgoingCallTimerRef, pendingFiles, pendingImages, playEndCallSound, presenceGameByUserId, releasePreviewUrl, removeComposerFile, removeComposerImage, replyTo, requireMediaAccess, resizeComposer, resolveAttachmentUrl, resolveFirstImageAttachmentUrl, secretBootDonePulse, secretComposerInlineError, secretEngineV2Enabled, secretInviteBusy, secretInviteForMe, secretWaitingAsCreator, selectedMessageIds, sendMessageToConversation, setActiveCalls, setActiveId, setAttachDragOver, setAvailabilityContext, setCallConvId, setCallPermissionError, setComposerEmpty, setComposerFocused, setComposerValue, setContextMenu, setDeviceLinkInviteOpen, setEditBusy, setEditState, setEditingImageId, setEndSecretModalOpen, setFailedImages, setForwardComposerDraft, setForwardModal, setGroupAvatarEditor, setHeaderMenu, setLightbox, setLinkDeviceModalOpen, setLoadedImages, setMinimizedCallConvId, setOutgoingCall, setPendingFiles, setPendingImages, setReplyTo, setShowJump, setVideoViewer, showJump, startDialingSound, startEdit, startVoiceRecording, stopDialingSound, stopTyping, stopVoiceRecording, toggleMessageMultiSelect, typingByUserId, updateComposerSelectionToolbar, uploadAndSendAttachments, userStickyScrollRef, usersById, visibleObserver, voiceDuration, voiceRecording, voiceWaveform, waveformContainerRef, waveformMaxBars }
   return (
     <>

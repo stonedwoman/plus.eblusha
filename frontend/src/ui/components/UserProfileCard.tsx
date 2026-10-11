@@ -11,7 +11,7 @@ import { convertToProxyUrl } from '../../utils/media'
 /**
  * Universal user card (Telegram/Discord-style profile popover).
  *
- * - `UserProfileHero` — banner + overlapping avatar + name/status/bio + info rows.
+ * - `UserProfileHero` — banner + overlapping avatar + name/status + info rows.
  *   The avatar opens a full-image viewer with avatar history (delete for the owner).
  *   Embeddable (the self «Профиль» popup reuses it above the sessions block).
  * - `UserProfileCard` — the standalone card: hero + action buttons + a children slot.
@@ -28,7 +28,6 @@ export type CardUser = {
   avatarUrl?: string | null
   status?: string | null
   lastSeenAt?: string | null
-  bio?: string | null
   createdAt?: string | null
   /** current + past avatar URLs (from GET /users/:id or /status/me). */
   avatars?: string[] | null
@@ -50,7 +49,7 @@ function hashHue(id: string): number {
   return Math.abs(h) % 360
 }
 
-function statusDotColor(s?: string | null): string {
+export function statusDotColor(s?: string | null): string {
   const v = (s ?? 'OFFLINE').toString().toUpperCase()
   if (v === 'ONLINE') return '#22c55e'
   if (v === 'IN_CALL') return '#ef4444'
@@ -60,7 +59,7 @@ function statusDotColor(s?: string | null): string {
 }
 
 /** Resolve a raw avatar URL to a displayable <img src>; null for emoji/blank. */
-function resolveAvatarSrc(raw: string | null | undefined): string | null {
+export function resolveAvatarSrc(raw: string | null | undefined): string | null {
   if (!raw) return null
   const s = String(raw)
   if (s.startsWith('emoji:')) return null
@@ -176,7 +175,7 @@ function InfoRow(props: {
 }
 
 /** Fullscreen avatar viewer with a history strip; owner can delete past avatars. */
-function AvatarViewer(props: {
+export function AvatarViewer(props: {
   items: Array<{ raw: string; src: string; isCurrent: boolean }>
   startIndex: number
   canManage?: boolean
@@ -317,7 +316,6 @@ export function UserProfileHero(props: {
   const joinedText = joined && !Number.isNaN(joined.getTime())
     ? joined.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })
     : null
-  const bio = user.bio && String(user.bio).trim() ? String(user.bio).trim() : null
 
   // Resolve the avatar history (current first). Falls back to the single current avatar.
   const viewerItems = useMemo(() => {
@@ -423,11 +421,6 @@ export function UserProfileHero(props: {
           })()}
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{statusText}</span>
         </div>
-        {bio && (
-          <div style={{ marginTop: 10, fontSize: 14, lineHeight: 1.45, color: 'var(--text-primary)', opacity: 0.88, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-            {bio}
-          </div>
-        )}
       </div>
 
       {/* Info rows (EBLID / joined date). Username is intentionally never shown. */}

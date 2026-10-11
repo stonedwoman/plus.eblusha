@@ -50,6 +50,16 @@ export function LinkDeviceModal(props: {
   const streamRef = useRef<MediaStream | null>(null)
   const rafRef = useRef<number | null>(null)
 
+  // Esc закрывает окно, пока не идёт передача ключей (центр настроек под ним Esc не получает: у окна aria-modal)
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !busy) onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, busy, onClose])
+
   const expiresInMs = useMemo(() => {
     if (!pairing?.expiresAt) return 0
     const t = Date.parse(pairing.expiresAt)
@@ -253,11 +263,11 @@ export function LinkDeviceModal(props: {
   }
 
   return (
-    <div style={overlayStyle} onClick={() => { if (!busy) onClose() }}>
+    <div style={overlayStyle} role="dialog" aria-modal="true" aria-label={mode === 'new' ? 'Привязка устройства' : 'Подтвердить по коду'} onClick={() => { if (!busy) onClose() }}>
       <div style={cardStyle} onClick={(e) => e.stopPropagation()}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 16 }}>
           <div style={{ fontWeight: 800, fontSize: 16, color: 'var(--text-primary)' }}>
-            {mode === 'new' ? 'Привязка устройства' : 'Привязать новое устройство'}
+            {mode === 'new' ? 'Привязка устройства' : 'Подтвердить по коду'}
           </div>
           <button className="btn btn-icon btn-ghost" onClick={() => { if (!busy) onClose() }} aria-label="Закрыть">
             <X size={18} />
@@ -270,7 +280,7 @@ export function LinkDeviceModal(props: {
               {!pairing && (
                 <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
                   <div style={{ color: 'var(--text-muted)', fontSize: 14, lineHeight: '18px' }}>
-                    Открой Eblusha на доверенном устройстве → Настройки → Устройства → Привязать.
+                    Откройте Еблушу на уже подключённом устройстве → Настройки → Безопасность → «Подтвердить по коду».
                   </div>
                   <button className="btn btn-primary" onClick={startPairing} disabled={busy}>
                     {busy ? 'Готовим…' : 'Показать QR'}

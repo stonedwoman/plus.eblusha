@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { useChatUiStore } from '../../../../core/chat-sync/chatUiStore'
 
+/** Ширина (px) и меньше — телефонная раскладка. Тот же порог использует центр настроек (ui/settings). */
+export const MOBILE_MAX_WIDTH = 768
+
 export function useChatsResponsive(activeId: string | null) {
-  const initialIsMobile = typeof window !== 'undefined' ? window.innerWidth <= 768 : false
+  const initialIsMobile = typeof window !== 'undefined' ? window.innerWidth <= MOBILE_MAX_WIDTH : false
   const initialIsNarrowHeaderButtons =
     typeof window !== 'undefined' ? (!initialIsMobile && window.innerWidth <= 1300) : false
 
@@ -18,7 +21,7 @@ export function useChatsResponsive(activeId: string | null) {
 
   useEffect(() => {
     const update = (isResizeEvent: boolean) => {
-      const mobile = window.innerWidth <= 768
+      const mobile = window.innerWidth <= MOBILE_MAX_WIDTH
       setIsMobile(mobile)
       isMobileRef.current = mobile
       // Narrow desktop header: shrink ONLY call buttons to icons.
