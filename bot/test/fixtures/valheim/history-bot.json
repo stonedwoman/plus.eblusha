@@ -1,0 +1,1536 @@
+{
+ "schema": "valheim-history/bot-export v1",
+ "generated_utc": "2026-10-11T00:34:12Z",
+ "history_generated_utc": "2026-10-11T00:34:12Z",
+ "how_to_answer": [
+  "По умолчанию отвечать про мир Koban.",
+  "conf: low и medium — как предположение."
+ ],
+ "server": {
+  "name": "Koban",
+  "world_now": "Koban",
+  "world_id": "testworld",
+  "game": "Valheim 1.0.x"
+ },
+ "time_note": "local — Europe/Bucharest; «Вечер» = местная дата входа минус 6 ч.",
+ "privacy": "тестовая выжимка",
+ "confidence_scale": {
+  "high": "прямо видно",
+  "medium-high": "вывод",
+  "medium": "эвристика",
+  "low": "догадка"
+ },
+ "names": {
+  "people": [
+   {
+    "id": "roma",
+    "eblusha_user": "roma",
+    "nicknames": [],
+    "characters_koban": [
+     "РомаH",
+     "Odev"
+    ],
+    "characters_archive": [
+     "Pomаh"
+    ]
+   },
+   {
+    "id": "valya",
+    "eblusha_user": "valya",
+    "nicknames": [],
+    "characters_koban": [
+     "Куралеска"
+    ],
+    "characters_archive": [
+     "Kurolesska"
+    ]
+   },
+   {
+    "id": "Саня Тест",
+    "eblusha_user": "Саня Тест",
+    "nicknames": [
+     "Парасюха"
+    ],
+    "characters_koban": [
+     "IiApaCiOxa"
+    ],
+    "characters_archive": [
+     "PaRaSuXa"
+    ]
+   }
+  ],
+  "character_to_person": {
+   "РомаH": "roma",
+   "Куралеска": "valya",
+   "IiApaCiOxa": "Саня Тест",
+   "Pomаh": "roma",
+   "Kurolesska": "valya",
+   "PaRaSuXa": "Саня Тест",
+   "Odev": "roma"
+  },
+  "notes": {
+   "Pomаh": "в имени кириллическая «а»"
+  }
+ },
+ "coverage": {
+  "koban_from": {
+   "utc": "2026-09-11T15:06:00Z",
+   "local": "2026-09-11T18:06:00+03:00"
+  },
+  "log_from": {
+   "utc": "2026-04-14T22:53:00Z",
+   "local": "2026-04-15T01:53:00+03:00"
+  },
+  "log_to": {
+   "utc": "2026-10-11T00:25:00Z",
+   "local": "2026-10-11T03:25:00+03:00"
+  }
+ },
+ "people": [
+  {
+   "id": "roma",
+   "eblusha_user": "roma",
+   "role": "владелец сервера",
+   "nicknames": [],
+   "characters": {
+    "koban": [
+     "РомаH",
+     "Odev"
+    ],
+    "archive": [
+     "Pomаh"
+    ]
+   },
+   "koban": {
+    "characters": [
+     "РомаH",
+     "Odev"
+    ],
+    "first_login": {
+     "utc": "2026-09-11T15:18:00Z",
+     "local": "2026-09-11T18:18:00+03:00"
+    },
+    "last_login": {
+     "utc": "2026-10-10T13:48:00Z",
+     "local": "2026-10-10T16:48:00+03:00"
+    },
+    "last_logout": {
+     "utc": "2026-10-10T14:52:00Z",
+     "local": "2026-10-10T17:52:00+03:00"
+    },
+    "sessions": 12,
+    "hours": 30.5,
+    "hours_alone": 3.5,
+    "evenings": 3,
+    "avg_session_h": 2.54,
+    "by_month": {
+     "2026-09": {
+      "sessions": 10,
+      "hours": 27.5,
+      "evenings": 2,
+      "deaths": 18
+     },
+     "2026-10": {
+      "sessions": 2,
+      "hours": 3,
+      "evenings": 1,
+      "deaths": 2
+     }
+    },
+    "longest_streak_evenings": {
+     "from": "2026-10-03",
+     "to": "2026-10-04",
+     "days": 2
+    },
+    "together": [],
+    "deaths": {
+     "total": 20,
+     "per_hour": 0.66,
+     "by_month": {
+      "2026-09": 18,
+      "2026-10": 2
+     },
+     "with_known_place": 1
+    },
+    "records": {
+     "longest_session": {
+      "character": "РомаH",
+      "start_local": "2026-09-12T14:46:33+03:00",
+      "end_local": "2026-09-13T00:02:10+03:00",
+      "hours": 9.26
+     }
+    },
+    "habits": {
+     "came_first": 1,
+     "left_last": 2
+    },
+    "activity": {
+     "sleeps": 7
+    },
+    "evening_list": [
+     [
+      "2026-10-03",
+      3.1,
+      "19:00",
+      "10-03 22:10",
+      1,
+      [
+       "РомаH"
+      ]
+     ],
+     [
+      "2026-10-04",
+      5.5,
+      "14:50",
+      "10-04 23:10",
+      2,
+      [
+       "РомаH"
+      ]
+     ],
+     [
+      "2026-10-10",
+      1.06,
+      "16:48",
+      "10-10 17:52",
+      1,
+      [
+       "РомаH"
+      ]
+     ]
+    ],
+    "evening_list_fields": [
+     "вечер (дата Бухареста, −6 ч)",
+     "часы",
+     "первый вход (местн.)",
+     "последний выход (местн.)",
+     "сессий",
+     "персонажи"
+    ],
+    "conf": "high",
+    "src": [
+     "sessions"
+    ]
+   },
+   "all_time": {
+    "sessions": 30,
+    "hours": 57.9,
+    "evenings": 13,
+    "deaths": 47,
+    "note": "оба мира вместе"
+   },
+   "link": {
+    "how": "тест",
+    "conf": "high"
+   }
+  },
+  {
+   "id": "valya",
+   "eblusha_user": "valya",
+   "role": "игрок",
+   "nicknames": [],
+   "characters": {
+    "koban": [
+     "Куралеска"
+    ],
+    "archive": [
+     "Kurolesska"
+    ]
+   },
+   "koban": {
+    "characters": [
+     "Куралеска"
+    ],
+    "first_login": {
+     "utc": "2026-09-11T15:18:00Z",
+     "local": "2026-09-11T18:18:00+03:00"
+    },
+    "last_login": {
+     "utc": "2026-10-10T13:48:00Z",
+     "local": "2026-10-10T16:48:00+03:00"
+    },
+    "last_logout": {
+     "utc": "2026-10-10T14:52:00Z",
+     "local": "2026-10-10T17:52:00+03:00"
+    },
+    "sessions": 8,
+    "hours": 20.0,
+    "hours_alone": 3.5,
+    "evenings": 2,
+    "avg_session_h": 2.5,
+    "by_month": {
+     "2026-09": {
+      "sessions": 6,
+      "hours": 17.0,
+      "evenings": 1,
+      "deaths": 7
+     },
+     "2026-10": {
+      "sessions": 2,
+      "hours": 3,
+      "evenings": 1,
+      "deaths": 2
+     }
+    },
+    "longest_streak_evenings": {
+     "from": "2026-10-03",
+     "to": "2026-10-04",
+     "days": 2
+    },
+    "together": [],
+    "deaths": {
+     "total": 9,
+     "per_hour": 0.45,
+     "by_month": {
+      "2026-09": 7,
+      "2026-10": 2
+     },
+     "with_known_place": 1
+    },
+    "records": {
+     "longest_session": {
+      "character": "Куралеска",
+      "start_local": "2026-09-12T14:46:33+03:00",
+      "end_local": "2026-09-13T00:02:10+03:00",
+      "hours": 9.26
+     }
+    },
+    "habits": {
+     "came_first": 1,
+     "left_last": 2
+    },
+    "activity": {
+     "sleeps": 7
+    },
+    "evening_list": [
+     [
+      "2026-10-03",
+      2.0,
+      "20:00",
+      "10-03 22:00",
+      1,
+      [
+       "Куралеска"
+      ]
+     ],
+     [
+      "2026-10-04",
+      4.0,
+      "15:00",
+      "10-04 19:00",
+      1,
+      [
+       "Куралеска"
+      ]
+     ]
+    ],
+    "evening_list_fields": [
+     "вечер (дата Бухареста, −6 ч)",
+     "часы",
+     "первый вход (местн.)",
+     "последний выход (местн.)",
+     "сессий",
+     "персонажи"
+    ],
+    "conf": "high",
+    "src": [
+     "sessions"
+    ]
+   },
+   "all_time": {
+    "sessions": 12,
+    "hours": 30.0,
+    "evenings": 6,
+    "deaths": 15
+   },
+   "link": {
+    "how": "тест",
+    "conf": "high"
+   }
+  },
+  {
+   "id": "Саня Тест",
+   "eblusha_user": "Саня Тест",
+   "role": "игрок",
+   "nicknames": [
+    "Парасюха"
+   ],
+   "characters": {
+    "koban": [
+     "IiApaCiOxa"
+    ],
+    "archive": [
+     "PaRaSuXa"
+    ]
+   },
+   "koban": {
+    "characters": [
+     "IiApaCiOxa"
+    ],
+    "first_login": {
+     "utc": "2026-09-11T15:18:00Z",
+     "local": "2026-09-11T18:18:00+03:00"
+    },
+    "last_login": {
+     "utc": "2026-10-10T13:48:00Z",
+     "local": "2026-10-10T16:48:00+03:00"
+    },
+    "last_logout": {
+     "utc": "2026-10-10T14:52:00Z",
+     "local": "2026-10-10T17:52:00+03:00"
+    },
+    "sessions": 6,
+    "hours": 10.0,
+    "hours_alone": 3.5,
+    "evenings": 2,
+    "avg_session_h": 1.67,
+    "by_month": {
+     "2026-09": {
+      "sessions": 4,
+      "hours": 7.0,
+      "evenings": 1,
+      "deaths": 2
+     },
+     "2026-10": {
+      "sessions": 2,
+      "hours": 3,
+      "evenings": 1,
+      "deaths": 2
+     }
+    },
+    "longest_streak_evenings": {
+     "from": "2026-10-03",
+     "to": "2026-10-04",
+     "days": 2
+    },
+    "together": [],
+    "deaths": {
+     "total": 4,
+     "per_hour": 0.4,
+     "by_month": {
+      "2026-09": 2,
+      "2026-10": 2
+     },
+     "with_known_place": 1
+    },
+    "records": {
+     "longest_session": {
+      "character": "IiApaCiOxa",
+      "start_local": "2026-09-12T14:46:33+03:00",
+      "end_local": "2026-09-13T00:02:10+03:00",
+      "hours": 9.26
+     }
+    },
+    "habits": {
+     "came_first": 1,
+     "left_last": 2
+    },
+    "activity": {
+     "sleeps": 7
+    },
+    "evening_list": [
+     [
+      "2026-10-04",
+      1.2,
+      "16:00",
+      "10-04 17:12",
+      1,
+      [
+       "IiApaCiOxa"
+      ]
+     ],
+     [
+      "2026-10-10",
+      1.44,
+      "11:22",
+      "10-10 12:48",
+      1,
+      [
+       "IiApaCiOxa"
+      ]
+     ]
+    ],
+    "evening_list_fields": [
+     "вечер (дата Бухареста, −6 ч)",
+     "часы",
+     "первый вход (местн.)",
+     "последний выход (местн.)",
+     "сессий",
+     "персонажи"
+    ],
+    "conf": "high",
+    "src": [
+     "sessions"
+    ]
+   },
+   "all_time": {
+    "sessions": 9,
+    "hours": 14.0,
+    "evenings": 5,
+    "deaths": 6
+   },
+   "link": {
+    "how": "тест",
+    "conf": "high"
+   }
+  }
+ ],
+ "characters": [
+  {
+   "name": "РомаH",
+   "person": "roma",
+   "world": "testworld",
+   "link": {
+    "how": "тест",
+    "conf": "high"
+   },
+   "first_login": {
+    "utc": "2026-09-11T15:18:00Z",
+    "local": "2026-09-11T18:18:00+03:00"
+   },
+   "last_login": {
+    "utc": "2026-10-10T13:48:00Z",
+    "local": "2026-10-10T16:48:00+03:00"
+   },
+   "last_logout": {
+    "utc": "2026-10-10T14:52:00Z",
+    "local": "2026-10-10T17:52:00+03:00"
+   },
+   "sessions": 11,
+   "hours": 29.0,
+   "evenings": 3,
+   "avg_session_h": 1.5,
+   "median_session_h": 1.2,
+   "by_month": {},
+   "longest_streak_evenings": {
+    "from": "2026-10-03",
+    "to": "2026-10-04",
+    "days": 2
+   },
+   "together_hours": {},
+   "top_partner": {},
+   "deaths": {
+    "total": 19,
+    "per_hour": 0.66,
+    "conf": "high"
+   },
+   "records": {},
+   "weekday_evenings": {},
+   "start_hour_local_hist": {},
+   "activity": {
+    "sleeps": 3
+   },
+   "src": [
+    "sessions"
+   ],
+   "conf": "high"
+  },
+  {
+   "name": "Куралеска",
+   "person": "valya",
+   "world": "testworld",
+   "link": {
+    "how": "тест",
+    "conf": "high"
+   },
+   "first_login": {
+    "utc": "2026-09-11T15:18:00Z",
+    "local": "2026-09-11T18:18:00+03:00"
+   },
+   "last_login": {
+    "utc": "2026-10-10T13:48:00Z",
+    "local": "2026-10-10T16:48:00+03:00"
+   },
+   "last_logout": {
+    "utc": "2026-10-10T14:52:00Z",
+    "local": "2026-10-10T17:52:00+03:00"
+   },
+   "sessions": 8,
+   "hours": 20.0,
+   "evenings": 3,
+   "avg_session_h": 1.5,
+   "median_session_h": 1.2,
+   "by_month": {},
+   "longest_streak_evenings": {
+    "from": "2026-10-03",
+    "to": "2026-10-04",
+    "days": 2
+   },
+   "together_hours": {},
+   "top_partner": {},
+   "deaths": {
+    "total": 9,
+    "per_hour": 0.45,
+    "conf": "high"
+   },
+   "records": {},
+   "weekday_evenings": {},
+   "start_hour_local_hist": {},
+   "activity": {
+    "sleeps": 3
+   },
+   "src": [
+    "sessions"
+   ],
+   "conf": "high"
+  },
+  {
+   "name": "IiApaCiOxa",
+   "person": "Саня Тест",
+   "world": "testworld",
+   "link": {
+    "how": "тест",
+    "conf": "high"
+   },
+   "first_login": {
+    "utc": "2026-09-11T15:18:00Z",
+    "local": "2026-09-11T18:18:00+03:00"
+   },
+   "last_login": {
+    "utc": "2026-10-10T13:48:00Z",
+    "local": "2026-10-10T16:48:00+03:00"
+   },
+   "last_logout": {
+    "utc": "2026-10-10T14:52:00Z",
+    "local": "2026-10-10T17:52:00+03:00"
+   },
+   "sessions": 6,
+   "hours": 10.0,
+   "evenings": 3,
+   "avg_session_h": 1.5,
+   "median_session_h": 1.2,
+   "by_month": {},
+   "longest_streak_evenings": {
+    "from": "2026-10-03",
+    "to": "2026-10-04",
+    "days": 2
+   },
+   "together_hours": {},
+   "top_partner": {},
+   "deaths": {
+    "total": 4,
+    "per_hour": 0.4,
+    "conf": "high"
+   },
+   "records": {},
+   "weekday_evenings": {},
+   "start_hour_local_hist": {},
+   "activity": {
+    "sleeps": 3
+   },
+   "src": [
+    "sessions"
+   ],
+   "conf": "high"
+  },
+  {
+   "name": "Odev",
+   "person": "roma",
+   "world": "testworld",
+   "link": {
+    "how": "тест",
+    "conf": "high"
+   },
+   "first_login": {
+    "utc": "2026-09-11T15:18:00Z",
+    "local": "2026-09-11T18:18:00+03:00"
+   },
+   "last_login": {
+    "utc": "2026-10-10T13:48:00Z",
+    "local": "2026-10-10T16:48:00+03:00"
+   },
+   "last_logout": {
+    "utc": "2026-10-10T14:52:00Z",
+    "local": "2026-10-10T17:52:00+03:00"
+   },
+   "sessions": 1,
+   "hours": 0.01,
+   "evenings": 3,
+   "avg_session_h": 1.5,
+   "median_session_h": 1.2,
+   "by_month": {},
+   "longest_streak_evenings": {
+    "from": "2026-10-03",
+    "to": "2026-10-04",
+    "days": 2
+   },
+   "together_hours": {},
+   "top_partner": {},
+   "deaths": {
+    "total": 1,
+    "per_hour": 10.0,
+    "conf": "high"
+   },
+   "records": {},
+   "weekday_evenings": {},
+   "start_hour_local_hist": {},
+   "activity": {
+    "sleeps": 3
+   },
+   "src": [
+    "sessions"
+   ],
+   "conf": "high"
+  }
+ ],
+ "overall": {
+  "sessions": 26,
+  "person_hours": 60.5,
+  "evenings": 4,
+  "longest_sessions_top5": [
+   {
+    "character": "РомаH",
+    "person": "roma",
+    "start_local": "2026-09-12T14:46:33+03:00",
+    "hours": 9.26
+   }
+  ],
+  "conf": "high",
+  "src": [
+   "sessions"
+  ]
+ },
+ "evenings": [
+  {
+   "date": "2026-09-11",
+   "weekday": "пт",
+   "first_in_local": "2026-09-11T18:18:05+03:00",
+   "last_out_local": "2026-09-12T03:21:00+03:00",
+   "hours_by_person": {
+    "roma": 9.06
+   },
+   "characters": [
+    "РомаH"
+   ],
+   "hours_anyone": 9.06,
+   "hours_2plus": 0,
+   "hours_all3": 0,
+   "deaths": 1,
+   "deaths_by_character": {
+    "РомаH": 1
+   },
+   "raids": 1
+  },
+  {
+   "date": "2026-10-03",
+   "weekday": "сб",
+   "first_in_local": "2026-10-03T19:00:00+03:00",
+   "last_out_local": "2026-10-03T22:10:00+03:00",
+   "hours_by_person": {
+    "roma": 3.1,
+    "valya": 2.0
+   },
+   "characters": [
+    "РомаH",
+    "Куралеска"
+   ],
+   "hours_anyone": 3.1,
+   "hours_2plus": 2.0,
+   "hours_all3": 0,
+   "deaths": 3,
+   "deaths_by_character": {
+    "РомаH": 2,
+    "Куралеска": 1
+   },
+   "raids": 0
+  },
+  {
+   "date": "2026-10-04",
+   "weekday": "вс",
+   "first_in_local": "2026-10-04T14:50:00+03:00",
+   "last_out_local": "2026-10-04T23:10:00+03:00",
+   "hours_by_person": {
+    "roma": 5.5,
+    "valya": 4.0,
+    "Саня Тест": 1.2
+   },
+   "characters": [
+    "РомаH",
+    "Куралеска",
+    "IiApaCiOxa"
+   ],
+   "hours_anyone": 8.3,
+   "hours_2plus": 4.0,
+   "hours_all3": 1.2,
+   "deaths": 12,
+   "deaths_by_character": {
+    "РомаH": 8,
+    "Куралеска": 3,
+    "IiApaCiOxa": 1
+   },
+   "raids": 1
+  },
+  {
+   "date": "2026-10-10",
+   "weekday": "сб",
+   "first_in_local": "2026-10-10T11:22:31+03:00",
+   "last_out_local": "2026-10-10T17:52:15+03:00",
+   "hours_by_person": {
+    "roma": 1.06,
+    "Саня Тест": 1.44
+   },
+   "characters": [
+    "РомаH",
+    "IiApaCiOxa"
+   ],
+   "hours_anyone": 1.45,
+   "hours_2plus": 1.06,
+   "hours_all3": 0,
+   "deaths": 2,
+   "deaths_by_character": {
+    "РомаH": 2
+   },
+   "raids": 0
+  }
+ ],
+ "world": {
+  "name": "Koban",
+  "game": "Valheim 1.0.17",
+  "created": {
+   "utc": "2026-09-11T15:05:00Z",
+   "local": "2026-09-11T18:05:00+03:00"
+  },
+  "day_now": 348,
+  "day_rule": "день мира",
+  "days_by_local_date": [
+   [
+    "2026-10-04",
+    300,
+    320,
+    8.3,
+    4
+   ]
+  ],
+  "days_fields": [
+   "дата",
+   "с",
+   "по",
+   "часов",
+   "снов"
+  ],
+  "modifiers_history": [
+   {
+    "at": {
+     "utc": "2026-09-11T15:05:00Z",
+     "local": "2026-09-11T18:05:00+03:00"
+    },
+    "added": [
+     "resourcerate 300"
+    ],
+    "removed": []
+   }
+  ],
+  "site_key_edits": [
+   {
+    "at": {
+     "utc": "2026-09-23T18:25:00Z",
+     "local": "2026-09-23T21:25:00+03:00"
+    },
+    "op": "set",
+    "key": "PassiveMobs",
+    "value": null
+   }
+  ],
+  "site_key_edits_note": "правки с сайта",
+  "conf": "high"
+ },
+ "bosses": [
+  {
+   "world": "testworld",
+   "key": "defeated_eikthyr",
+   "boss_ru": "Эйктюр",
+   "status": "killed",
+   "window_with_players": {
+    "from": {
+     "utc": "2026-09-11T16:20:00Z",
+     "local": "2026-09-11T19:20:00+03:00"
+    },
+    "to": {
+     "utc": "2026-09-12T00:22:00Z",
+     "local": "2026-09-12T03:22:00+03:00"
+    },
+    "online_h": 8.05
+   },
+   "window_raw": {
+    "from": {
+     "utc": "2026-09-11T16:20:00Z",
+     "local": "2026-09-11T19:20:00+03:00"
+    },
+    "to": {
+     "utc": "2026-09-12T09:40:00Z",
+     "local": "2026-09-12T12:40:00+03:00"
+    }
+   },
+   "world_days": [
+    3,
+    23
+   ],
+   "online_in_window": [
+    {
+     "character": "РомаH",
+     "person": "roma",
+     "hours": 8.05
+    },
+    {
+     "character": "Куралеска",
+     "person": "valya",
+     "hours": 6.4
+    }
+   ],
+   "lower_bound": {
+    "utc": "2026-09-11T16:20:05Z",
+    "local": "2026-09-11T19:20:05+03:00",
+    "kind": "raid",
+    "why": "набег"
+   },
+   "upper_bound": {
+    "utc": "2026-09-12T09:40:39Z",
+    "local": "2026-09-12T12:40:39+03:00",
+    "kind": "snapshot",
+    "why": "снимок"
+   },
+   "who_landed_the_blow": "неизвестно (в лог не пишется) — указано, кто был онлайн",
+   "src": [
+    "world"
+   ],
+   "death_clusters_hint": [
+    {
+     "from": {
+      "utc": "2026-09-11T18:40:00Z",
+      "local": "2026-09-11T21:40:00+03:00"
+     },
+     "to": {
+      "utc": "2026-09-11T19:28:00Z",
+      "local": "2026-09-11T22:28:00+03:00"
+     },
+     "deaths": 3,
+     "by_character": {
+      "Куралеска": 2,
+      "РомаH": 1
+     }
+    }
+   ],
+   "conf": "medium-high",
+   "conf_note": "окно по набегу"
+  },
+  {
+   "world": "testworld",
+   "key": "defeated_queen",
+   "boss_ru": "Королева",
+   "status": "killed",
+   "window_with_players": {
+    "from": {
+     "utc": "2026-10-03T16:00:00Z",
+     "local": "2026-10-03T19:00:00+03:00"
+    },
+    "to": {
+     "utc": "2026-10-04T20:10:00Z",
+     "local": "2026-10-04T23:10:00+03:00"
+    },
+    "online_h": 9.0
+   },
+   "world_days": [
+    290,
+    320
+   ],
+   "online_in_window": [
+    {
+     "character": "РомаH",
+     "person": "roma",
+     "hours": 8.6
+    }
+   ],
+   "lower_bound": null,
+   "upper_bound": {
+    "why": "снимок"
+   },
+   "who_landed_the_blow": "неизвестно (в лог не пишется) — указано, кто был онлайн",
+   "conf": "high",
+   "conf_note": "окно по снимкам"
+  }
+ ],
+ "other_world_keys": [
+  {
+   "world": "testworld",
+   "key": "bosshildir3",
+   "what_ru": "Зил и Тангр убиты",
+   "window_with_players": {
+    "from": {
+     "utc": "2026-10-04T12:00:00Z",
+     "local": "2026-10-04T15:00:00+03:00"
+    },
+    "to": {
+     "utc": "2026-10-04T19:00:00Z",
+     "local": "2026-10-04T22:00:00+03:00"
+    }
+   },
+   "world_days": [
+    300,
+    310
+   ],
+   "online_in_window": [
+    {
+     "character": "IiApaCiOxa",
+     "person": "Саня Тест",
+     "hours": 1.0
+    }
+   ],
+   "conf": "high"
+  }
+ ],
+ "raids": {
+  "list": [
+   {
+    "start": {
+     "utc": "2026-09-11T16:20:00Z",
+     "local": "2026-09-11T19:20:00+03:00"
+    },
+    "id": "army_eikthyr",
+    "name_ru": "Эйктюр объединяет существ леса",
+    "kind": "raid",
+    "world_day": 3,
+    "online": [
+     "РомаH"
+    ],
+    "deaths_within_30min": 0,
+    "deaths_within_30min_by_character": {},
+    "conf": "high"
+   },
+   {
+    "start": {
+     "utc": "2026-10-04T22:30:00Z",
+     "local": "2026-10-05T01:30:00+03:00"
+    },
+    "id": "army_charred",
+    "name_ru": "Обугленные идут",
+    "kind": "raid",
+    "world_day": 318,
+    "online": [
+     "РомаH",
+     "Куралеска"
+    ],
+    "deaths_within_30min": 2,
+    "deaths_within_30min_by_character": {
+     "РомаH": 2
+    },
+    "conf": "high"
+   }
+  ],
+  "by_month": {
+   "2026-09": {
+    "raids": 1
+   },
+   "2026-10": {
+    "raids": 1
+   }
+  },
+  "note": "набеги",
+  "conf": "high",
+  "src": [
+   "world"
+  ]
+ },
+ "deaths": {
+  "total": 33,
+  "by_person": {
+   "roma": {
+    "deaths": 20,
+    "hours": 30.5,
+    "per_hour": 0.66
+   },
+   "valya": {
+    "deaths": 9,
+    "hours": 20.0,
+    "per_hour": 0.45
+   },
+   "Саня Тест": {
+    "deaths": 4,
+    "hours": 10.0,
+    "per_hour": 0.4
+   }
+  },
+  "by_character": {
+   "РомаH": 19,
+   "Куралеска": 9,
+   "IiApaCiOxa": 4,
+   "Odev": 1
+  },
+  "by_month_by_character": {
+   "2026-09": {
+    "РомаH": 17,
+    "Куралеска": 8,
+    "IiApaCiOxa": 4
+   },
+   "2026-10": {
+    "РомаH": 2,
+    "Куралеска": 1
+   }
+  },
+  "deadliest_evenings": [
+   {
+    "evening": "2026-10-04",
+    "deaths": 12,
+    "by_character": {
+     "IiApaCiOxa": 1,
+     "РомаH": 8,
+     "Куралеска": 3
+    },
+    "from": {
+     "utc": "2026-10-04T11:55:00Z",
+     "local": "2026-10-04T14:55:00+03:00"
+    },
+    "to": {
+     "utc": "2026-10-04T20:07:00Z",
+     "local": "2026-10-04T23:07:00+03:00"
+    }
+   }
+  ],
+  "deadliest_hours": [],
+  "longest_series": [
+   {
+    "character": "РомаH",
+    "deaths": 5,
+    "minutes": 22.0,
+    "start": {
+     "utc": "2026-10-04T15:44:00Z",
+     "local": "2026-10-04T18:44:00+03:00"
+    }
+   },
+   {
+    "character": "Куралеска",
+    "deaths": 3,
+    "minutes": 10.0,
+    "start": {
+     "utc": "2026-10-04T16:00:00Z",
+     "local": "2026-10-04T19:00:00+03:00"
+    }
+   }
+  ],
+  "series_count": 2,
+  "group_wipes_top": [],
+  "group_wipes_count": 0,
+  "hour_of_day_local": {
+   "21": 10
+  },
+  "in_game_phase": {
+   "ночь": 3
+  },
+  "known_places": [
+   {
+    "character": "Куралеска",
+    "at": {
+     "utc": "2026-10-04T16:16:00Z",
+     "local": "2026-10-04T19:16:00+03:00"
+    },
+    "biome_ru": "Пепельные земли",
+    "near": "AshlandRuins",
+    "source": "tombstone",
+    "tombstone_items": [
+     "Серокамень ×23"
+    ],
+    "tombstone_in_live_world": true
+   }
+  ],
+  "known_places_note": "места",
+  "method": "возрождение через 8–9 с",
+  "conf": "high",
+  "conf_note": "высокая",
+  "src": [
+   "deaths"
+  ]
+ },
+ "exploration": {
+  "first_zone_generated_by_biome": {
+   "Луга": {
+    "utc": "2026-09-11T15:17:00Z",
+    "local": "2026-09-11T18:17:00+03:00"
+   }
+  },
+  "note": "разведка",
+  "conf": "medium-high"
+ },
+ "builds": {
+  "koban_latest": {
+   "snapshot": {
+    "utc": "2026-10-10T23:52:00Z",
+    "local": "2026-10-11T02:52:00+03:00"
+   },
+   "save": 1575,
+   "by_character": {
+    "РомаH": {
+     "pieces": 5617,
+     "share": 0.637
+    }
+   }
+  },
+  "koban_growth": [
+   {
+    "at": {
+     "utc": "2026-09-12T09:40:00Z",
+     "local": "2026-09-12T12:40:00+03:00"
+    },
+    "save": 43,
+    "pieces": 1072,
+    "by_character": {
+     "РомаH": 846
+    }
+   }
+  ],
+  "bases_top": [
+   {
+    "center_xz": [
+     10,
+     20
+    ],
+    "pieces": 4991,
+    "biome_ru": "Луга",
+    "main_builder": "РомаH",
+    "by_character": {
+     "РомаH": 4000
+    }
+   }
+  ],
+  "note": "постройки",
+  "conf": "medium-high",
+  "src": [
+   "world"
+  ]
+ },
+ "activity": {
+  "sleeps_total": 30,
+  "sleeps_by_character": {
+   "РомаH": 25
+  },
+  "pings_in_game": {
+   "Куралеска": 10
+  },
+  "wrong_passwords": [
+   {
+    "at": {
+     "utc": "2026-09-21T17:18:00Z",
+     "local": "2026-09-21T20:18:00+03:00"
+    },
+    "who": "valya"
+   }
+  ],
+  "conf": "high"
+ },
+ "server_history": {
+  "game_versions": [
+   {
+    "at": {
+     "utc": "2026-10-06T12:15:00Z",
+     "local": "2026-10-06T15:15:00+03:00"
+    },
+    "from": "l-1.0.16",
+    "to": "l-1.0.17"
+   }
+  ],
+  "starts_by_cause": {
+   "cron_daily": 30
+  },
+  "rollbacks": [
+   {
+    "at": {
+     "utc": "2026-10-06T18:22:00Z",
+     "local": "2026-10-06T21:22:00+03:00"
+    },
+    "online": [
+     "РомаH"
+    ],
+    "lost_online_min": 18.0
+   }
+  ],
+  "stopped_while_players_in_game": {
+   "sessions": 3,
+   "by_person": {
+    "roma": 2
+   }
+  },
+  "daily_restart": "05:10",
+  "conf": "high"
+ },
+ "facts": [
+  {
+   "id": "pair_most_together",
+   "world": "testworld",
+   "text": "Больше всего вместе играли roma и valya.",
+   "src": [
+    "sessions"
+   ],
+   "conf": "high",
+   "data": {}
+  },
+  {
+   "id": "queen",
+   "world": "testworld",
+   "text": "Королеву убили 04.10 (окно).",
+   "src": [
+    "world"
+   ],
+   "conf": "medium",
+   "conf_note": "окно по снимкам"
+  }
+ ],
+ "limits": [
+  "Инвентарь и навыки серверу не видны.",
+  "Кто добил босса — неизвестно."
+ ],
+ "sources": {},
+ "archive": {
+  "about": "Старый мир santonoma (апрель 2026).",
+  "world": {
+   "name": "santonoma",
+   "game": "Valheim 0.221",
+   "day_last": 635,
+   "conf": "high"
+  },
+  "people": [
+   {
+    "id": "roma",
+    "characters": [
+     "Pomаh"
+    ],
+    "sessions": 18,
+    "hours": 27.37,
+    "evenings": 2,
+    "deaths": {
+     "total": 27
+    },
+    "evening_list": [
+     [
+      "2026-04-23",
+      4.0,
+      "18:00",
+      "04-23 22:00",
+      2,
+      [
+       "Pomаh"
+      ]
+     ]
+    ],
+    "conf": "high"
+   },
+   {
+    "id": "valya",
+    "characters": [
+     "Kurolesska"
+    ],
+    "sessions": 4,
+    "hours": 10.0,
+    "evenings": 1,
+    "deaths": {
+     "total": 6
+    },
+    "evening_list": [
+     [
+      "2026-04-23",
+      3.0,
+      "18:30",
+      "04-23 21:30",
+      1,
+      [
+       "Kurolesska"
+      ]
+     ]
+    ],
+    "conf": "high"
+   }
+  ],
+  "characters": [
+   {
+    "name": "Pomаh",
+    "person": "roma",
+    "world": "santonoma",
+    "link": {
+     "how": "тест",
+     "conf": "high"
+    },
+    "first_login": {
+     "utc": "2026-09-11T15:18:00Z",
+     "local": "2026-09-11T18:18:00+03:00"
+    },
+    "last_login": {
+     "utc": "2026-10-10T13:48:00Z",
+     "local": "2026-10-10T16:48:00+03:00"
+    },
+    "last_logout": {
+     "utc": "2026-10-10T14:52:00Z",
+     "local": "2026-10-10T17:52:00+03:00"
+    },
+    "sessions": 18,
+    "hours": 27.37,
+    "evenings": 3,
+    "avg_session_h": 1.5,
+    "median_session_h": 1.2,
+    "by_month": {},
+    "longest_streak_evenings": {
+     "from": "2026-10-03",
+     "to": "2026-10-04",
+     "days": 2
+    },
+    "together_hours": {},
+    "top_partner": {},
+    "deaths": {
+     "total": 27,
+     "per_hour": 0.99,
+     "conf": "high"
+    },
+    "records": {},
+    "weekday_evenings": {},
+    "start_hour_local_hist": {},
+    "activity": {
+     "sleeps": 3
+    },
+    "src": [
+     "sessions"
+    ],
+    "conf": "high"
+   },
+   {
+    "name": "Kurolesska",
+    "person": "valya",
+    "world": "santonoma",
+    "link": {
+     "how": "тест",
+     "conf": "high"
+    },
+    "first_login": {
+     "utc": "2026-09-11T15:18:00Z",
+     "local": "2026-09-11T18:18:00+03:00"
+    },
+    "last_login": {
+     "utc": "2026-10-10T13:48:00Z",
+     "local": "2026-10-10T16:48:00+03:00"
+    },
+    "last_logout": {
+     "utc": "2026-10-10T14:52:00Z",
+     "local": "2026-10-10T17:52:00+03:00"
+    },
+    "sessions": 4,
+    "hours": 10.0,
+    "evenings": 3,
+    "avg_session_h": 1.5,
+    "median_session_h": 1.2,
+    "by_month": {},
+    "longest_streak_evenings": {
+     "from": "2026-10-03",
+     "to": "2026-10-04",
+     "days": 2
+    },
+    "together_hours": {},
+    "top_partner": {},
+    "deaths": {
+     "total": 6,
+     "per_hour": 0.6,
+     "conf": "high"
+    },
+    "records": {},
+    "weekday_evenings": {},
+    "start_hour_local_hist": {},
+    "activity": {
+     "sleeps": 3
+    },
+    "src": [
+     "sessions"
+    ],
+    "conf": "high"
+   }
+  ],
+  "overall": {
+   "sessions": 22,
+   "person_hours": 37.37,
+   "conf": "high"
+  },
+  "evenings": [
+   {
+    "date": "2026-04-23",
+    "weekday": "чт",
+    "hours_by_person": {
+     "roma": 4.0,
+     "valya": 3.0
+    },
+    "characters": [
+     "Pomаh",
+     "Kurolesska"
+    ],
+    "hours_anyone": 4.0,
+    "deaths": 24,
+    "deaths_by_character": {
+     "Pomаh": 15,
+     "Kurolesska": 9
+    },
+    "raids": 0
+   }
+  ],
+  "bosses": [
+   {
+    "world": "santonoma",
+    "key": "defeated_gdking",
+    "boss_ru": "Древний",
+    "status": "killed",
+    "window_with_players": null,
+    "world_days": [
+     500,
+     550
+    ],
+    "online_in_window": [],
+    "who_landed_the_blow": "неизвестно",
+    "conf": "low",
+    "conf_note": "до начала лога"
+   }
+  ],
+  "other_world_keys": [],
+  "raids": {
+   "list": [],
+   "by_month": {},
+   "conf": "high"
+  },
+  "deaths": {
+   "total": 33,
+   "by_person": {
+    "roma": {
+     "deaths": 27
+    },
+    "valya": {
+     "deaths": 6
+    }
+   },
+   "by_character": {
+    "Pomаh": 27,
+    "Kurolesska": 6
+   },
+   "deadliest_evenings": [
+    {
+     "evening": "2026-04-23",
+     "deaths": 24,
+     "by_character": {
+      "Pomаh": 15,
+      "Kurolesska": 9
+     }
+    }
+   ],
+   "longest_series": [],
+   "known_places": [],
+   "conf": "high"
+  },
+  "builds": {
+   "note": "итог на 2026-09-11",
+   "conf": "medium"
+  },
+  "activity": {
+   "sleeps_total": 70
+  },
+  "server_history": {
+   "conf": "high"
+  },
+  "facts": [
+   {
+    "id": "archive_summary",
+    "world": "santonoma",
+    "text": "Старый мир santonoma: 22 сессии.",
+    "conf": "high"
+   }
+  ]
+ }
+}

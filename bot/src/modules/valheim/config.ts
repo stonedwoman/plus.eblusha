@@ -26,6 +26,11 @@ export interface ValheimConfig {
   agentTokenFile?: string | null;
   /** Просьб агенту на человека в сутки (владельца не касается). */
   agentUserDaily?: number;
+  /**
+   * Летопись сервера — выжимка history-bot.json (/DATA/valheim-history/export, каталог смонтирован только на чтение:
+   * файл заменяется атомарно). null/пусто — без инструмента valheim_history.
+   */
+  historyFile?: string | null;
 }
 
 function s(env: NodeJS.ProcessEnv, key: string, def: string): string {
@@ -51,5 +56,6 @@ export function loadValheimConfig(env: NodeJS.ProcessEnv = process.env): Valheim
     agentUrl: opt(env, "VALHEIM_AGENT_URL", "http://127.0.0.1:3013")?.replace(/\/+$/, "") ?? null,
     agentTokenFile: opt(env, "VALHEIM_AGENT_TOKEN_FILE", "/run/secrets/valheim-agent.token"),
     agentUserDaily: Math.max(1, Math.min(200, Number(s(env, "VALHEIM_AGENT_USER_DAILY", "15")) || 15)),
+    historyFile: opt(env, "VALHEIM_HISTORY_FILE", "/valheim-history/history-bot.json"),
   };
 }

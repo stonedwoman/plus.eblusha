@@ -107,6 +107,7 @@ src/modules/index.ts   список модулей, включение чере�
 | `BOT_MAX_TOKENS` / `BOT_MAX_TOOL_ITERATIONS` / `BOT_MAX_CONCURRENT_LLM` | 16000 / 8 / 3 | |
 | `BOT_MODULES` | пусто | модули через запятую (`valheim`) |
 | `BOT_DATA_DIR` | `./data` (`/data` в контейнере) | SQLite `bot.sqlite` |
+| `BOT_KNOWLEDGE_FILE` | `knowledge/eblusha-app.md` (в образе `/app/knowledge/eblusha-app.md`) | справочник по приложению — вторым блоком системного текста под той же точкой кэша (`src/main.ts` `loadKnowledge`); `off` — без него; при старте `knowledge.loaded` / `knowledge.missing`. Как обновлять — `knowledge/MAINTAIN.md` |
 | `BOT_TIME_ZONE` | `Europe/Moscow` | «сейчас» в подсказке модели |
 | `BOT_GROUP_PLAYER_DATA` | all | данные игроков (`access: "player"`) в группах и личках двух людей: `all` — только если все участники игроки (ответ видят все), `requester` — достаточно, что спрашивает игрок. В «Чате с Еблушей» — всегда можно |
 | `BOT_LOG_LEVEL` | info | |
@@ -220,6 +221,7 @@ export function createValheimModule(): BotModule {
 | `valheim_world_time` | все | день, время, можно ли спать, набег, join-код |
 | `valheim_portals(near)` | игроки | метки, пары, где стоят, расстояния от игрока/дома |
 | `valheim_map_card(center, scale)` | игроки | PNG-карточка (`render.ts`, sharp): фрагмент `/map`, туман `/fog` притушен, стрелки игроков цветами сайта, порталы, дом, могилы, масштаб; ссылка на https://v.koban.uk/map/ |
+| `valheim_history(topic, who?, date?, world?)` | мир и боссы — все (без имён и часов людей), остальное — игроки | летопись за всё время (`history.ts`) по выжимке `/DATA/valheim-history/export/history-bot.json`: `player` / `deaths` (who — человек или персонаж, «я»), `evening` (date — `гггг-мм-дд`, `дд.мм`, «вчера», пусто — последний; вечер = местная дата Бухареста − 6 ч), `bosses`, `world`, `facts`; мир Koban по умолчанию, `world: "archive"` — старый santonoma; ответ ≤ 12 000 знаков, `untrusted`; файл перечитывается при смене mtime/размера, битый — остаётся прежний разбор |
 
 Приватность — в коде: данные игроков только привязанным (`access: "player"`), а в группе — только
 если привязаны все её участники (`BOT_GROUP_PLAYER_DATA`); игрок, снявший в игре
@@ -271,6 +273,7 @@ export function createValheimModule(): BotModule {
 | `VALHEIM_AGENT_URL` | `http://127.0.0.1:3013` | API агента администрирования; пусто — просьбы об изменениях не принимаются |
 | `VALHEIM_AGENT_TOKEN_FILE` | `/run/secrets/valheim-agent.token` | токен агента (в compose — `/DATA/valheim-agent/secrets/api.token` только на чтение, root:1000 0640); после 401 перечитывается |
 | `VALHEIM_AGENT_USER_DAILY` | 15 | просьб агенту на человека в сутки (владельца не касается) |
+| `VALHEIM_HISTORY_FILE` | `/valheim-history/history-bot.json` | летопись для `valheim_history` (в compose — каталог `/DATA/valheim-history/export` только на чтение); пусто — инструмента нет |
 
 ## Память о своих разговорах (решения владельца 2026-10-10 и 2026-10-11)
 

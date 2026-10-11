@@ -11,7 +11,8 @@
  *     «да»/«нет» на план и «верни как было» (intercept), отчёт о выполнении в ту же беседу;
  *   - команды владельца (commands.ts) — молчаливые синонимы старых «/eb сервер|рестарт|бэкап|мир»
  *     (только владельцу в его «Чате с Еблушей»; нигде не упоминаются — всё доступно словами);
- *   - справочник персонажей — для привязки ника фразой «Еблуша, мой ник в игре …».
+ *   - справочник персонажей — для привязки ника фразой «Еблуша, мой ник в игре …»;
+ *   - летопись сервера за всё время (history.ts, valheim_history) — по выжимке history-bot.json с хоста.
  */
 import type { BotModule } from "../api";
 import { ValheimAdmin, type AdminStore } from "./admin";
@@ -19,6 +20,7 @@ import { AgentClient, type AgentClientLike } from "./agent";
 import { BotChannel, JoinInfo, PluginClient, type FetchLike } from "./client";
 import { createCommands } from "./commands";
 import { loadValheimConfig, type ValheimConfig } from "./config";
+import { createHistoryTool, historyFile, HISTORY_SYSTEM_PROMPT, type HistoryFile } from "./history";
 import { OpsClient, type OpsClientLike } from "./ops";
 import { PromiseWatch } from "./promiseWatch";
 import { createTools } from "./tools";
@@ -56,6 +58,8 @@ export interface ValheimDeps {
   ops?: OpsClientLike;
   now?: () => number;
   world?: VhWorld;
+  /** Летопись (тесты — подставная); по умолчанию — файл cfg.historyFile. */
+  historyFile?: HistoryFile;
 }
 
 /** Агент по настройкам: адрес и токен (или подставленный в deps). */
@@ -87,14 +91,18 @@ export function createValheimModule(deps: ValheimDeps = {}): BotModule & { world
     timeZone: cfg.timeZone,
   });
   const online = async () => (await world.players()).players.map((p) => ({ name: p.name, since: p.since }));
+  const historySrc = deps.historyFile ?? (cfg.historyFile ? historyFile(cfg.historyFile) : null);
+  const history = historySrc ? createHistoryTool({ file: historySrc }) : null;
   let watch: PromiseWatch | null = null;
   return {
     name: "valheim",
     world,
     admin,
     watch: () => watch,
-    systemPrompt: VALHEIM_SYSTEM_PROMPT,
-    tools: [...createTools(world, cfg), ...admin.tools()],
+    systemPrompt: history ? `${VALHEIM_SYSTEM_PROMPT}
+
+${HISTORY_SYSTEM_PROMPT}` : VALHEIM_SYSTEM_PROMPT,
+    tools: [...createTools(world, cfg), ...(history ? [history] : []), ...admin.tools()],
     commands: createCommands(world, ops),
     characters: { listKnownCharacters: (): Promise<string[]> => world.knownCharacters(), online },
     intercept: (input) => admin.intercept(input),
@@ -110,7 +118,14 @@ export function createValheimModule(deps: ValheimDeps = {}): BotModule & { world
         world.time().catch(() => null),
         agent ? agent.health().catch(() => null) : Promise.resolve(null),
       ]);
-      core.log.info("valheim.start", { map: !!time, mod: modOk, ops: !!cfg.opsSocket, agent: agent ? (health ? health.target : "unavailable") : "off" });
+      const hist = historySrc ? historySrc.load() : null;
+      core.log.info("valheim.start", {
+        map: !!time,
+        mod: modOk,
+        ops: !!cfg.opsSocket,
+        agent: agent ? (health ? health.target : "unavailable") : "off",
+        history: historySrc ? (hist ? String(hist.generated_utc ?? "ok") : "unavailable") : "off",
+      });
       await admin.start(core);
     },
     async stop() {

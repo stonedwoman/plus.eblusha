@@ -283,6 +283,9 @@ services:
       # Слушает только loopback хоста (у бота network_mode: host).
       VALHEIM_AGENT_URL: http://127.0.0.1:3013
       VALHEIM_AGENT_TOKEN_FILE: /run/secrets/valheim-agent.token
+      # Летопись сервера Valheim (инструмент valheim_history): выжимка, которую раз в сутки пересобирает таймер хоста
+      # valheim-history-rebuild (/DATA/valheim-history, README там же). Файл заменяется атомарно — монтируется КАТАЛОГ.
+      VALHEIM_HISTORY_FILE: /valheim-history/history-bot.json
     volumes:
       - eblusha-bot-data:/data
       # Токен закрытого канала мода WebMap для бота (X-Bot-Token, только чтение). Файл должен
@@ -304,6 +307,9 @@ services:
           create_host_path: false
       # Сокет помощника valheim-ops (bot/ops): команды владельца — рестарт, бэкап, настройки мира.
       - /run/valheim-ops:/run/valheim-ops
+      # Летопись Valheim — только чтение, каталог export/ целиком (history.py --export заменяет файл новым inode,
+      # смонтированный файл остался бы старым). Нет каталога — бот работает, valheim_history отвечает «недоступна».
+      - /DATA/valheim-history/export:/valheim-history:ro
     read_only: true
     tmpfs:
       - /tmp
