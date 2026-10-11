@@ -5,14 +5,16 @@
  *  - MuteMenuSection — первый пункт меню беседы (правый клик / «⋮» плитки и «⋮» шапки):
  *      * не заглушена: «Без звука ▸» — подменю справа («1 час» … «Навсегда»); на телефонной ширине и
  *        тач-экранах подменю по наведению не работает, поэтому выбор срока раскрывается ВНУТРИ того же
- *        меню: «← Без звука на…» и пять вариантов (остальные пункты на это время прячутся);
+ *        меню (MuteInlinePicker): «← Без звука на…», пять вариантов и «Отмена» (остальные пункты на это
+ *        время прячутся);
  *      * заглушена: «Включить звук» с серой второй строкой «до 18:30» / «навсегда».
  */
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
-import { ArrowLeft, Bell, BellOff, ChevronRight } from 'lucide-react'
+import { Bell, BellOff, ChevronRight } from 'lucide-react'
 import { muteLabel, muteTooltip, MUTE_PRESET_OPTIONS, MUTE_TEXT, type MutePreset } from '../../../../domain/mute/muteRules'
 import { muteStore, useMutedUntil } from '../../../../domain/mute/muteSync'
 import { setConversationMute } from '../hooks/useConversationMute'
+import { MuteInlinePicker } from './MuteInlinePicker'
 
 const MUTED_COLOR = 'var(--text-muted)'
 
@@ -142,20 +144,7 @@ export function MuteMenuSection(props: {
     if (pickerOpen) {
       return (
         <div ref={rootRef} style={{ display: 'contents' }}>
-          <button
-            type="button"
-            data-testid="mute-picker-back"
-            onClick={() => setPickerOpen(false)}
-            style={{ ...itemStyle, color: MUTED_COLOR, fontWeight: 600 }}
-          >
-            <ArrowLeft size={16} />
-            {MUTE_TEXT.pickTitle}
-          </button>
-          {MUTE_PRESET_OPTIONS.map((o) => (
-            <button key={o.preset} type="button" data-testid={`mute-preset-${o.preset}`} onClick={() => choose(o.preset)} style={{ ...itemStyle, paddingLeft: 34 }}>
-              {o.label}
-            </button>
-          ))}
+          <MuteInlinePicker onBack={() => setPickerOpen(false)} onChoose={choose} onCancel={onClose} />
         </div>
       )
     }
