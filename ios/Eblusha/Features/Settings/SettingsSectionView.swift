@@ -280,7 +280,7 @@ struct SettingsSectionView: View {
         return EbToggleRow(
             id: "p-ltime",
             title: "Показывать моё местное время",
-            desc: "Собеседники в личных чатах видят под вашим статусом, который у вас час, и город по часовому поясу.",
+            desc: "Собеседники в личных чатах видят в шапке беседы, который у вас час, и город по часовому поясу.",
             isOn: Binding(get: { lt.share?.share ?? true }, set: { lt.setShare($0) }),
             disabled: lt.saving || lt.serverSupported == false,
             isError: message?.kind == .err,

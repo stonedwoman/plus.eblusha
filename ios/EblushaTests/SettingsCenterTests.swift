@@ -49,9 +49,9 @@ final class SettingsSearchTests: XCTestCase {
                       "невидимка", "не беспокоить", "dnd", "отошёл", "показывать меня"] {
             XCTAssertTrue(SettingsSearch.match(query).isEmpty, "«\(query)» ничего не должно находить, а нашло \(SettingsSearch.match(query).map(\.id))")
         }
-        // «статус» осталось только в пояснении местного времени («под вашим статусом» — это строка
-        // присутствия «В сети / был(а)…», она автоматическая и остаётся): выбора статуса среди находок нет.
-        XCTAssertEqual(SettingsSearch.match("статус").map(\.id), ["p-ltime"])
+        // Слова «статус» нет и в пояснениях: пояснение местного времени говорит «в шапке беседы».
+        let statusHits = SettingsSearch.match("статус").map(\.id)
+        XCTAssertTrue(statusHits.isEmpty, "«статус» ничего не должно находить, а нашло \(statusHits)")
         // В «Профиле» — фото, имя, EBLID, местное время, чат с Еблушей.
         let profile = SettingsSearch.rows.filter { $0.section == .profile }.map(\.id)
         XCTAssertEqual(profile, ["p-photo", "p-name", "p-eblid", "p-ltime", "p-bot"])
