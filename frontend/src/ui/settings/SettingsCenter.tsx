@@ -335,6 +335,12 @@ export function SettingsCenter(props: SettingsCenterProps) {
         searchRef.current?.select()
         return
       }
+      if (mod && !e.shiftKey && !e.altKey && (e.key === ',' || e.code === 'Comma')) {
+        // Ctrl/⌘+, — как у натива: открывает и закрывает (закрытие спросит про несохранённый профиль)
+        e.preventDefault()
+        if (!model.pwdBusy) requestClose()
+        return
+      }
       if (e.key === 'Escape') {
         e.preventDefault()
         e.stopPropagation()
@@ -343,7 +349,7 @@ export function SettingsCenter(props: SettingsCenterProps) {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [stepBack])
+  }, [stepBack, requestClose, model.pwdBusy])
 
   // ── фокус: при открытии — внутрь, при закрытии — туда, где был ──
   useEffect(() => {

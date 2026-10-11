@@ -63,7 +63,7 @@
   `triggerMessageId`; в «Чате с Еблушей» — его владелец; удаление для всех тем же `/messages/delete`).
 - `domain/bot/useSystemBot.ts` — `GET /api/bot` (404 — всё «ботовое» спрятано), `PUT /api/bot/settings`,
   сокет `bot:settings`.
-- `ui/components/bot/` — «Б»-аватар (`Avatar isBot`), метка «бот», плашка «Спросить», настройка «Чат с Еблушей».
+- `ui/components/bot/` — «Б»-аватар (`Avatar isBot`), метка «бот», плашка «Спросить». Сама настройка «Чат с Еблушей» — строка раздела «Профиль» центра настроек (`ui/settings`, хук `useBotChatSetting`).
 - Здесь: `ChatMessageRow` (пузырь с полосой, имя/«бот»/«Б» и в личке двух людей, кнопки, карта),
   `MessagesPane` (плашка в поле ввода, Backspace в начале — обычное сообщение, отказ в секретке, шапка
   «Чата с Еблушей» без звонков; «Удалить» при выборе нескольких), `ConversationListPane`, `ChatModals`

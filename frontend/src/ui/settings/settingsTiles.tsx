@@ -171,13 +171,15 @@ function ProfileTile({ ctx, span }: { ctx: TilesCtx; span?: 1 | 2 }) {
               <Avatar name={name} id={me?.id ?? 'me'} size={sizeAva} avatarUrl={avatarUrl} presence={presence} />
             </span>
             <div className="ebs-tp__name">{name}</div>
-            <div className="ebs-tp__status">
-              <span className="ebs-pdot" style={{ background: statusDotColor(String(presence ?? meInfo?.status ?? 'OFFLINE')) }} />
-              <span>
-                {model.input.statusText}
-                {deviceWord ? ` · ${deviceWord}` : ''}
-              </span>
-            </div>
+            {model.input.statusText ? (
+              <div className="ebs-tp__status">
+                <span className="ebs-pdot" style={{ background: statusDotColor(String(presence ?? meInfo?.status ?? 'OFFLINE')) }} />
+                <span>
+                  {model.input.statusText}
+                  {deviceWord ? ` · ${deviceWord}` : ''}
+                </span>
+              </div>
+            ) : null}
             {bio && mode !== 'cmp' ? <div className="ebs-tp__bio">{bio}</div> : null}
             <span className="ebs-cap" style={{ marginTop: 4 }}>
               EBLID <b className="ebs-num">{eblid}</b>
