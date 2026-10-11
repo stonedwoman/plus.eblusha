@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import XCTest
 @testable import Eblusha
 
@@ -18,14 +19,25 @@ final class MockURLProtocol: URLProtocol {
 
     override func startLoading() {
         let body = request.httpBody ?? request.httpBodyStream.map(Self.readAll)
-        let (status, data) = Self.server?.handle(request, body: body) ?? (500, Data())
+        let server = Self.server
+        let (status, data) = server?.handle(request, body: body) ?? (500, Data())
         let response = HTTPURLResponse(
             url: request.url!, statusCode: status, httpVersion: "HTTP/1.1",
             headerFields: ["Content-Type": "application/json"]
         )!
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: data)
-        client?.urlProtocolDidFinishLoading(self)
+        let deliver = { [weak self] in
+            guard let self else { return }
+            self.client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            self.client?.urlProtocol(self, didLoad: data)
+            self.client?.urlProtocolDidFinishLoading(self)
+        }
+        // Медленный ответ — без сна в потоке загрузки: иначе стояли бы ВСЕ подменные запросы.
+        let delay = server?.responseDelay(request) ?? 0
+        if delay > 0 {
+            DispatchQueue.global().asyncAfter(deadline: .now() + delay, execute: deliver)
+        } else {
+            deliver()
+        }
     }
 
     override func stopLoading() {}
@@ -74,6 +86,21 @@ final class FakeServer {
     var bundlesStatus = 200
     /// deviceId → prekey, который отдаст claim.
     var claimable: [String: (keyId: String, publicKey: Data)] = [:]
+    /// deviceId → невыданные OPK в порядке выдачи (самый старый первым), как на сервере
+    /// (devices.ts / e2ee.ts): claim снимает голову, bundles её только показывают
+    /// (oneTimePreKey). Работает для устройств, которым не задан `claimable`.
+    var serverPrekeys: [String: [(keyId: String, publicKey: Data)]] = [:]
+    /// Дополнительные поля беседы в GET /conversations (secretStatus, createdById…).
+    var conversationExtras: [String: [String: Any]] = [:]
+    /// Задержка ОТВЕТА (с) по «МЕТОД путь»: сам запрос обрабатывается сразу (учёт, claim…),
+    /// а ответ приходит позже — так моделируется медленная сеть без блокировки остальных.
+    var responseDelays: [String: TimeInterval] = [:]
+
+    func responseDelay(_ request: URLRequest) -> TimeInterval {
+        let fullPath = request.url?.path ?? ""
+        let path = fullPath.range(of: "/api/").map { String(fullPath[$0.upperBound...]) } ?? fullPath
+        return lock.withLockT { responseDelays["\(request.httpMethod ?? "GET") \(path)"] ?? 0 }
+    }
     /// Ответ на /devices/register: статус + тело. По умолчанию — всё принято.
     var registerResponses: [(status: Int, body: [String: Any]?)] = []
     /// Сколько ключей примет /devices/{id}/prekeys (nil — все).
@@ -101,6 +128,43 @@ final class FakeServer {
 
     func addSecretThread(_ id: String, participants: [String], type: String = "SECRET") {
         threads[id] = (type, participants)
+    }
+
+    /// Атомарный claim самого старого невыданного OPK устройства — так его делает отправитель.
+    func takeServerPrekey(_ deviceId: String) -> (keyId: String, publicKey: Data)? {
+        lock.withLockT {
+            guard var queue = serverPrekeys[deviceId], !queue.isEmpty else { return nil }
+            let head = queue.removeFirst()
+            serverPrekeys[deviceId] = queue
+            return head
+        }
+    }
+
+    /// Положить элемент в инбокс из параллельной задачи (разбор и ack читают его под замком).
+    func enqueueInbox(_ item: [String: Any]) {
+        lock.withLockT { inbox.append(item) }
+    }
+
+    /// Невыданные OPK устройства (keyId по порядку выдачи).
+    func serverPrekeyIds(_ deviceId: String) -> [String] {
+        lock.withLockT { (serverPrekeys[deviceId] ?? []).map(\.keyId) }
+    }
+
+    /// Сколько раз устройство забирало OPK у [deviceId] (claim с этим x-device-id).
+    func claims(of deviceId: String, by caller: String) -> Int {
+        calls("POST", "e2ee/prekeys/claim").filter {
+            ($0.json as? [String: Any])?["deviceId"] as? String == deviceId && $0.deviceIdHeader == caller
+        }.count
+    }
+
+    /// key_request, ушедшие через /secret/send (адресат + заголовок).
+    var sentKeyRequests: [(to: String, header: [String: Any])] {
+        sentEnvelopes.compactMap { env in
+            guard let header = env["headerJson"] as? [String: Any],
+                  header["kind"] as? String == "control", header["type"] as? String == "key_request",
+                  let to = env["toDeviceId"] as? String else { return nil }
+            return (to, header)
+        }
     }
 
     func handle(_ request: URLRequest, body: Data?) -> (Int, Data) {
@@ -142,17 +206,16 @@ final class FakeServer {
         case ("GET", "conversations"):
             guard conversationsStatus == 200 else { return (conversationsStatus, Data("{}".utf8)) }
             let list: [[String: Any]] = threads.map { id, info in
-                [
-                    "unreadCount": 0,
-                    "conversation": [
-                        "id": id,
-                        "type": info.type,
-                        "isSecret": info.type == "SECRET",
-                        "isGroup": false,
-                        "participants": info.participants.map { ["userId": $0, "conversationId": id] },
-                        "messages": [],
-                    ] as [String: Any],
+                var conversation: [String: Any] = [
+                    "id": id,
+                    "type": info.type,
+                    "isSecret": info.type == "SECRET",
+                    "isGroup": false,
+                    "participants": info.participants.map { ["userId": $0, "conversationId": id] },
+                    "messages": [],
                 ]
+                for (k, v) in conversationExtras[id] ?? [:] { conversation[k] = v }
+                return ["unreadCount": 0, "conversation": conversation]
             }
             return (200, Self.data(["conversations": list]))
         case ("GET", "devices"):
@@ -161,11 +224,19 @@ final class FakeServer {
         case ("GET", "e2ee/prekeys/bundles"):
             guard bundlesStatus == 200 else { return (bundlesStatus, Data("{}".utf8)) }
             let userId = query["userId"] ?? ""
-            let list = (bundles[userId] ?? []).map { ["deviceId": $0, "identityPublicKey": "x"] }
+            let list: [[String: Any]] = (bundles[userId] ?? []).map { deviceId in
+                var bundle: [String: Any] = ["deviceId": deviceId, "identityPublicKey": "x"]
+                if let head = lock.withLockT({ serverPrekeys[deviceId]?.first }) {
+                    bundle["oneTimePreKey"] = ["id": head.keyId, "publicKey": SecretCrypto.b64UrlEncode(head.publicKey)]
+                }
+                return bundle
+            }
             return (200, Self.data(["userId": userId, "bundles": list]))
         case ("POST", "e2ee/prekeys/claim"):
             let deviceId = ((json as? [String: Any])?["deviceId"] as? String) ?? ""
-            guard let prekey = claimable[deviceId] else { return (404, Self.data(["message": "No prekeys available"])) }
+            guard let prekey = claimable[deviceId] ?? takeServerPrekey(deviceId) else {
+                return (404, Self.data(["message": "No prekeys available"]))
+            }
             return (200, Self.data([
                 "deviceId": deviceId,
                 "identityKey": "x",
@@ -247,6 +318,8 @@ final class SecretTestRig {
     let api: APIClient
     let devices: DevicesRepository
     let keyStore: SecretKeyStore
+    /// Keychain-service тестового хранилища (боевое не трогаем).
+    let keychainService = "org.eblusha.plus.secret.tests.\(UUID().uuidString)"
     let repo: SecretRepository
     let server = FakeServer()
 
@@ -258,7 +331,7 @@ final class SecretTestRig {
         config.protocolClasses = [MockURLProtocol.self]
         api = APIClient(session: session, deviceIdProvider: deviceIds, urlSession: URLSession(configuration: config))
         devices = DevicesRepository(api: api, deviceIdProvider: deviceIds)
-        keyStore = SecretKeyStore(service: "org.eblusha.plus.secret.tests.\(UUID().uuidString)", defaults: defaults)
+        keyStore = SecretKeyStore(service: keychainService, defaults: defaults)
         repo = SecretRepository(api: api, devices: devices, keyStore: keyStore, deviceIdProvider: deviceIds, session: session)
         MockURLProtocol.server = server
     }
@@ -297,6 +370,37 @@ final class SecretTestRig {
         let kp = SecretCrypto.generateKeyPair()
         keyStore.addPrekeySecrets([keyId: kp.secretKey])
         return (keyId, kp.publicKey)
+    }
+
+    /// OPK, опубликованный ПРЕЖНЕЙ идентичностью этого id: на сервере лежит, секрета нет нигде
+    /// (выход на сборке до H13 стёр Keychain, а id оставил — случай iPhone владельца 2026-09-11).
+    func makeDeadPrekey(_ keyId: String = "dead-" + UUID().uuidString.lowercased()) -> (keyId: String, publicKey: Data) {
+        (keyId, SecretCrypto.generateKeyPair().publicKey)
+    }
+
+    /// Очередь невыданных OPK ЭТОГО устройства на сервере: сначала [dead] мёртвых, затем [live]
+    /// живых. Наше устройство попадает в bundles своего аккаунта (вместе с [others]).
+    @discardableResult
+    func seedMyServerPrekeys(dead: Int, live: Int, others: [String] = []) -> (dead: [String], live: [String]) {
+        let deadKeys = (0..<dead).map { _ in makeDeadPrekey() }
+        let liveKeys = (0..<live).map { _ in makeMyPrekey() }
+        server.serverPrekeys[deviceIds.deviceId()] = deadKeys + liveKeys
+        server.bundles[me] = [deviceIds.deviceId()] + others
+        return (deadKeys.map(\.keyId), liveKeys.map(\.keyId))
+    }
+
+    /// Испортить карту хранилища (запись не JSON): её чтение проваливается, как при сбое
+    /// Keychain, и записи поверх неё не делаются. account — имя карты в SecretKeyStore.Keys.
+    func breakKeychainMap(_ account: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: account,
+        ]
+        SecItemDelete(query as CFDictionary)
+        var insert = query
+        insert[kSecValueData as String] = Data("not json".utf8)
+        SecItemAdd(insert as CFDictionary, nil)
     }
 
     func tearDown() {
