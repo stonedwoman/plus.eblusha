@@ -1,5 +1,6 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { SETTINGS_SECTIONS, modalOwnsKeyboard, parseSettingsParam, settingsParamValue, viewFromSearch } from './settingsNav'
+import { SETTINGS_SECTIONS, modalOwnsKeyboard, parseSettingsParam, settingsPaneKey, settingsParamValue, viewFromSearch } from './settingsNav'
 
 describe('адрес центра настроек', () => {
   it('?settings= без значения и «overview» — обзор', () => {
@@ -51,5 +52,21 @@ describe('чьи клавиши: центра или окна поверх не�
   })
   it('чужая панель с таким же классом снаружи — тоже чужое окно', () => {
     expect(modalOwnsKeyboard([{ insideCenter: false, isPanel: true }])).toBe(true)
+  })
+})
+
+describe('панели обзора и раздела (клик по плитке «ничего не делал» до перезагрузки)', () => {
+  // Корень обзора и корень раздела — один тег на одном месте. Без разных ключей React переиспользует узел обзора под
+  // раздел, и на нём остаётся анимация гашения (opacity 0, fill forwards): адрес уже ?settings=раздел, а на экране пусто.
+  it('обзор и любой раздел — разные ключи, все разделы между собой — один (колонка не пересоздаётся)', () => {
+    const ov = settingsPaneKey({ kind: 'overview' })
+    for (const id of SETTINGS_SECTIONS) expect(settingsPaneKey({ kind: 'section', id })).not.toBe(ov)
+    const keys = new Set(SETTINGS_SECTIONS.map((id) => settingsPaneKey({ kind: 'section', id })))
+    expect(keys.size).toBe(1)
+  })
+
+  it('тело центра действительно ставит этот ключ на панель (а не рендерит обзор и раздел одним узлом)', () => {
+    const src = readFileSync(new URL('./SettingsCenter.tsx', import.meta.url), 'utf8')
+    expect(src).toMatch(/<Fragment key=\{settingsPaneKey\(view\)\}>/)
   })
 })

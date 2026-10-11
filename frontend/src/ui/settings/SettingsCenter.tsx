@@ -8,7 +8,7 @@
  *
  * Логика, хранение, API, сквозные события и E2EE не менялись — только вид и навигация (useSettingsModel.tsx).
  */
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { useBlocker } from 'react-router-dom'
 import { SettingsUiProvider, Btn, Confirm, Hl, Ic, Kbd, LeaveDialog, modKey, type IconName } from './settingsUi'
@@ -16,7 +16,7 @@ import { SettingsModelProvider, useSearchResult, useSettingsModelState, WEB_SECT
 import { SECTION_ICONS, OverviewTiles, ResultGroup, type TilesCtx } from './settingsTiles'
 import { OVERVIEW_GRID_AREAS, nearestTile, phoneSpans, useSettingsMode } from './settingsLayout'
 import { SECTION_NAMES, type IndexRow } from './settingsIndex'
-import { modalOwnsKeyboard, viewFromSearch, type SettingsAvTab, type SettingsNav, type SettingsSectionId, type SettingsView } from './settingsNav'
+import { modalOwnsKeyboard, settingsPaneKey, viewFromSearch, type SettingsAvTab, type SettingsNav, type SettingsSectionId, type SettingsView } from './settingsNav'
 import { collapseToTile, expandFromTile, prefersReducedMotion } from './settingsMotion'
 import { pluralRu } from './settingsFormat'
 import { ProfileSection } from './sections/ProfileSection'
@@ -225,22 +225,36 @@ export function SettingsCenter(props: SettingsCenterProps) {
   const blockedNow = blocker.state === 'blocked'
 
   // ── переход плитка → раздел и обратно ──
+  // Раскрытие длится 340 мс, и за это время центр могут закрыть (Esc) или открыть раздел из поиска: по окончании берём
+  // САМУЮ СВЕЖУЮ навигацию (а не замкнутую на момент щелчка) и ничего не открываем, если центр закрыт или уже не на обзоре.
+  const navRef = useRef(nav)
+  navRef.current = nav
+  const viewKindRef = useRef(view.kind)
+  viewKindRef.current = view.kind
+  const aliveRef = useRef(true)
+  useEffect(() => {
+    aliveRef.current = true
+    return () => {
+      aliveRef.current = false
+    }
+  }, [])
   const openSection = useCallback(
     (id: SettingsSectionId, from: HTMLElement | null) => {
       if (animating) return
       const body = bodyRef.current
       const ov = body?.querySelector<HTMLElement>('.ebs-ov, .ebs-ovphone') ?? null
       if (!from || !body || prefersReducedMotion()) {
-        nav.openSection(id)
+        navRef.current.openSection(id)
         return
       }
       setAnimating(true)
       void expandFromTile(body, from, ov).then(() => {
-        nav.openSection(id)
+        if (!aliveRef.current) return
         setAnimating(false)
+        if (viewKindRef.current === 'overview') navRef.current.openSection(id)
       })
     },
-    [animating, nav],
+    [animating],
   )
 
   const prevViewRef = useRef<SettingsView>(view)
@@ -660,20 +674,23 @@ export function SettingsCenter(props: SettingsCenterProps) {
 
   const body = (
     <div className={`ebs-body${animating ? ' is-animating' : ''}`} ref={bodyRef}>
-      {view.kind === 'overview' ? (
-        overview
-      ) : phone ? (
-        <main className="ebs-content" ref={paneRef}>
-          {sectionPage}
-        </main>
-      ) : (
-        <div className="ebs-sec">
-          {rail}
-          <div className="ebs-pane" ref={paneRef}>
+      {/* ключ — чтобы React не переиспользовал узел обзора под раздел (см. settingsPaneKey): на нём осталась бы анимация гашения */}
+      <Fragment key={settingsPaneKey(view)}>
+        {view.kind === 'overview' ? (
+          overview
+        ) : phone ? (
+          <main className="ebs-content" ref={paneRef}>
             {sectionPage}
+          </main>
+        ) : (
+          <div className="ebs-sec">
+            {rail}
+            <div className="ebs-pane" ref={paneRef}>
+              {sectionPage}
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </Fragment>
       {leave || blockedNow ? (
         <LeaveDialog
           onCancel={() => {

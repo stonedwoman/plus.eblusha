@@ -31,6 +31,19 @@ export function modalOwnsKeyboard(modals: readonly ModalOnPage[]): boolean {
 
 export type SettingsView = { kind: 'overview' } | { kind: 'section'; id: SettingsSectionId }
 
+/**
+ * Ключ панели в теле центра: обзор и раздел — РАЗНЫЕ панели для React.
+ *
+ * Корень обзора и корень раздела — один и тот же тег (div на ПК, main на телефоне) на одном месте в теле. Без ключа
+ * React не создаёт новый узел, а переиспользует прежний, только меняя класс. Тогда анимация раскрытия
+ * (settingsMotion.expandFromTile: обзор гаснет с fill:'forwards', opacity 0 и scale .985) остаётся висеть на узле,
+ * который уже стал разделом: раздел открыт (адрес сменился), но невидим, и плитка «ничего не делает» — пока
+ * перезагрузка страницы не нарисует раздел заново, без анимации. То же при возврате: невидим уже обзор.
+ */
+export function settingsPaneKey(view: SettingsView): 'overview' | 'section' {
+  return view.kind === 'overview' ? 'overview' : 'section'
+}
+
 const PARAM = 'settings'
 /** Как раздел называется в адресе. */
 const TO_URL: Record<SettingsSectionId, string> = { profile: 'profile', conn: 'connection', av: 'av', security: 'security', app: 'app' }

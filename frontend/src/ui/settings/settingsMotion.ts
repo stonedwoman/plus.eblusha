@@ -8,6 +8,8 @@ export const SNAP = 'cubic-bezier(.2,.8,.2,1)'
 export const FOLD = 'cubic-bezier(.4,0,.2,1)'
 export const EXPAND_MS = 340
 export const COLLAPSE_MS = 280
+/** Запас сверх длительности, после которого переход считается законченным без события finish. */
+export const SETTLE_SLACK_MS = 250
 
 export function prefersReducedMotion(): boolean {
   try {
@@ -15,6 +17,24 @@ export function prefersReducedMotion(): boolean {
   } catch {
     return false
   }
+}
+
+/**
+ * Конец анимации — событие finish/cancel ИЛИ, если оно не пришло, таймер: у скрытой вкладки анимации не тикают, и
+ * тогда промис переходов не выполнился бы, а флаг «идёт переход» (is-animating, блокирует щелчки) залип бы.
+ */
+function settleOnce(a: Animation, ms: number, fn: () => void): void {
+  let done = false
+  let timer = 0
+  const run = () => {
+    if (done) return
+    done = true
+    window.clearTimeout(timer)
+    fn()
+  }
+  timer = window.setTimeout(run, ms + SETTLE_SLACK_MS)
+  a.onfinish = run
+  a.oncancel = run
 }
 
 function makeGhost(body: HTMLElement, tile: HTMLElement): { ghost: HTMLElement; tr: DOMRect; br: DOMRect } {
@@ -59,12 +79,10 @@ export function expandFromTile(body: HTMLElement, tile: HTMLElement, overview: H
       { duration: EXPAND_MS, easing: SNAP, fill: 'forwards' },
     )
     void tr
-    const done = () => {
+    settleOnce(a, EXPAND_MS, () => {
       ghost.remove()
       resolve()
-    }
-    a.onfinish = done
-    a.oncancel = done
+    })
   })
 }
 
@@ -90,11 +108,9 @@ export function collapseToTile(body: HTMLElement, tile: HTMLElement, overview: H
       ],
       { duration: COLLAPSE_MS, easing: FOLD, fill: 'forwards' },
     )
-    const done = () => {
+    settleOnce(a, COLLAPSE_MS, () => {
       ghost.remove()
       resolve()
-    }
-    a.onfinish = done
-    a.oncancel = done
+    })
   })
 }
