@@ -16,6 +16,8 @@ enum BotCardEvent: Equatable {
     case togglePhotos
     /// «Ответ ниже ↓» — прокрутить к сообщению.
     case jump(String)
+    /// Карточка появилась на экране: незакрытую — перечитать один раз (часы сервера, свежая ревизия).
+    case shown
 }
 
 /// Всё, что нужно карточке сверх самого сообщения.
@@ -51,6 +53,7 @@ struct BotCardView: View {
             }
         }
         .frame(width: context.width, alignment: .leading)
+        .onAppear { if !card.closed { context.onEvent(.shown) } }
     }
 
     /// Ширина карточки в пузыре: `min(360 | 380, 100%)` макета минус поля пузыря, но не шире, чем

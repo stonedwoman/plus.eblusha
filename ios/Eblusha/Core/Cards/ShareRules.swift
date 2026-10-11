@@ -235,7 +235,9 @@ enum ShareRules {
         let start = data.suggestPeriod.flatMap { p in ordered.firstIndex { $0.period == p } } ?? 0
         let rotated = Array(ordered[start...]) + Array(ordered[..<start])
         guard let pick = rotated.first(where: selectable) else { return nil }
-        return ShareSelection(period: pick.period, photos: data.suggestPhotos && pick.photos > 0)
+        // Галка «Включать фото» по умолчанию выключена ВСЕГДА (решение владельца): фото включает человек,
+        // а не подсказка модели (suggest.photos — только в данных; сервер и так шлёт false).
+        return ShareSelection(period: pick.period, photos: false)
     }
 
     /// Выбор зрителя, приведённый к тому, что сейчас допустимо (карточку могли вернуть с
@@ -385,7 +387,7 @@ enum ShareRules {
         case "expired":
             switch reason {
             case "question_deleted": return [.plain("Вопрос удалили — переписку не читаю.")]
-            case "replaced": return [.plain("Вопрос сменился — переписку по нему не читаю.")]
+            case "replaced": return [.plain("Вопрос сменился — по этой карточке переписку не читаю.")]
             case "asker_left": return [.bold(asker), .plain(" вышел из беседы — переписку не читаю.")]
             default: return [.bold(asker), .plain(" не ответил — переписку не читаю.")]
             }

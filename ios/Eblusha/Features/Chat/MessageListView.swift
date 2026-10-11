@@ -233,6 +233,7 @@ struct MessageListView: View {
         case .selectPeriod(let period): vm.selectSharePeriod(messageId: message.id, period: period)
         case .togglePhotos: vm.toggleSharePhotos(messageId: message.id)
         case .jump(let id): jumpToQuote(id)
+        case .shown: vm.refreshCardOnce(messageId: message.id)
         }
     }
 

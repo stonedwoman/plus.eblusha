@@ -5,7 +5,34 @@ import Foundation
 // Хранимые поля (cardConfirmed, cardTransportOverride, ui.cardBusy/shareSelections) объявлены
 // в ChatViewModel.swift — extension их держать не умеет.
 
+/// Незакрытые карточки бота, уже перечитанные при показе (на сеанс приложения): GET — один раз.
+@MainActor private var refreshedCardIds = Set<String>()
+
 extension ChatViewModel {
+
+    // MARK: - Перечитывание при показе
+
+    /// Незакрытую карточку при показе — перечитать ОДИН раз за сеанс (как refreshCardOnce веба):
+    /// идущий таймер до срока событий не получает, и без этого замера часов сервера отсчёт и
+    /// «Пришёл» (вовремя/опоздал) шли бы по часам телефона. Заодно свежая ревизия. Сбой — молча.
+    func refreshCardOnce(messageId: String) {
+        guard !secretMode, cardTransportOverride == nil,
+              let message = ui.messages.first(where: { $0.id == messageId }),
+              let card = message.renderableCard, !card.closed,
+              refreshedCardIds.insert(messageId).inserted
+        else { return }
+        if refreshedCardIds.count > 5000 { refreshedCardIds.removeAll() }
+        Task { @MainActor [weak self] in
+            guard let self, let fresh = await self.repo.cardGet(messageId: messageId) else { return }
+            CardClock.shared.noteServerNow(fresh.serverNow)
+            if var next = fresh.message {
+                if next.card == nil, let card = fresh.card { next.card = card }
+                self.replaceCardMessage(next)
+            } else if let card = fresh.card, let current = self.ui.messages.first(where: { $0.id == messageId }) {
+                self.replaceCardMessage(current.withCard(card))
+            }
+        }
+    }
 
     // MARK: - События
 

@@ -635,6 +635,10 @@ final class ShareRulesTests: XCTestCase {
         XCTAssertEqual(ShareRules.defaultSelection(wrapped)?.period, "today", "по кругу к первому доступному")
         XCTAssertEqual(ShareRules.effectiveSelection(wrapped, stored: ShareSelection(period: "all", photos: true))?.period,
                        "today", "выбор на погашенном варианте откатывается")
+        // Ревью 11.10: подсказка модели «с фото» галку НЕ включает (по умолчанию выкл., фото включает человек).
+        let suggested = ShareCardData.parse(jv(F.shareData(extra: ["suggest": ["period": "week", "photos": true]])))!
+        XCTAssertEqual(ShareRules.defaultSelection(suggested), ShareSelection(period: "week", photos: false),
+                       "подсказка «неделя с фото» — неделя выбрана, галка выключена")
     }
 
     func testTooBigNotice() {
@@ -700,6 +704,9 @@ final class ShareRulesTests: XCTestCase {
         XCTAssertEqual(line("declined", ["endedBy": ["reason": "declined", "by": F.roma]]), "Рома не стал делиться перепиской.")
         XCTAssertEqual(line("expired", ["endedBy": ["reason": "expired"]]), "Рома не ответил — переписку не читаю.")
         XCTAssertEqual(line("expired", ["endedBy": ["reason": "question_deleted"]]), "Вопрос удалили — переписку не читаю.")
+        // Тем же текстом, что запасной текст сервера (одинаково на всех клиентах).
+        XCTAssertEqual(line("expired", ["endedBy": ["reason": "replaced"]]), "Вопрос сменился — по этой карточке переписку не читаю.")
+        XCTAssertEqual(line("expired", ["endedBy": ["reason": "asker_left"]]), "Рома вышел из беседы — переписку не читаю.")
         XCTAssertEqual(line("revoked", ["endedBy": ["reason": "revoked", "by": F.petya]]), "Переписка забыта · попросил Петя.")
         XCTAssertEqual(line("revoked", ["endedBy": ["reason": "revoked", "by": F.roma]]), "Рома забрал разрешение.")
         let unknown = display(share(state: "archived", closed: true, actions: []), fallback: "🔒 Что-то новое")
