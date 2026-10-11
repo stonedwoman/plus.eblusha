@@ -11,7 +11,23 @@
  * входит паролем заново.
  */
 import type { Logger } from "../log";
-import { parseHistoryPage, type BotHistoryPage, type BotPeople, type BotPerson, type BotPostInput, type EbMessage, type UploadResult } from "./types";
+import {
+  parseHistoryPage,
+  type BotHistoryPage,
+  type BotPeople,
+  type BotPerson,
+  type BotPostInput,
+  type EbMessage,
+  type PromiseCandidate,
+  type PromiseSpecInput,
+  type PromiseSummary,
+  type PunctualityStats,
+  type ShareEstimate,
+  type ShareInfo,
+  type SharePage,
+  type SharePeriod,
+  type UploadResult,
+} from "./types";
 
 const AUTH_TIMEOUT_MS = 20_000;
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -22,11 +38,53 @@ export class ApiError extends Error {
     readonly status: number,
     readonly path: string,
     readonly code: string | null,
-    message: string
+    message: string,
+    /** Тело ответа с ошибкой (JSON), если было: подробности кода (срок, таймер, кандидаты). */
+    readonly body: Record<string, unknown> | null = null
   ) {
     super(message);
     this.name = "ApiError";
   }
+}
+
+/** Таймер обещания: методы /api/bot/promises* (сервер rev ≥ 4; старый — 404). */
+export interface PromisesApi {
+  candidates(grant: string): Promise<PromiseCandidate[]>;
+  create(input: {
+    grant: string;
+    promiserId?: string;
+    /** Имя участника, как назвали (сервер найдёт среди участников беседы). */
+    promiserName?: string;
+    promiseMessageId?: string;
+    text?: string;
+    spec?: PromiseSpecInput;
+    cancelAllowedIds?: string[];
+    confirmAmbiguous?: boolean;
+    dryRun?: boolean;
+  }): Promise<{ promise: PromiseSummary | { deadlineAt: string; label: string; upperBound: boolean }; cardMessageId?: string | null; dryRun?: boolean }>;
+  extend(id: string, input: { grant: string; text?: string; spec?: PromiseSpecInput; sourceMessageId?: string }): Promise<PromiseSummary>;
+  correct(id: string, input: { grant: string; text?: string; spec?: PromiseSpecInput }): Promise<PromiseSummary>;
+  arrived(id: string, input: { grant?: string; via: "phrase" | "valheim"; at?: string; detail?: string }): Promise<PromiseSummary>;
+  cancel(id: string, grant: string): Promise<PromiseSummary>;
+  active(): Promise<Array<{ id: string; conversationId: string; promiserId: string; startAt: string; deadlineAt: string }>>;
+  inConversation(grant: string): Promise<PromiseSummary[]>;
+  stats(grant: string, input: { userId?: string; name?: string; board?: boolean }): Promise<{ stats?: PunctualityStats; board?: PunctualityStats[] }>;
+}
+
+/** «Поделиться перепиской»: методы /api/bot/share* (сервер rev ≥ 4; старый — 404). */
+export interface ShareApi {
+  estimate(grant: string): Promise<ShareEstimate>;
+  request(input: {
+    grant: string;
+    suggest: { period: SharePeriod; photos: boolean };
+    options?: Partial<Record<SharePeriod, { enabled: boolean; off?: "too_big" | "budget" | null }>>;
+  }): Promise<{ share: ShareInfo; status?: "granted"; cardMessageId?: string | null }>;
+  messages(id: string, input: { grant: string; after?: { at: string; id: string } | null; limit?: number; ids?: string[]; changesSince?: number | null }): Promise<SharePage>;
+  status(id: string, grant: string): Promise<ShareInfo>;
+  answered(id: string, input: { grant: string; messageIds: string[]; read: { messages: number; photos: number }; usd?: number }): Promise<ShareInfo>;
+  reopen(id: string, input: { grant: string; off: { period: SharePeriod; reason: "too_big" | "budget" } }): Promise<ShareInfo>;
+  revoke(grant: string): Promise<number>;
+  choose(id: string, input: { grant: string; period?: SharePeriod; photos?: boolean; decline?: boolean }): Promise<ShareInfo>;
 }
 
 /** То, чем пользуется ядро. Отдельный интерфейс — чтобы юнит-тесты подсовывали заглушку. */
@@ -55,6 +113,10 @@ export interface ChatApi {
    * курсора `after` и журнал изменений с changesSince. Старый сервер — 404 (бот туда и не ходит: rev < 3).
    */
   history?(grant: string, input: HistoryQuery): Promise<BotHistoryPage>;
+  /** Таймер обещания (контракт rev 4). */
+  promises?: PromisesApi;
+  /** «Поделиться перепиской» (контракт rev 4). */
+  share?: ShareApi;
   upload(data: Buffer, filename: string, mime: string): Promise<UploadResult>;
   /** Скачать вложение Еблуши (/api/files/…); thumb — серверное превью картинки. */
   fetchFile(url: string, opts?: { thumb?: boolean; maxBytes?: number }): Promise<{ data: Buffer; mime: string } | null>;
@@ -183,12 +245,14 @@ export class EblushaApi implements ChatApi {
     const text = await res.text();
     if (!res.ok) {
       let code: string | null = null;
+      let body: Record<string, unknown> | null = null;
       try {
-        code = (JSON.parse(text) as { code?: string }).code ?? null;
+        body = JSON.parse(text) as Record<string, unknown>;
+        code = typeof body.code === "string" ? body.code : null;
       } catch {
         /* не JSON */
       }
-      throw new ApiError(res.status, path, code, `HTTP ${res.status} ${method} ${path}${code ? ` (${code})` : ""}`);
+      throw new ApiError(res.status, path, code, `HTTP ${res.status} ${method} ${path}${code ? ` (${code})` : ""}`, body);
     }
     return (text ? JSON.parse(text) : {}) as T;
   }
@@ -260,6 +324,29 @@ export class EblushaApi implements ChatApi {
     if (!page) throw new ApiError(502, "/api/bot/history", "BAD_REPLY", "history: unexpected reply");
     return page;
   }
+
+  readonly promises: PromisesApi = {
+    candidates: async (grant) => (await this.request<{ candidates: PromiseCandidate[] }>("POST", "/api/bot/promises/candidates", { grant })).candidates ?? [],
+    create: async (input) => this.request("POST", "/api/bot/promises", input),
+    extend: async (id, input) => (await this.request<{ promise: PromiseSummary }>("POST", `/api/bot/promises/${encodeURIComponent(id)}/extend`, input)).promise,
+    correct: async (id, input) => (await this.request<{ promise: PromiseSummary }>("POST", `/api/bot/promises/${encodeURIComponent(id)}/correct`, input)).promise,
+    arrived: async (id, input) => (await this.request<{ promise: PromiseSummary }>("POST", `/api/bot/promises/${encodeURIComponent(id)}/arrived`, input)).promise,
+    cancel: async (id, grant) => (await this.request<{ promise: PromiseSummary }>("POST", `/api/bot/promises/${encodeURIComponent(id)}/cancel`, { grant })).promise,
+    active: async () => (await this.request<{ promises: Array<{ id: string; conversationId: string; promiserId: string; startAt: string; deadlineAt: string }> }>("GET", "/api/bot/promises/active")).promises ?? [],
+    inConversation: async (grant) => (await this.request<{ promises: PromiseSummary[] }>("POST", "/api/bot/promises/in-conversation", { grant })).promises ?? [],
+    stats: async (grant, input) => this.request("POST", "/api/bot/promises/stats", { grant, ...input }),
+  };
+
+  readonly share: ShareApi = {
+    estimate: async (grant) => this.request<ShareEstimate>("POST", "/api/bot/share/estimate", { grant }),
+    request: async (input) => this.request("POST", "/api/bot/share/request", input),
+    messages: async (id, input) => this.request<SharePage>("POST", `/api/bot/share/${encodeURIComponent(id)}/messages`, input),
+    status: async (id, grant) => (await this.request<{ share: ShareInfo }>("POST", `/api/bot/share/${encodeURIComponent(id)}/status`, { grant })).share,
+    answered: async (id, input) => (await this.request<{ share: ShareInfo }>("POST", `/api/bot/share/${encodeURIComponent(id)}/answered`, input)).share,
+    reopen: async (id, input) => (await this.request<{ share: ShareInfo }>("POST", `/api/bot/share/${encodeURIComponent(id)}/reopen`, input)).share,
+    revoke: async (grant) => (await this.request<{ revoked: number }>("POST", "/api/bot/share/revoke", { grant })).revoked ?? 0,
+    choose: async (id, input) => (await this.request<{ share: ShareInfo }>("POST", `/api/bot/share/${encodeURIComponent(id)}/choose`, input)).share,
+  };
 
   async upload(data: Buffer, filename: string, mime: string): Promise<UploadResult> {
     const form = new FormData();

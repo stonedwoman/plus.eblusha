@@ -229,6 +229,8 @@ export interface ChatCommand<A = unknown> {
 export interface CharacterDirectory {
   /** Персонажи, которых видел сервер (имена ровно как в игре). */
   listKnownCharacters(): Promise<string[]>;
+  /** Кто в игре сейчас и с какого момента (мс; null — неизвестно). Таймер обещания: «уже в Valheim». */
+  online?(): Promise<Array<{ name: string; since: number | null }>>;
 }
 
 export interface CoreServices {
@@ -247,6 +249,15 @@ export interface CoreServices {
   notify(userId: string, text: string, opts?: { images?: OutgoingImage[] }): Promise<boolean>;
   /** Беседа по сохранённому разрешению (после перезапуска бота — дописать отчёт о долгой задаче). */
   conversation(ref: ConversationRef): ConversationHandle;
+  /**
+   * Таймеры обещаний (контракт rev 4; нет — старый сервер): идущие (без текстов) и «пришёл» по входу в игру
+   * (at — когда вошёл, detail — персонаж; только в журнал сервера). false — сервер не принял (вошёл раньше обещания,
+   * таймер закрыт).
+   */
+  promises?: {
+    active(): Promise<Array<{ id: string; conversationId: string; promiserId: string; startAt: string; deadlineAt: string }>>;
+    arrived(id: string, o: { at: string; detail: string }): Promise<boolean>;
+  };
 }
 
 export interface BotModule {

@@ -51,6 +51,8 @@ export interface VhPlayer {
   dungeon: boolean | null;
   location: string | null;
   sessionSec: number | null;
+  /** Когда вошёл в игру (мс; мод: since, иначе по sessionSec), null — неизвестно (данные карты). */
+  since: number | null;
   baseValue: number | null;
   equipment: Partial<Record<EquipSlot, EquipItem>> | null;
 }
@@ -332,6 +334,7 @@ function fromMod(p: import("./types").ModPlayer): VhPlayer {
     dungeon: p.dungeon ?? null,
     location: p.location ?? null,
     sessionSec: p.sessionSec ?? null,
+    since: p.since && Number.isFinite(Date.parse(p.since)) ? Date.parse(p.since) : typeof p.sessionSec === "number" ? Date.now() - p.sessionSec * 1000 : null,
     baseValue: p.baseValue ?? null,
     equipment: p.equipment ?? null,
   };
@@ -359,6 +362,7 @@ function fromFrame(p: import("./types").FramePlayer): VhPlayer {
     biomeRu: null,
     dungeon: null,
     location: null,
+    since: null,
     sessionSec: null,
     baseValue: null,
     equipment: null,

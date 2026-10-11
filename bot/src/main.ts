@@ -94,7 +94,10 @@ export async function startBot(cfg: BotConfig, log: Logger, opts: StartOptions =
   const jobs =
     opts.jobs ??
     new BullJobSource({ redisUrl: cfg.redisUrl, queueName: cfg.queueName, concurrency: cfg.queueConcurrency }, log.child({ c: "queue" }));
-  jobs.start((job) => bot.handleJob(job));
+  jobs.start(
+    (job) => bot.handleJob(job),
+    (signal) => bot.handleSignal(signal)
+  );
 
   return {
     bot,

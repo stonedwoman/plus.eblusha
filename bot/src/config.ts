@@ -99,6 +99,35 @@ export interface BotConfig {
   /** Часовой пояс для «сейчас» в подсказке модели. */
   timeZone: string;
   logLevel: "debug" | "info" | "warn" | "error";
+
+  /**
+   * «Подумай лучше» (решение владельца 2026-10-11, docs/bot-cards.md): повтор ответа самой мощной моделью.
+   * deepModel — claude-fable-5-1 (мышление всегда включено, effort high); недоступна (хранение данных организации,
+   * нет доступа, перегрузка) — deepFallbackModel (claude-opus-5-5, effort max). null — фича выключена (BOT_DEEP=off).
+   */
+  deepModel: string | null;
+  deepFallbackModel: string;
+  /** «Подумай лучше» на человека в сутки (UTC); владельцу — deepOwnerDaily. */
+  deepUserDaily: number;
+  deepOwnerDaily: number;
+  /** Жёсткий потолок одного «подумай лучше», $ (max_tokens и предел шагов инструментов — от него). */
+  deepMaxUsdPerAnswer: number;
+  /** Потолок «подумай лучше» за месяц (UTC), $ — внутри общего BOT_MONTHLY_BUDGET_USD. */
+  deepMonthlyUsd: number;
+  /** Шагов цикла инструментов на один глубокий ответ. */
+  deepMaxSteps: number;
+
+  /**
+   * «Поделиться перепиской» (docs/bot-cards.md): вспомогательная модель (заметки кусков, описания фото), пороги
+   * прямого режима и кусков (токены), фото на согласие и «глазами» на ответ, потолок цены одного чтения, $.
+   */
+  shareAuxModel: string;
+  shareDirectTokens: number;
+  shareChunkTokens: number;
+  shareMaxTokens: number;
+  shareMaxPhotos: number;
+  shareViewPhotos: number;
+  shareMaxUsd: number;
 }
 
 function str(env: NodeJS.ProcessEnv, key: string, def?: string): string {
@@ -179,6 +208,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BotConfig {
       .filter(Boolean),
     timeZone: str(env, "BOT_TIME_ZONE", "Europe/Moscow"),
     logLevel: level as BotConfig["logLevel"],
+    deepModel: bool(env, "BOT_DEEP", true) ? str(env, "BOT_DEEP_MODEL", "claude-fable-5-1") : null,
+    deepFallbackModel: str(env, "BOT_DEEP_FALLBACK_MODEL", "claude-opus-5-5"),
+    deepUserDaily: Math.floor(num(env, "BOT_DEEP_USER_DAILY", 5)),
+    deepOwnerDaily: Math.floor(num(env, "BOT_DEEP_OWNER_DAILY", 20)),
+    deepMaxUsdPerAnswer: num(env, "BOT_DEEP_MAX_USD_PER_ANSWER", 2),
+    deepMonthlyUsd: num(env, "BOT_DEEP_MONTHLY_USD", 40),
+    deepMaxSteps: Math.max(1, Math.floor(num(env, "BOT_DEEP_MAX_STEPS", 6))),
+    shareAuxModel: str(env, "BOT_SHARE_AUX_MODEL", "claude-haiku-5-5"),
+    shareDirectTokens: Math.max(1000, Math.floor(num(env, "BOT_SHARE_DIRECT_TOKENS", 100_000))),
+    shareChunkTokens: Math.max(2000, Math.floor(num(env, "BOT_SHARE_CHUNK_TOKENS", 60_000))),
+    shareMaxTokens: Math.max(1000, Math.floor(num(env, "BOT_SHARE_MAX_TOKENS", 1_500_000))),
+    shareMaxPhotos: Math.floor(num(env, "BOT_SHARE_MAX_PHOTOS", 60)),
+    shareViewPhotos: Math.floor(num(env, "BOT_SHARE_VIEW_PHOTOS", 4)),
+    shareMaxUsd: num(env, "BOT_SHARE_MAX_USD", 1),
   };
 }
 
@@ -206,5 +249,14 @@ export function describeConfig(c: BotConfig): Record<string, unknown> {
       summaryTokens: c.memorySummaryTokens,
       cacheTtl: c.memoryCacheTtl,
     },
+    deep: {
+      model: c.deepModel ?? "off",
+      fallback: c.deepFallbackModel,
+      userDaily: c.deepUserDaily,
+      ownerDaily: c.deepOwnerDaily,
+      maxUsd: c.deepMaxUsdPerAnswer,
+      monthlyUsd: c.deepMonthlyUsd,
+    },
+    share: { aux: c.shareAuxModel, directTokens: c.shareDirectTokens, maxTokens: c.shareMaxTokens, maxUsd: c.shareMaxUsd, photos: c.shareMaxPhotos },
   };
 }

@@ -173,6 +173,13 @@ export class Store {
         PRIMARY KEY (conversation_id, message_id)
       );
       CREATE INDEX IF NOT EXISTS memory_skip_at ON memory_skip(at);
+      CREATE TABLE IF NOT EXISTS promise_pending (
+        bot_message_id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        data_json TEXT NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
     `);
     // Таблица memory из ранней сборки этой ветки — без новых столбцов: добавить (уже есть — SQLite откажет, это норма).
     for (const col of ["fails INTEGER NOT NULL DEFAULT 0", "forgotten INTEGER NOT NULL DEFAULT 0", "forgotten_at TEXT", "seen_changes TEXT NOT NULL DEFAULT '[]'"]) {
@@ -460,6 +467,40 @@ export class Store {
     } catch {
       /* занято — в следующий раз */
     }
+  }
+
+  // ---------- ожидания таймера обещания (core/promises.ts): вопрос бота → чего он ждёт в ответ ----------
+  /** Запомнить, чего бот ждёт ответом на свой вопрос (кого контролируем / подтвердить время / во сколько). */
+  setPending(botMessageId: string, conversationId: string, kind: string, data: unknown, expiresAt: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO promise_pending (bot_message_id, conversation_id, kind, data_json, expires_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(bot_message_id) DO UPDATE SET kind = excluded.kind, data_json = excluded.data_json, expires_at = excluded.expires_at`
+      )
+      .run(botMessageId, conversationId, kind, JSON.stringify(data ?? null), expiresAt);
+    this.db.prepare(`DELETE FROM promise_pending WHERE expires_at < ?`).run(Date.now() - 3600_000);
+  }
+
+  /** Ожидание по вопросу бота (ещё живое) или null. take — забрать (удалить). */
+  getPending(botMessageId: string, now: number, take = false): { conversationId: string; kind: string; data: unknown } | null {
+    const r = this.db.prepare(`SELECT conversation_id, kind, data_json, expires_at FROM promise_pending WHERE bot_message_id = ?`).get(botMessageId) as
+      | { conversation_id: string; kind: string; data_json: string; expires_at: number }
+      | undefined;
+    if (!r || Number(r.expires_at) < now) return null;
+    if (take) this.db.prepare(`DELETE FROM promise_pending WHERE bot_message_id = ?`).run(botMessageId);
+    let data: unknown = null;
+    try {
+      data = JSON.parse(r.data_json);
+    } catch {
+      data = null;
+    }
+    return { conversationId: String(r.conversation_id), kind: String(r.kind), data };
+  }
+
+  /** Сумма расходов вида kind за месяц (например, «подумай лучше»). */
+  spentKindMonth(month: string, kind: string): number {
+    const r = this.db.prepare(`SELECT COALESCE(SUM(cost_usd), 0) AS s FROM usage WHERE month = ? AND kind = ?`).get(month, kind) as { s: number };
+    return Number(r.s) || 0;
   }
 
   // ---------- «уже говорил» ----------

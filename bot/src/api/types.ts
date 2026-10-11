@@ -62,6 +62,16 @@ export interface BotJobAttachment {
   metadata: Record<string, unknown> | null;
 }
 
+/** Пометки сообщения БОТА (rev 4): вид, обращение, карточка, согласие «поделиться перепиской», глубина. */
+export interface BotJobBotMeta {
+  kind: string;
+  triggerId?: string;
+  card?: { type: string; id: string; state: string };
+  shareId?: string;
+  promiseId?: string;
+  depth?: "deep";
+}
+
 export interface BotJobMessage {
   id: string;
   senderId: string;
@@ -72,6 +82,28 @@ export interface BotJobMessage {
   createdAt: string;
   replyToId: string | null;
   attachments: BotJobAttachment[];
+  /** Только у сообщений бота, сервер rev ≥ 4. */
+  bot?: BotJobBotMeta;
+}
+
+/** Идущий таймер обещания беседы (rev 4). */
+export interface BotJobPromise {
+  id: string;
+  promiserId: string;
+  promiserName: string | null;
+  requesterId: string;
+  cardMessageId: string | null;
+  startAt: string;
+  deadlineAt: string;
+}
+
+/** Продолжение после «Поделиться» (rev 4). */
+export interface BotJobShare {
+  id: string;
+  period: "today" | "week" | "all";
+  photos: boolean;
+  from: string | null;
+  until: string;
 }
 
 export interface BotJob {
@@ -89,16 +121,44 @@ export interface BotJob {
   message: BotJobMessage;
   /** Предки триггера по replyTo: от старшего к родителю триггера (без триггера). */
   chain: BotJobMessage[];
+  /** rev 4: идущие таймеры беседы. */
+  promises?: BotJobPromise[];
+  /** rev 4: продолжение после «Поделиться» — переписку этой беседы читать можно. */
+  share?: BotJobShare;
+}
+
+/** Сигнал без разрешения (rev 4): согласие закончилось — стереть переписку из памяти процесса. */
+export interface BotSignal {
+  type: "share.ended";
+  shareId: string;
+  conversationId: string;
+  reason: string;
 }
 
 /** Ревизия задачи, с которой у сервера есть POST /api/bot/history (память бота). */
 export const BOT_JOB_REV_MEMORY = 3;
+/** Ревизия задачи, с которой у сервера есть карточки: /api/bot/promises*, /api/bot/share*. */
+export const BOT_JOB_REV_CARDS = 4;
 
 const ATT_TYPES = new Set(["IMAGE", "VIDEO", "AUDIO", "FILE"]);
 const MSG_TYPES = new Set(["TEXT", "IMAGE", "VIDEO", "AUDIO", "FILE"]);
 const VIAS = new Set(["name", "command", "reply", "botchat", "explicit"]);
 const KINDS = new Set(["bot", "dm", "group"]);
 const str = (v: unknown): v is string => typeof v === "string" && v.length > 0;
+
+function parseBotMeta(v: unknown): BotJobBotMeta | undefined {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+  const b = v as Record<string, unknown>;
+  if (!str(b.kind)) return undefined;
+  const out: BotJobBotMeta = { kind: b.kind };
+  if (str(b.triggerId)) out.triggerId = b.triggerId;
+  if (str(b.shareId)) out.shareId = b.shareId;
+  if (str(b.promiseId)) out.promiseId = b.promiseId;
+  if (b.depth === "deep") out.depth = "deep";
+  const c = b.card as Record<string, unknown> | undefined;
+  if (c && typeof c === "object" && str(c.type) && str(c.id)) out.card = { type: c.type, id: c.id, state: typeof c.state === "string" ? c.state : "" };
+  return out;
+}
 
 function parseJobMessage(v: unknown): BotJobMessage | null {
   if (!v || typeof v !== "object") return null;
@@ -125,7 +185,43 @@ function parseJobMessage(v: unknown): BotJobMessage | null {
     createdAt: m.createdAt,
     replyToId: str(m.replyToId) ? m.replyToId : null,
     attachments: atts,
+    ...(m.isBot === true && parseBotMeta(m.bot) ? { bot: parseBotMeta(m.bot)! } : {}),
   };
+}
+
+function parsePromises(v: unknown): BotJobPromise[] {
+  const out: BotJobPromise[] = [];
+  for (const x of Array.isArray(v) ? v.slice(0, 10) : []) {
+    const p = x as Record<string, unknown>;
+    if (!p || !str(p.id) || !str(p.promiserId) || !str(p.requesterId) || !str(p.deadlineAt)) continue;
+    out.push({
+      id: p.id,
+      promiserId: p.promiserId,
+      promiserName: typeof p.promiserName === "string" ? p.promiserName : null,
+      requesterId: p.requesterId,
+      cardMessageId: str(p.cardMessageId) ? p.cardMessageId : null,
+      startAt: str(p.startAt) ? p.startAt : p.deadlineAt,
+      deadlineAt: p.deadlineAt,
+    });
+  }
+  return out;
+}
+
+function parseShare(v: unknown): BotJobShare | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const s = v as Record<string, unknown>;
+  if (!str(s.id) || !str(s.until) || (s.period !== "today" && s.period !== "week" && s.period !== "all")) return undefined;
+  return { id: s.id, period: s.period, photos: s.photos === true, from: str(s.from) ? s.from : null, until: s.until };
+}
+
+/** Сигнал (kind "signal") из очереди или null. */
+export function parseBotSignal(v: unknown): BotSignal | null {
+  if (!v || typeof v !== "object") return null;
+  const j = v as Record<string, unknown>;
+  if (j.v !== 1 || j.kind !== "signal") return null;
+  const s = j.signal as Record<string, unknown> | undefined;
+  if (!s || s.type !== "share.ended" || !str(s.shareId) || !str(s.conversationId)) return null;
+  return { type: "share.ended", shareId: s.shareId, conversationId: s.conversationId, reason: typeof s.reason === "string" ? s.reason : "" };
 }
 
 /** Проверить задачу из очереди (данные чужого процесса — доверяем только форме). null — мусор. */
@@ -163,6 +259,8 @@ export function parseBotJob(v: unknown): BotJob | null {
     author: { id: a.id, displayName: typeof a.displayName === "string" ? a.displayName : null },
     message,
     chain,
+    ...(rev >= BOT_JOB_REV_CARDS && Array.isArray(j.promises) ? { promises: parsePromises(j.promises) } : {}),
+    ...(rev >= BOT_JOB_REV_CARDS && parseShare(j.share) ? { share: parseShare(j.share)! } : {}),
   };
 }
 
@@ -176,6 +274,10 @@ export interface BotPostInput {
   content?: string;
   replyToId?: string;
   kind?: "answer" | "command" | "notice" | "confirm";
+  /** «Подумал лучше»: metadata.bot.depth = "deep" (сервер rev ≥ 4). */
+  depth?: "deep";
+  /** Модель, давшая ответ (для «Подумал лучше»). */
+  model?: string;
   attachments?: Array<{
     url: string;
     type: "IMAGE" | "FILE";
@@ -293,4 +395,113 @@ export interface UploadResult {
   url: string;
   path?: string;
   publicUrl?: string;
+}
+
+// ─────────────── Карточки бота (контракт rev 4, docs/bot-cards.md) ───────────────
+
+export type PromiseSpecInput =
+  | { kind: "in"; minSec: number; maxSec: number }
+  | { kind: "at"; hour: number; minute: number; half: "am" | "pm" | "unknown"; day: "today" | "tomorrow" | "nearest"; zone?: string }
+  | { kind: "none"; reason: "no_time" | "past" | "question" };
+
+/** Таймер (как его отдаёт сервер /api/bot/promises*). */
+export interface PromiseSummary {
+  id: string;
+  conversationId: string;
+  promiserId: string;
+  promiserName: string | null;
+  requesterId: string;
+  cardMessageId: string | null;
+  status: string;
+  label: string;
+  upperBound: boolean;
+  startAt: string;
+  deadlineAt: string;
+  originalDeadlineAt: string;
+  extensionCount: number;
+  zone: string;
+}
+
+export interface PromiseCandidate {
+  messageId: string;
+  senderId: string;
+  senderName: string | null;
+  text: string;
+  createdAt: string;
+  parsed: { deadlineAt: string; label: string; upperBound: boolean } | { ambiguous: true; deadlineAt: string; label: string | null };
+}
+
+export interface PunctualityStats {
+  userId: string;
+  displayName: string | null;
+  total: number;
+  onTime: number;
+  late: number;
+  unresolved: number;
+  cancelled: number;
+  onTimeRate: number | null;
+  avgDeltaSec: number | null;
+  avgLateSec: number | null;
+  medianDeltaSec: number | null;
+  worst: { deltaSec: number; at: string } | null;
+  best: { deltaSec: number; at: string } | null;
+  extensions: number;
+  timersExtended: number;
+  streakOnTime: number;
+}
+
+export type SharePeriod = "today" | "week" | "all";
+
+export interface SharePeriodEstimate {
+  period: SharePeriod;
+  from: string | null;
+  messages: number;
+  botMessages: number;
+  chars: number;
+  photos: number;
+  capped?: boolean;
+}
+
+export interface ShareEstimate {
+  conversationKind: "dm" | "group";
+  zone: string;
+  periods: SharePeriodEstimate[];
+  active: { shareId: string; period: string | null; photos: boolean; until: string | null } | null;
+  declinedAt: string | null;
+}
+
+export interface ShareInfo {
+  id: string;
+  status: string;
+  period: SharePeriod | null;
+  photos: boolean;
+  from: string | null;
+  until: string | null;
+  cardMessageId: string | null;
+  triggerMessageId: string;
+  answers: number;
+}
+
+export interface ShareMessage {
+  id: string;
+  at: string;
+  senderId: string;
+  senderName: string | null;
+  isBot: boolean;
+  kind: "text" | "photo" | "video" | "voice" | "file" | "call";
+  text: string | null;
+  replyTo: { id: string; senderName: string | null; text: string | null } | null;
+  edited: boolean;
+  forwarded: boolean;
+  reactions: Array<{ emoji: string; names: string[] }>;
+  photos?: Array<{ url: string; w: number | null; h: number | null }>;
+  meta: { durationSec?: number; fileName?: string; size?: number } | null;
+}
+
+export interface SharePage {
+  share: ShareInfo;
+  messages: ShareMessage[];
+  next: { at: string; id: string } | null;
+  changes: { deleted: string[]; edited: string[] };
+  checkedAt: number;
 }
