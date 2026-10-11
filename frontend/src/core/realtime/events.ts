@@ -56,6 +56,12 @@ export type MessageUpdatePayload = {
   messageId: string
   reason: string
   message?: any
+  /** reason "card": тип и конверт карточки бота (metadata.card), часы сервера (SPEC-share.md §2.4). */
+  cardType?: string
+  card?: unknown
+  /** reason "promise" (таймер до поправок SPEC-share.md §2.8): metadata.promise. */
+  promise?: unknown
+  serverNow?: string | number
 }
 
 export type ConversationTypingUpdatePayload = {

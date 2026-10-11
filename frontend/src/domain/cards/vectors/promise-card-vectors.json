@@ -1,0 +1,258 @@
+{
+  "version": 1,
+  "about": "Таймер обещания: данные карточки + now + зритель → что рисует карточка (SPEC.md §4.3, §10). Карточка случая = defaults.card, поверх — case.card (поле data сливается с defaults.card.data). Если у случая нет actions — берутся defaults.actionsByState[state]; closed = state !== 'running', если не задано. Зритель — id из people, пояс зрителя — case.zone ?? defaults.zone. names — свежие имена из кэша пользователей (resolveName). Сравниваются только поля из expect.",
+  "defaults": {
+    "zone": "Europe/Moscow",
+    "people": {
+      "roma": "Рома",
+      "vasya": "Козёл Ебаный",
+      "petya": "Петя",
+      "owner": "Владелец"
+    },
+    "card": {
+      "v": 1,
+      "type": "promise",
+      "id": "p1",
+      "rev": 1,
+      "state": "running",
+      "data": {
+        "promiser": { "id": "vasya", "displayName": "Козёл Ебаный", "avatarUrl": null },
+        "requester": { "id": "roma", "displayName": "Рома" },
+        "quote": { "messageId": "m1", "text": "15мин", "at": "2026-10-11T11:00:00.000Z", "by": null, "deleted": false },
+        "label": "15 мин",
+        "upperBound": false,
+        "startAt": "2026-10-11T11:00:00.000Z",
+        "deadlineAt": "2026-10-11T11:15:00.000Z",
+        "originalDeadlineAt": "2026-10-11T11:15:00.000Z",
+        "extensions": [],
+        "promiserZone": null,
+        "cancelBy": ["roma", "owner"],
+        "closedAt": null,
+        "outcome": null,
+        "cancelledBy": null,
+        "reminders": []
+      }
+    },
+    "actionsByState": {
+      "running": [
+        { "id": "arrived", "who": { "any": true }, "until": null },
+        { "id": "cancel", "who": { "ids": ["roma", "owner"] }, "until": null }
+      ],
+      "arrived": [],
+      "cancelled": [],
+      "unresolved": []
+    }
+  },
+  "cases": [
+    {
+      "name": "идёт: 12:47, у спросившего «Пришёл» и «Отменить»",
+      "now": "2026-10-11T11:02:13.000Z",
+      "viewer": "roma",
+      "expect": {
+        "view": "running",
+        "digits": "12:47",
+        "caption": "осталось",
+        "right": "до 14:15",
+        "label": "15 мин",
+        "buttons": ["arrived", "cancel"],
+        "requesterLine": "попросил Рома",
+        "promiserName": "Козёл Ебаный",
+        "quote": "«15мин»",
+        "promisedAt": "обещал в 14:00",
+        "localDeadline": null,
+        "extensions": null,
+        "digitsWide": false,
+        "a11yLabel": "Таймер: Козёл Ебаный обещал «15мин», до 14:15, осталось 12 минут"
+      }
+    },
+    { "name": "идёт: у участника только «Пришёл»", "now": "2026-10-11T11:02:13.000Z", "viewer": "petya", "expect": { "buttons": ["arrived"] } },
+    { "name": "идёт: обещавший может сам нажать «Пришёл»", "now": "2026-10-11T11:02:13.000Z", "viewer": "vasya", "expect": { "buttons": ["arrived"] } },
+    { "name": "идёт: владелец бота может отменить", "now": "2026-10-11T11:02:13.000Z", "viewer": "owner", "expect": { "buttons": ["arrived", "cancel"] } },
+    { "name": "отсчёт — ceil остатка (12:46.6 → 12:47)", "now": "2026-10-11T11:02:13.400Z", "viewer": "roma", "expect": { "digits": "12:47" } },
+    { "name": "последние 60 с: 00:42, янтарь", "now": "2026-10-11T11:14:18.000Z", "viewer": "roma", "expect": { "view": "final", "digits": "00:42", "caption": "последняя минута!", "right": "до 14:15" } },
+    { "name": "ровно за 60 с — уже последняя минута", "now": "2026-10-11T11:14:00.000Z", "viewer": "roma", "expect": { "view": "final", "digits": "01:00" } },
+    { "name": "за 61 с — ещё «идёт»", "now": "2026-10-11T11:13:59.000Z", "viewer": "roma", "expect": { "view": "running", "digits": "01:01" } },
+    { "name": "ровно в срок → «+00:00», не «00:00»", "now": "2026-10-11T11:15:00.000Z", "viewer": "roma", "expect": { "view": "late", "digits": "+00:00", "caption": "опаздывает", "right": "обещал к 14:15" } },
+    {
+      "name": "опаздывает +03:12",
+      "now": "2026-10-11T11:18:12.000Z",
+      "viewer": "petya",
+      "expect": { "view": "late", "digits": "+03:12", "buttons": ["arrived"], "a11yLabel": "Таймер: Козёл Ебаный обещал «15мин», до 14:15, опаздывает на 3 минуты" }
+    },
+    { "name": "опаздывает больше часа → +ч:мм:сс", "now": "2026-10-11T12:27:30.000Z", "viewer": "roma", "expect": { "view": "late", "digits": "+1:12:30" } },
+    {
+      "name": "срок ≥ 1 ч: сразу ч:мм:сс, верхняя граница в метке",
+      "card": { "data": { "deadlineAt": "2026-10-11T12:30:00.000Z", "label": "час-полтора → 1,5 ч", "upperBound": true, "quote": { "messageId": "m3", "text": "час-полтора и я ваш", "at": "2026-10-11T11:00:00.000Z" } } },
+      "now": "2026-10-11T11:17:13.000Z",
+      "viewer": "roma",
+      "expect": { "view": "running", "digits": "1:12:47", "digitsWide": true, "right": "до 15:30", "label": "час-полтора → 1,5 ч", "quote": "«час-полтора и я ваш»" }
+    },
+    {
+      "name": "срок ≥ 1 ч, осталось меньше часа: 0:59:00 (ширина не прыгает)",
+      "card": { "data": { "deadlineAt": "2026-10-11T12:30:00.000Z" } },
+      "now": "2026-10-11T11:31:00.000Z",
+      "viewer": "roma",
+      "expect": { "digits": "0:59:00" }
+    },
+    {
+      "name": "«по местному» — срок в поясе обещавшего, если смещение другое",
+      "card": { "data": { "promiserZone": "Asia/Krasnoyarsk" } },
+      "now": "2026-10-11T11:02:13.000Z",
+      "viewer": "roma",
+      "expect": { "localDeadline": "по местному 18:15", "right": "до 14:15" }
+    },
+    {
+      "name": "«по местному» нет, если у зрителя то же смещение",
+      "card": { "data": { "promiserZone": "Asia/Krasnoyarsk" } },
+      "now": "2026-10-11T11:02:13.000Z",
+      "viewer": "vasya",
+      "zone": "Asia/Krasnoyarsk",
+      "expect": { "localDeadline": null, "right": "до 18:15", "promisedAt": "обещал в 18:00" }
+    },
+    {
+      "name": "срок завтра: «до завтра, 02:00»",
+      "card": { "data": { "quote": { "messageId": "m4", "text": "к двум ночи буду", "at": "2026-10-11T19:50:00.000Z" }, "startAt": "2026-10-11T19:50:00.000Z", "deadlineAt": "2026-10-11T23:00:00.000Z" } },
+      "now": "2026-10-11T20:00:00.000Z",
+      "viewer": "roma",
+      "expect": { "right": "до завтра, 02:00", "digits": "3:00:00", "promisedAt": "обещал в 22:50" }
+    },
+    {
+      "name": "обещал вчера",
+      "card": { "data": { "quote": { "messageId": "m5", "text": "к 4 буду", "at": "2026-10-11T20:50:00.000Z" }, "startAt": "2026-10-11T20:50:00.000Z", "deadlineAt": "2026-10-12T01:00:00.000Z" } },
+      "now": "2026-10-12T00:30:00.000Z",
+      "viewer": "roma",
+      "expect": { "promisedAt": "обещал вчера в 23:50", "right": "до 04:00" }
+    },
+    {
+      "name": "пришёл вовремя: звонок",
+      "card": { "state": "arrived", "data": { "closedAt": "2026-10-11T11:12:00.000Z", "outcome": { "kind": "onTime", "arrivedAt": "2026-10-11T11:12:00.000Z", "deltaSec": -180, "deltaVsOriginalSec": -180, "via": "call", "by": null } } },
+      "now": "2026-10-11T11:30:00.000Z",
+      "viewer": "roma",
+      "expect": { "view": "onTime", "digits": "✓ 14:12", "result": "Пришёл вовремя, запас 3 мин", "resultSub": "зашёл в звонок", "right": "срок 14:15", "buttons": [], "a11yLabel": "Таймер: Козёл Ебаный обещал «15мин», до 14:15, пришёл вовремя, запас 3 мин" }
+    },
+    {
+      "name": "вовремя, запас меньше минуты, отметил Петя, «Вернуть» — Пете",
+      "card": {
+        "state": "arrived",
+        "actions": [{ "id": "reopen", "who": { "ids": ["petya", "roma", "owner"] }, "until": "2026-10-11T11:16:40.000Z" }],
+        "data": { "outcome": { "kind": "onTime", "arrivedAt": "2026-10-11T11:14:40.000Z", "deltaSec": -20, "deltaVsOriginalSec": -20, "via": "button", "by": { "id": "petya", "displayName": "Петя" } } }
+      },
+      "now": "2026-10-11T11:15:00.000Z",
+      "viewer": "petya",
+      "expect": { "view": "onTime", "result": "Пришёл вовремя, запас меньше минуты", "resultSub": "отметил Петя", "buttons": ["reopen"] }
+    },
+    {
+      "name": "«Вернуть» пропадает после until",
+      "card": {
+        "state": "arrived",
+        "actions": [{ "id": "reopen", "who": { "ids": ["petya", "roma", "owner"] }, "until": "2026-10-11T11:16:40.000Z" }],
+        "data": { "outcome": { "kind": "onTime", "arrivedAt": "2026-10-11T11:14:40.000Z", "deltaSec": -20, "via": "button", "by": { "id": "petya", "displayName": "Петя" } } }
+      },
+      "now": "2026-10-11T11:16:40.000Z",
+      "viewer": "petya",
+      "expect": { "buttons": [] }
+    },
+    {
+      "name": "секунда в секунду, отметил сам",
+      "card": { "state": "arrived", "data": { "outcome": { "kind": "onTime", "arrivedAt": "2026-10-11T11:15:00.000Z", "deltaSec": 0, "via": "self", "by": null } } },
+      "now": "2026-10-11T11:16:00.000Z",
+      "viewer": "roma",
+      "expect": { "result": "Секунда в секунду", "resultSub": "отметил сам", "digits": "✓ 14:15" }
+    },
+    {
+      "name": "опоздал: Valheim, продлевал, от первого срока",
+      "card": {
+        "state": "arrived",
+        "data": {
+          "originalDeadlineAt": "2026-10-11T11:05:00.000Z",
+          "extensions": [{ "at": "2026-10-11T11:03:00.000Z", "from": "2026-10-11T11:05:00.000Z", "to": "2026-10-11T11:15:00.000Z", "label": "ещё 10 мин" }],
+          "extensionCount": 1,
+          "outcome": { "kind": "late", "arrivedAt": "2026-10-11T11:22:00.000Z", "deltaSec": 420, "deltaVsOriginalSec": 1020, "via": "valheim", "by": null }
+        }
+      },
+      "now": "2026-10-11T11:30:00.000Z",
+      "viewer": "roma",
+      "expect": {
+        "view": "lateArrived",
+        "digits": "+7 мин",
+        "result": "Опоздал на 7 мин",
+        "resultSub": "зашёл в Valheim · продлевал 1 раз · от первого срока +17 мин",
+        "extensions": "продлевал 1 раз",
+        "right": "срок 14:15"
+      }
+    },
+    {
+      "name": "опоздал на 42 с",
+      "card": { "state": "arrived", "data": { "outcome": { "kind": "late", "arrivedAt": "2026-10-11T11:15:42.000Z", "deltaSec": 42, "via": "call", "by": null } } },
+      "now": "2026-10-11T11:20:00.000Z",
+      "viewer": "roma",
+      "expect": { "digits": "+42 с", "result": "Опоздал на 42 с" }
+    },
+    {
+      "name": "опоздал на 1 ч 12 мин",
+      "card": { "state": "arrived", "data": { "outcome": { "kind": "late", "arrivedAt": "2026-10-11T12:27:00.000Z", "deltaSec": 4320, "via": "phrase", "by": { "id": "roma", "displayName": "Рома" } } } },
+      "now": "2026-10-11T12:30:00.000Z",
+      "viewer": "roma",
+      "expect": { "digits": "+1 ч 12 мин", "result": "Опоздал на 1 ч 12 мин", "resultSub": "отметил Рома" }
+    },
+    {
+      "name": "отменён: «Вернуть» у отменившего",
+      "card": {
+        "state": "cancelled",
+        "actions": [{ "id": "reopen", "who": { "ids": ["roma", "owner"] }, "until": "2026-10-11T11:07:00.000Z" }],
+        "data": { "closedAt": "2026-10-11T11:05:00.000Z", "cancelledBy": { "id": "roma", "displayName": "Рома" } }
+      },
+      "now": "2026-10-11T11:05:10.000Z",
+      "viewer": "roma",
+      "expect": { "view": "cancelled", "digits": "—", "caption": "Таймер отменён · отменил Рома", "right": "срок был 14:15", "buttons": ["reopen"], "a11yLabel": "Таймер: Козёл Ебаный обещал «15мин», до 14:15, таймер отменён" }
+    },
+    {
+      "name": "отменён: у участника «Вернуть» нет",
+      "card": {
+        "state": "cancelled",
+        "actions": [{ "id": "reopen", "who": { "ids": ["roma", "owner"] }, "until": "2026-10-11T11:07:00.000Z" }],
+        "data": { "cancelledBy": { "id": "roma", "displayName": "Рома" } }
+      },
+      "now": "2026-10-11T11:05:10.000Z",
+      "viewer": "petya",
+      "expect": { "buttons": [] }
+    },
+    {
+      "name": "никто не отметил",
+      "card": { "state": "unresolved", "data": { "closedAt": "2026-10-11T17:15:00.000Z" } },
+      "now": "2026-10-11T17:20:00.000Z",
+      "viewer": "roma",
+      "expect": { "view": "unresolved", "digits": "?", "caption": "Никто не отметил приход", "right": "срок был 14:15", "buttons": [] }
+    },
+    {
+      "name": "обещание удалено",
+      "card": { "data": { "quote": { "messageId": "m1", "text": null, "at": "2026-10-11T11:00:00.000Z", "deleted": true } } },
+      "now": "2026-10-11T11:02:13.000Z",
+      "viewer": "roma",
+      "expect": { "quote": "(сообщение удалено)", "a11yLabel": "Таймер: Козёл Ебаный, обещание удалено, до 14:15, осталось 12 минут" }
+    },
+    {
+      "name": "цитата со слов спросившего (имя не склоняем)",
+      "card": { "data": { "quote": { "messageId": "m6", "text": "проследи, чтобы Вася был к девяти", "at": "2026-10-11T11:00:00.000Z", "by": { "id": "roma", "displayName": "Рома" } } } },
+      "now": "2026-10-11T11:02:13.000Z",
+      "viewer": "petya",
+      "expect": { "quoteBy": "со слов: Рома" }
+    },
+    { "name": "продлевал 2 раза", "card": { "data": { "extensionCount": 2 } }, "now": "2026-10-11T11:02:13.000Z", "viewer": "roma", "expect": { "extensions": "продлевал 2 раза" } },
+    { "name": "продлевал 5 раз", "card": { "data": { "extensionCount": 5 } }, "now": "2026-10-11T11:02:13.000Z", "viewer": "roma", "expect": { "extensions": "продлевал 5 раз" } },
+    {
+      "name": "имя и аватар — свежие из кэша, снимок — запасной",
+      "names": { "vasya": "Вася", "roma": "Роман" },
+      "now": "2026-10-11T11:02:13.000Z",
+      "viewer": "petya",
+      "expect": { "promiserName": "Вася", "requesterLine": "попросил Роман" }
+    },
+    {
+      "name": "закрытая карточка: «Пришёл» не показываем, даже если действие осталось",
+      "card": { "state": "arrived", "closed": true, "actions": [{ "id": "arrived", "who": { "any": true }, "until": null }], "data": { "outcome": { "kind": "onTime", "arrivedAt": "2026-10-11T11:10:00.000Z", "deltaSec": -300, "via": "call" } } },
+      "now": "2026-10-11T11:12:00.000Z",
+      "viewer": "roma",
+      "expect": { "buttons": [], "result": "Пришёл вовремя, запас 5 мин" }
+    }
+  ]
+}

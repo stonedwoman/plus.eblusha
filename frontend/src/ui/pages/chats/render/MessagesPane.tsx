@@ -65,7 +65,7 @@ import { formatReplyBundleHeader, formatForwardSourcePhraseAfterName, renderSyst
 
 import { renderChatMessageAtIndex as extractedRenderChatMessageAtIndex } from './ChatMessageRow'
 import { BotAskChip, isCaretAtEditorStart } from '../../../components/bot/BotUi'
-import { botClarifyTarget, canDeleteMessageForAll, isBotConfirmAnswered, isBotMessage, isBotUser, withBotAskMeta, type BotAskState, type SystemBotInfo } from '../../../../domain/bot/systemBot'
+import { botClarifyTarget, botThinkBetterTarget, canDeleteMessageForAll, isBotConfirmAnswered, isBotMessage, isBotUser, withBotAskMeta, type BotAskState, type SystemBotInfo } from '../../../../domain/bot/systemBot'
 
 export interface MessagesPaneCtx {
   // ── Бот «Еблуша» (docs/bot-system.md) ──
@@ -83,6 +83,8 @@ export interface MessagesPaneCtx {
   startBotClarify: (msg: any) => void
   sendBotConfirmAnswer: (msg: any, answer: 'да' | 'нет') => void
   botConfirmBusyId: string | null
+  sendBotThinkBetter: (msg: any) => void
+  botThinkBusyId: string | null
   typingNameFor: (userId: string) => string | null
   acceptSecretInvite: any
   activeCalls: any
@@ -272,7 +274,7 @@ function sortedActiveMessages(displayedMessages: any): any[] {
 }
 
 export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
-  const { botId, systemBot, botAsk, setBotAskDismissed, syncBotAskPrefix, getBotAskSendMeta, activeIsBotChat, botSecretRefusalText, startBotClarify, sendBotConfirmAnswer, botConfirmBusyId, typingNameFor } = ctx
+  const { botId, systemBot, botAsk, setBotAskDismissed, syncBotAskPrefix, getBotAskSendMeta, activeIsBotChat, botSecretRefusalText, startBotClarify, sendBotConfirmAnswer, botConfirmBusyId, sendBotThinkBetter, botThinkBusyId, typingNameFor } = ctx
   const { acceptSecretInvite, activeCalls, activeConversation, activeId, activePendingMessages, activeSecretQueuedCount, activeSecretUiState, addComposerFile, addComposerImage, applyComposerImageEdit, applyComposerSelectionFormat, applyWysiwygFormat, attachCanceling, attachDragDepthRef, attachDragOver, attachInputRef, attachProcessingMessageIndex, attachProgress, attachUploadSpeed, attachUploadState, attachUploading, attachmentDecryptMap, attachmentHeadInfoMap, avatarPresenceForUser, backToList, beginOutgoingCallGuard, callConvId, callPermissionError, callStore, cancelActiveAttachUpload, cancelEdit, cancelSecretInviteAsCreator, cancelVoiceRecording, clearMessageMultiSelect, client, closeComposerSelectionToolbar, composerBarRef, composerEditorRef, composerEmpty, composerFocused, composerSelectionAnchor, composerSelectionFmt, composerSelectionToolbarRef, composerSelectionToolbarStyle, contactsQuery, conversationsQuery, creatorAwaitPeerAccept, currentUserId, declineSecretInvite, deviceLinkInviteOpen, displayedMessages, editBusy, editState, editingImage, editingImageId, effectiveUserStatus, endSecretModalOpen, eventHasFiles, executeForwardPayloadDelivery, failedImages, formatDuration, formatPresence, forwardComposerDraft, getComposerValue, getSelectedMessagesOrdered, groupIncomingBubbleBg, handleChatDropFiles, hasAnySecretThreadKeys, hasOtherTrustedDevice, hashToGray, insertPlainTextIntoComposer, insertMarkdownIntoComposer, isMobile, isNarrowHeaderButtons, leftAlignAll, loadedImages, loadOlderMessages, me, messagesContentRef, messagesRef, virtuosoRef, virtuosoBaseRef, virtuosoRowsRef, minimizedCallConvId, multiSelectMode, nameColorForUser, nearBottomRef, nodesByMessageId, notifyTyping, olderLoading, openUserCard, outgoingCall, outgoingCallTimerRef, pendingFiles, pendingImages, playEndCallSound, presenceGameByUserId, releasePreviewUrl, removeComposerFile, removeComposerImage, replyTo, requireMediaAccess, resizeComposer, resolveAttachmentUrl, resolveFirstImageAttachmentUrl, secretBootDonePulse, secretComposerInlineError, secretEngineV2Enabled, secretInviteBusy, secretInviteForMe, secretWaitingAsCreator, selectedMessageIds, sendMessageToConversation, setActiveCalls, setActiveId, setAttachDragOver, setAvailabilityContext, setCallConvId, setCallPermissionError, setComposerEmpty, setComposerFocused, setComposerValue, setContextMenu, setDeviceLinkInviteOpen, setEditBusy, setEditState, setEditingImageId, setEndSecretModalOpen, setFailedImages, setForwardComposerDraft, setForwardModal, setGroupAvatarEditor, setHeaderMenu, setLightbox, setLinkDeviceModalOpen, setLoadedImages, setMinimizedCallConvId, setOutgoingCall, setPendingFiles, setPendingImages, setReplyTo, setShowJump, setVideoViewer, showJump, startDialingSound, startEdit, startVoiceRecording, stopDialingSound, stopTyping, stopVoiceRecording, toggleMessageMultiSelect, typingByUserId, updateComposerSelectionToolbar, uploadAndSendAttachments, userStickyScrollRef, usersById, visibleObserver, voiceDuration, voiceRecording, voiceWaveform, waveformContainerRef, waveformMaxBars } = ctx
     const sectionClass = mobile ? 'messages-pane slider-panel' : 'messages-pane'
     return (
@@ -1957,7 +1959,7 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                     </div>
                   )
                 }
-                const chatMessageRowCtx = { botId, botProfile: systemBot?.bot ?? null, activeIsBotChat, startBotClarify, sendBotConfirmAnswer, botConfirmBusyId, activeConversation, activeId, attachmentDecryptMap, attachmentHeadInfoMap, client, currentUserId, failedImages, fullList, groupIncomingBubbleBg, hashToGray, isMobile, leftAlignAll, loadedImages, me, messagesRef, multiSelectMode, nameColorForUser, nearBottomRef, nodesByMessageId, openUserCard, replyQuoteVisual, resolveAttachmentUrl, selectedMessageIds, setContextMenu, setFailedImages, setLightbox, setLoadedImages, setVideoViewer, toggleMessageMultiSelect, usersById, virtuosoRef, visibleObserver }
+                const chatMessageRowCtx = { botId, botProfile: systemBot?.bot ?? null, activeIsBotChat, startBotClarify, sendBotConfirmAnswer, botConfirmBusyId, sendBotThinkBetter, botThinkBusyId, activeConversation, activeId, attachmentDecryptMap, attachmentHeadInfoMap, client, currentUserId, failedImages, fullList, groupIncomingBubbleBg, hashToGray, isMobile, leftAlignAll, loadedImages, me, messagesRef, multiSelectMode, nameColorForUser, nearBottomRef, nodesByMessageId, openUserCard, replyQuoteVisual, resolveAttachmentUrl, selectedMessageIds, setContextMenu, setFailedImages, setLightbox, setLoadedImages, setVideoViewer, toggleMessageMultiSelect, usersById, virtuosoRef, visibleObserver }
                 const renderChatMessageAtIndex = (
                   rowIndex: number,
                   forwardBundleInner?: boolean,
@@ -2590,13 +2592,15 @@ export function renderMessagesPane(mobile: boolean, ctx: MessagesPaneCtx) {
                   }
                   return s
                 })()
-                // Кнопки под сообщением бота зависят от СОСЕДНИХ сообщений: «Уточнить» — только под
-                // последней частью ответа (и указывает на первую), «Да/Нет» — пока на вопрос не ответили.
+                // Кнопки под сообщением бота зависят от СОСЕДНИХ сообщений: «Уточнить» и «Подумай лучше» —
+                // только под последней частью ответа (и указывают на первую; «Подумай лучше» пропадает, когда я
+                // уже попросил), «Да/Нет» — пока на вопрос не ответили.
                 const __botRowSig = (mi: number): string => {
                   const m = fullList[mi]
                   if (!isBotMessage(m, botId)) return ''
                   const target = botClarifyTarget(fullList, mi, botId)
-                  return `${target?.id ?? '-'}|${isBotConfirmAnswered(fullList, mi, currentUserId) ? 1 : 0}|${botConfirmBusyId === String(m?.id) ? 1 : 0}`
+                  const think = botThinkBetterTarget(fullList, mi, botId, currentUserId != null ? String(currentUserId) : null)
+                  return `${target?.id ?? '-'}|${think?.id ?? '-'}|${isBotConfirmAnswered(fullList, mi, currentUserId) ? 1 : 0}|${botConfirmBusyId === String(m?.id) ? 1 : 0}|${think && botThinkBusyId === String(think.id) ? 1 : 0}`
                 }
                 const buildRowDeps = (mi: number): unknown[] | null => {
                   const m = fullList[mi]

@@ -1,0 +1,247 @@
+{
+  "version": 1,
+  "about": "«Поделиться перепиской»: данные карточки + now + зритель (+ его несохранённый выбор local) → что рисует карточка (SPEC-share.md §6, §13). Карточка случая = defaults.card, поверх — case.card (data сливается с defaults.card.data). Нет actions — берутся defaults.actionsByState[state]; closed = state не pending/granted, если не задано. lines — строки текста карточки (жирное без разметки), числа — с неразрывным пробелом. Сравниваются только поля из expect.",
+  "defaults": {
+    "zone": "Europe/Moscow",
+    "now": "2026-10-11T11:02:00.000Z",
+    "people": { "roma": "Рома", "petya": "Петя" },
+    "card": {
+      "v": 1,
+      "type": "share",
+      "id": "s1",
+      "rev": 1,
+      "state": "pending",
+      "data": {
+        "asker": { "id": "roma", "displayName": "Рома" },
+        "suggest": { "period": "today", "photos": false },
+        "options": [
+          { "period": "today", "messages": 34, "photos": 3, "enabled": true },
+          { "period": "week", "messages": 128, "photos": 18, "enabled": true },
+          { "period": "all", "messages": 1738, "photos": 337, "photosUsed": 60, "enabled": true, "capped": false }
+        ],
+        "note": null,
+        "choice": null,
+        "until": null,
+        "answerMessageId": null,
+        "read": null,
+        "endedBy": null
+      }
+    },
+    "actionsByState": {
+      "pending": [
+        { "id": "share", "who": { "ids": ["roma"] }, "until": "2026-10-11T11:30:00.000Z" },
+        { "id": "decline", "who": { "ids": ["roma"] }, "until": "2026-10-11T11:30:00.000Z" }
+      ],
+      "granted": [{ "id": "forget", "who": { "any": true }, "until": "2026-10-11T12:00:00.000Z" }],
+      "declined": [],
+      "expired": [],
+      "revoked": [],
+      "ended": []
+    }
+  },
+  "cases": [
+    {
+      "name": "ожидает — спросивший, по умолчанию подсказка «Сегодня»",
+      "viewer": "roma",
+      "expect": {
+        "mode": "choose",
+        "lines": ["Чтобы ответить, мне нужно почитать переписку этой беседы. Поделиться?"],
+        "chips": [
+          { "period": "today", "label": "Сегодня", "sub": "34 сообщ.", "aria": "Сегодня, 34 сообщения", "enabled": true, "selected": true },
+          { "period": "week", "label": "Эта неделя", "sub": "128 сообщ.", "aria": "Эта неделя, 128 сообщений", "enabled": true, "selected": false },
+          { "period": "all", "label": "Всё время", "sub": "1 738 сообщ.", "aria": "Всё время, 1 738 сообщений", "enabled": true, "selected": false }
+        ],
+        "photos": { "checked": false, "disabled": false, "note": "(3)", "aria": "Включать фото, 3 фото" },
+        "shareAria": "Поделиться перепиской за сегодня",
+        "canShare": true,
+        "canDecline": true,
+        "note": null,
+        "input": { "period": "today", "photos": false }
+      }
+    },
+    {
+      "name": "выбор «Эта неделя» + фото",
+      "viewer": "roma",
+      "local": { "period": "week", "photos": true },
+      "expect": { "selected": "week", "photos": { "checked": true, "disabled": false, "note": "(18)", "aria": "Включать фото, 18 фото" }, "shareAria": "Поделиться перепиской за эту неделю", "input": { "period": "week", "photos": true } }
+    },
+    {
+      "name": "«Всё время»: 60 последних из 337 фото",
+      "viewer": "roma",
+      "local": { "period": "all", "photos": true },
+      "expect": { "selected": "all", "photos": { "checked": true, "disabled": false, "note": "(60 последних из 337)", "aria": "Включать фото, 60 фото" }, "input": { "period": "all", "photos": true } }
+    },
+    {
+      "name": "подсказка бота — неделя «с фото»: галка всё равно выключена (фото включает человек, решение владельца)",
+      "viewer": "roma",
+      "card": { "data": { "suggest": { "period": "week", "photos": true } } },
+      "expect": { "selected": "week", "photos": { "checked": false }, "input": { "period": "week", "photos": false } }
+    },
+    {
+      "name": "подсказка «Сегодня» пустая → следующий непустой; без фото — галка недоступна",
+      "viewer": "roma",
+      "local": { "photos": true },
+      "card": {
+        "data": {
+          "options": [
+            { "period": "today", "messages": 0, "photos": 0, "enabled": false },
+            { "period": "week", "messages": 12, "photos": 0, "enabled": true },
+            { "period": "all", "messages": 492, "photos": 41, "enabled": true }
+          ]
+        }
+      },
+      "expect": {
+        "selected": "week",
+        "chips": [
+          { "period": "today", "sub": "0 сообщ.", "aria": "Сегодня, недоступно: нет сообщений", "enabled": false, "selected": false },
+          { "period": "week", "sub": "12 сообщ.", "aria": "Эта неделя, 12 сообщений", "enabled": true, "selected": true },
+          { "period": "all", "sub": "492 сообщ.", "enabled": true, "selected": false }
+        ],
+        "photos": { "checked": false, "disabled": true, "note": "(нет фото)", "aria": "Включать фото, нет фото" },
+        "input": { "period": "week", "photos": false }
+      }
+    },
+    {
+      "name": "неподъёмно: «Всё время» погашено, плашка",
+      "viewer": "roma",
+      "card": {
+        "data": {
+          "note": "too_big",
+          "suggest": { "period": "week", "photos": true },
+          "options": [
+            { "period": "today", "messages": 34, "photos": 3, "enabled": true },
+            { "period": "week", "messages": 128, "photos": 18, "enabled": true },
+            { "period": "all", "messages": 1738, "photos": 337, "photosUsed": 60, "enabled": false, "off": "too_big" }
+          ]
+        }
+      },
+      "local": { "period": "all" },
+      "expect": {
+        "note": "За всё время выходит слишком много для моего лимита. Выбери период поменьше.",
+        "selected": "week",
+        "chips": [
+          { "period": "today", "enabled": true },
+          { "period": "week", "enabled": true, "selected": true },
+          { "period": "all", "sub": "слишком много", "aria": "Всё время, недоступно: слишком много", "enabled": false, "selected": false }
+        ]
+      }
+    },
+    {
+      "name": "лимит на сегодня",
+      "viewer": "roma",
+      "card": {
+        "data": {
+          "options": [
+            { "period": "today", "messages": 34, "photos": 3, "enabled": true },
+            { "period": "week", "messages": 128, "photos": 18, "enabled": false, "off": "budget" },
+            { "period": "all", "messages": 1738, "photos": 337, "enabled": false, "off": "budget" }
+          ]
+        }
+      },
+      "expect": { "chips": [{ "period": "today", "enabled": true }, { "period": "week", "sub": "лимит на сегодня", "aria": "Эта неделя, недоступно: лимит на сегодня", "enabled": false }, { "period": "all", "sub": "лимит на сегодня", "enabled": false }] }
+    },
+    {
+      "name": "ожидает — у остальных: решает спросивший (имя не склоняем)",
+      "viewer": "petya",
+      "expect": {
+        "mode": "waiting",
+        "lines": ["Еблуша просит разрешения почитать переписку этой беседы, чтобы ответить.", "Решает Рома · ждём ещё 28 мин"],
+        "canShare": false,
+        "canDecline": false,
+        "canForget": false
+      }
+    },
+    {
+      "name": "ожидает — минуты вверх (27,5 мин → 28)",
+      "viewer": "petya",
+      "now": "2026-10-11T11:02:30.000Z",
+      "expect": { "lines": ["Еблуша просит разрешения почитать переписку этой беседы, чтобы ответить.", "Решает Рома · ждём ещё 28 мин"] }
+    },
+    {
+      "name": "ожидает — у спросившего время вышло (сервер ещё не закрыл)",
+      "viewer": "roma",
+      "now": "2026-10-11T11:31:00.000Z",
+      "expect": { "mode": "waiting", "lines": ["Еблуша просит разрешения почитать переписку этой беседы, чтобы ответить.", "Решает Рома · время на выбор вышло"] }
+    },
+    {
+      "name": "дано, читаю — у всех, «Забыть» любому",
+      "viewer": "petya",
+      "card": { "state": "granted", "data": { "choice": { "period": "today", "photos": true, "by": { "id": "roma", "displayName": "Рома" }, "at": "2026-10-11T11:01:00.000Z" }, "until": "2026-10-11T12:00:00.000Z" } },
+      "expect": { "mode": "reading", "lines": ["✓ Рома поделился перепиской за сегодня, с фото", "Читаю: 34 сообщения и 3 фото"], "canForget": true, "readingDots": true, "answer": null }
+    },
+    {
+      "name": "дано, читаю: всё время с фото — фото не больше 60",
+      "viewer": "roma",
+      "card": { "state": "granted", "data": { "choice": { "period": "all", "photos": true }, "until": "2026-10-11T12:00:00.000Z" } },
+      "expect": { "lines": ["✓ Рома поделился перепиской за всё время, с фото", "Читаю: 1 738 сообщений и 60 фото"] }
+    },
+    {
+      "name": "дано, ответ есть: «Ответ ниже ↓ · доступ ещё 42 мин»",
+      "viewer": "roma",
+      "card": {
+        "state": "granted",
+        "actions": [{ "id": "forget", "who": { "any": true }, "until": "2026-10-11T11:44:00.000Z" }],
+        "data": { "choice": { "period": "today", "photos": true }, "until": "2026-10-11T11:44:00.000Z", "answerMessageId": "a1", "read": { "messages": 34, "photos": 3 } }
+      },
+      "expect": { "mode": "answered", "lines": ["✓ Рома поделился перепиской за сегодня, с фото", "Прочитал 34 сообщения и 3 фото."], "answer": { "messageId": "a1", "tail": " · доступ ещё 42 мин" }, "canForget": true }
+    },
+    {
+      "name": "ответ есть, без фото",
+      "viewer": "petya",
+      "card": { "state": "granted", "data": { "choice": { "period": "week", "photos": false }, "until": "2026-10-11T11:44:00.000Z", "answerMessageId": "a1", "read": { "messages": 128, "photos": 0 } } },
+      "expect": { "lines": ["✓ Рома поделился перепиской за эту неделю", "Прочитал 128 сообщений."] }
+    },
+    {
+      "name": "доступ закончился (время зрителя)",
+      "viewer": "petya",
+      "now": "2026-10-11T12:00:00.000Z",
+      "card": { "state": "ended", "data": { "choice": { "period": "week", "photos": false }, "endedBy": { "reason": "ended", "by": null, "at": "2026-10-11T11:55:00.000Z" }, "read": { "messages": 128, "photos": 0 } } },
+      "expect": { "mode": "final", "closed": true, "lines": ["Рома делился перепиской за эту неделю. Доступ закончился в 14:55."], "canForget": false }
+    },
+    {
+      "name": "доступ закончился, с фото; зритель в Красноярске",
+      "viewer": "roma",
+      "zone": "Asia/Krasnoyarsk",
+      "now": "2026-10-11T12:20:00.000Z",
+      "card": { "state": "ended", "data": { "choice": { "period": "today", "photos": true }, "endedBy": { "reason": "ended", "by": null, "at": "2026-10-11T12:12:00.000Z" } } },
+      "expect": { "lines": ["Рома делился перепиской за сегодня, с фото. Доступ закончился в 19:12."] }
+    },
+    { "name": "отказ", "viewer": "petya", "card": { "state": "declined", "data": { "endedBy": { "reason": "declined", "by": { "id": "roma", "displayName": "Рома" }, "at": "2026-10-11T11:03:00.000Z" } } }, "expect": { "mode": "final", "lines": ["Рома не стал делиться перепиской."] } },
+    { "name": "не ответил", "viewer": "petya", "card": { "state": "expired", "data": { "endedBy": { "reason": "expired", "by": null, "at": "2026-10-11T11:30:00.000Z" } } }, "expect": { "lines": ["Рома не ответил — переписку не читаю."] } },
+    { "name": "вопрос удалили", "viewer": "roma", "card": { "state": "expired", "data": { "endedBy": { "reason": "question_deleted", "by": null } } }, "expect": { "lines": ["Вопрос удалили — переписку не читаю."] } },
+    { "name": "спросивший вышел из беседы (ожидание)", "viewer": "petya", "card": { "state": "expired", "data": { "endedBy": { "reason": "asker_left", "by": null } } }, "expect": { "lines": ["Рома вышел из беседы — переписку не читаю."] } },
+    { "name": "вопрос сменился", "viewer": "roma", "card": { "state": "expired", "data": { "endedBy": { "reason": "replaced", "by": null } } }, "expect": { "lines": ["Вопрос сменился — по этой карточке переписку не читаю."] } },
+    {
+      "name": "забыта по просьбе другого",
+      "viewer": "roma",
+      "card": { "state": "revoked", "data": { "choice": { "period": "all", "photos": false }, "endedBy": { "reason": "revoked", "by": { "id": "petya", "displayName": "Петя" }, "at": "2026-10-11T11:10:00.000Z" } } },
+      "expect": { "lines": ["Переписка забыта · попросил Петя."], "canForget": false }
+    },
+    {
+      "name": "спросивший забрал разрешение",
+      "viewer": "petya",
+      "card": { "state": "revoked", "data": { "choice": { "period": "today", "photos": false }, "endedBy": { "reason": "revoked", "by": { "id": "roma", "displayName": "Рома" } } } },
+      "expect": { "lines": ["Рома забрал разрешение."] }
+    },
+    {
+      "name": "склонение чисел в именах для скринридера",
+      "viewer": "roma",
+      "card": {
+        "data": {
+          "options": [
+            { "period": "today", "messages": 1, "photos": 0, "enabled": true },
+            { "period": "week", "messages": 21, "photos": 0, "enabled": true },
+            { "period": "all", "messages": 11, "photos": 0, "enabled": true }
+          ]
+        }
+      },
+      "expect": { "chips": [{ "aria": "Сегодня, 1 сообщение" }, { "aria": "Эта неделя, 21 сообщение" }, { "aria": "Всё время, 11 сообщений" }] }
+    },
+    {
+      "name": "имя спросившего — свежее из кэша",
+      "viewer": "petya",
+      "names": { "roma": "Роман" },
+      "expect": { "lines": ["Еблуша просит разрешения почитать переписку этой беседы, чтобы ответить.", "Решает Роман · ждём ещё 28 мин"] }
+    }
+  ]
+}

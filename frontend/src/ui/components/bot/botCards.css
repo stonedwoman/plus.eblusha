@@ -1,0 +1,136 @@
+/*
+ * Карточки бота — общее (SPEC-share.md §2, эталоны scratchpad/promise-timer/mock*.html).
+ * Карточка живёт внутри пузыря бота (.msg-bubble--bot: тёплый фон #221c19 и оранжевая полоса слева).
+ * Таймер — promiseCard.css, «поделиться перепиской» — shareCard.css.
+ */
+
+.eb-card {
+  position: relative;
+  max-width: 100%;
+  container-type: inline-size;
+  color: var(--text-primary, #f1f3f6);
+  font-size: 14px;
+  line-height: 1.4;
+  text-align: left;
+}
+.eb-card:focus {
+  outline: none;
+}
+.eb-card:focus-visible {
+  outline: 2px solid #f08a5d;
+  outline-offset: 4px;
+  border-radius: 6px;
+}
+
+/* «⏱ ТАЙМЕР», «🔒 ПЕРЕПИСКА» */
+.eb-card-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.6px;
+  line-height: 1;
+  white-space: nowrap;
+  color: #f08a5d;
+  background: rgba(226, 92, 42, 0.12);
+  border: 1px solid rgba(226, 92, 42, 0.3);
+}
+
+/* Кнопки карточки — как «Уточнить», но выше (32, тач-область ≥ 44) */
+.eb-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+.eb-bot-action.eb-card-btn {
+  position: relative;
+  height: 32px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+.eb-bot-action.eb-card-btn::after {
+  content: '';
+  position: absolute;
+  inset: -6px -2px;
+}
+.eb-bot-action.eb-card-btn:focus-visible,
+.eb-bot-action:focus-visible {
+  outline: 2px solid #f08a5d;
+  outline-offset: 2px;
+}
+.eb-bot-action.eb-card-btn[aria-busy='true'] {
+  cursor: progress;
+}
+.eb-card-spin {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 217, 199, 0.35);
+  border-top-color: #ffd9c7;
+  animation: eb-card-spin 0.8s linear infinite;
+}
+@keyframes eb-card-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Текстовая кнопка-ссылка («Вернуть», «Забыть переписку», «Ответ ниже ↓») */
+.eb-card-link {
+  position: relative;
+  background: none;
+  border: 0;
+  padding: 4px 2px;
+  margin: 0;
+  color: #f08a5d;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.eb-card-link::after {
+  content: '';
+  position: absolute;
+  inset: -10px -4px;
+}
+.eb-card-link:hover {
+  color: #ffd9c7;
+}
+.eb-card-link:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.eb-card-link:focus-visible {
+  outline: 2px solid #f08a5d;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.eb-card-sr {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .eb-card-spin {
+    animation-duration: 2.4s;
+  }
+}
+
+/* «Подумай лучше» под ответом бота: значок мозга в тон «Уточнить» */
+.eb-bot-action--think svg {
+  flex: 0 0 auto;
+}
