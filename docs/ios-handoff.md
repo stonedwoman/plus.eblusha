@@ -151,6 +151,10 @@ bundle `org.eblusha.plus.NotificationService`, группа приложений
      responding». Помогает фоновая петля на боксе на время работы: `wakeonlan …` раз в 5 с.
      Если `ios-release.sh` оборвался на архиве — xcodebuild на маке доживает и кладёт архив
      в `build/archive/`, но экспорт уже не запускается; тогда `--upload-only`.
+  5. С 2026-10-11 `ios-release.sh` делает это сам: петля Wake-on-LAN на всё время работы (`EBLUSHA_MAC_WOL`,
+     пусто — без петли), удалённая часть под `caffeinate -dimsu`, и отказ начинать на батарее ниже 15 %
+     (`EBLUSHA_IOS_MIN_BATTERY`, 0 — не проверять): мак, севший посреди archive, после включения ждёт пароля
+     FileVault от человека.
 
 ### 3.2 Сборка — `scripts/ios-build.sh`
 - Заливает `ios/` rsync'ом на мак (`~/builds/eblusha-ios`), генерирует проект, собирает.
@@ -1048,6 +1052,11 @@ metadata стирает, — по ней остальные части нахо�
 профиле расширения или группы — завести их на developer.apple.com (Identifiers → App Groups → `group.org.eblusha.plus`;
 Identifiers → App IDs → `org.eblusha.plus` и `org.eblusha.plus.NotificationService` с App Groups) и повторить.
 Keychain это не трогает: без `keychain-access-groups` группа доступа по умолчанию прежняя.
+Без человека — запасная сборка `scripts/ios-release.sh --without-nse` (ревью выпуска 2026-10-11): копия `ios/` без
+таргета расширения и без группы приложений (`scripts/ios-strip-nse.py`), репозиторий и номер сборки не меняются
+(номер всё равно закреплять `EBLUSHA_BUILD_NUMBER`). Приложение без расширения работает: «Без звука» живёт в
+`UserDefaults.standard`, число на значке ведёт сервер; теряется только приглушение пуша, пришедшего в гонке с
+«Без звука». Порядок — `docs/release-2026-10-11.md` §6. Сначала `--no-upload`: архив проверит подпись, не загружая.
 
 **Совместимость.** Старый сервер: в списке нет полей — «Без звука» не трогается; POST → 404 → «Не удалось
 изменить звук беседы»; `message:notify` без `muted` — своё правило. iOS ≤ 995 у пользователей: пуши по
